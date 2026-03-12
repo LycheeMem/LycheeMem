@@ -7,8 +7,13 @@
 
 from __future__ import annotations
 
+import datetime
 from dataclasses import dataclass, field
 from typing import Any
+
+
+def _now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
 @dataclass
@@ -18,6 +23,10 @@ class SessionLog:
     turns: list[dict[str, str]] = field(default_factory=list)
     summaries: list[dict[str, Any]] = field(default_factory=list)
     # summaries 结构：[{"boundary_index": int, "content": str}]
+    topic: str = ""
+    tags: list[str] = field(default_factory=list)
+    created_at: str = field(default_factory=_now_iso)
+    updated_at: str = field(default_factory=_now_iso)
 
 
 class InMemorySessionStore:
@@ -34,6 +43,7 @@ class InMemorySessionStore:
     def append_turn(self, session_id: str, role: str, content: str) -> None:
         log = self.get_or_create(session_id)
         log.turns.append({"role": role, "content": content})
+        log.updated_at = _now_iso()
 
     def get_turns(self, session_id: str) -> list[dict[str, str]]:
         return self.get_or_create(session_id).turns
@@ -44,3 +54,30 @@ class InMemorySessionStore:
 
     def delete_session(self, session_id: str) -> None:
         self._store.pop(session_id, None)
+
+    def update_session_meta(self, session_id: str, topic: str | None = None, tags: list[str] | None = None) -> None:
+        """更新会话元数据。"""
+        log = self.get_or_create(session_id)
+        if topic is not None:
+            log.topic = topic
+        if tags is not None:
+            log.tags = tags
+
+    def list_sessions(self, offset: int = 0, limit: int = 50) -> list[dict]:
+        """返回所有会话的摘要列表，按最新活动倒序，支持分页。"""
+        result = []
+        for session_id, log in self._store.items():
+            last_user = next(
+                (t["content"] for t in reversed(log.turns) if t["role"] == "user"), ""
+            )
+            result.append({
+                "session_id": session_id,
+                "turn_count": len(log.turns),
+                "last_message": last_user[:120],
+                "topic": log.topic,
+                "tags": log.tags,
+                "created_at": log.created_at,
+                "updated_at": log.updated_at,
+            })
+        result.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
+        return result[offset:offset + limit]

@@ -14,6 +14,8 @@ LangGraph Pipeline 构建。
 from __future__ import annotations
 
 import asyncio
+import logging
+import threading
 from typing import Any
 
 from langgraph.graph import StateGraph, START, END
@@ -26,6 +28,8 @@ from a_frame.agents.synthesizer_agent import SynthesizerAgent
 from a_frame.agents.wm_manager import WMManager
 from a_frame.core.state import PipelineState
 from a_frame.memory.sensory.buffer import SensoryBuffer
+
+logger = logging.getLogger("a_frame.pipeline")
 
 
 class AFramePipeline:
@@ -92,21 +96,26 @@ class AFramePipeline:
         }
 
     def _synthesize_node(self, state: PipelineState) -> dict[str, Any]:
-        """整合排序节点：融合多源检索结果为 background_context。"""
+        """整合排序节点：融合多源检索结果为 background_context + skill_reuse_plan。"""
         result = self.synthesizer.run(
             user_query=state["user_query"],
             retrieved_graph_memories=state.get("retrieved_graph_memories", []),
             retrieved_skills=state.get("retrieved_skills", []),
             retrieved_sensory=state.get("retrieved_sensory", []),
         )
-        return {"background_context": result["background_context"]}
+        return {
+            "background_context": result["background_context"],
+            "skill_reuse_plan": result.get("skill_reuse_plan", []),
+            "provenance": result.get("provenance", []),
+        }
 
     def _reason_node(self, state: PipelineState) -> dict[str, Any]:
-        """推理节点：生成最终回答。"""
+        """推理节点：生成最终回答（含技能复用计划）。"""
         result = self.reasoner.run(
             user_query=state["user_query"],
             compressed_history=state.get("compressed_history", []),
             background_context=state.get("background_context", ""),
+            skill_reuse_plan=state.get("skill_reuse_plan", []),
         )
 
         # 将 assistant 回复写回会话日志
@@ -190,9 +199,9 @@ class AFramePipeline:
         }
         result = self._graph.invoke(initial_state)
 
-        # 异步触发固化（如果 event loop 可用则异步，否则同步）
+        # 后台线程触发固化（fire-and-forget，不阻塞响应返回）
         if result.get("consolidation_pending"):
-            self._trigger_consolidation(session_id)
+            self._trigger_consolidation_bg(session_id)
 
         return result
 
@@ -210,11 +219,32 @@ class AFramePipeline:
 
         return result
 
-    def _trigger_consolidation(self, session_id: str) -> None:
-        """同步场景下触发固化（直接执行）。"""
+    def consolidate(self, session_id: str) -> dict[str, Any]:
+        """手动触发固化（公共方法，可由 API BackgroundTasks 调用）。
+
+        Returns:
+            dict 包含：entities_added, skills_added
+        """
         turns = self.wm_manager.session_store.get_turns(session_id)
         if turns:
-            self.consolidator.run(turns=turns)
+            return self.consolidator.run(turns=turns)
+        return {"entities_added": 0, "skills_added": 0}
+
+    def _trigger_consolidation_bg(self, session_id: str) -> None:
+        """在守护线程中触发固化（fire-and-forget）。"""
+        thread = threading.Thread(
+            target=self._safe_consolidate,
+            args=(session_id,),
+            daemon=True,
+        )
+        thread.start()
+
+    def _safe_consolidate(self, session_id: str) -> None:
+        """安全执行固化，异常不影响主流程。"""
+        try:
+            self.consolidate(session_id)
+        except Exception:
+            logger.warning("固化失败 session=%s", session_id, exc_info=True)
 
     async def _aconsolidate(self, session_id: str) -> None:
         """异步场景下的后台固化。"""

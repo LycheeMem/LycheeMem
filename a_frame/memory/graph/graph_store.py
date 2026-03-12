@@ -7,11 +7,16 @@
 
 from __future__ import annotations
 
+import datetime
 from typing import Any
 
 import networkx as nx
 
 from a_frame.memory.base import BaseMemoryStore
+
+
+def _now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
 class NetworkXGraphStore(BaseMemoryStore):
@@ -23,6 +28,8 @@ class NetworkXGraphStore(BaseMemoryStore):
     def add_node(self, node_id: str, label: str, properties: dict[str, Any] | None = None) -> None:
         props = dict(properties or {})
         props["label"] = label  # 显式覆盖，避免与 **props 冲突
+        if "created_at" not in props:
+            props["created_at"] = _now_iso()
         self.graph.add_node(node_id, **props)
 
     def add_edge(
@@ -32,7 +39,10 @@ class NetworkXGraphStore(BaseMemoryStore):
         relation: str,
         properties: dict[str, Any] | None = None,
     ) -> None:
-        props = properties or {}
+        props = dict(properties or {})
+        props.setdefault("timestamp", _now_iso())
+        props.setdefault("confidence", 1.0)
+        props.setdefault("source_session", "")
         self.graph.add_edge(source_id, target_id, relation=relation, **props)
 
     def add(self, items: list[dict[str, Any]]) -> None:
@@ -45,7 +55,10 @@ class NetworkXGraphStore(BaseMemoryStore):
             obj_id = obj.get("id", obj.get("name", ""))
             self.add_node(subj_id, label=subj.get("label", "Entity"), properties=subj)
             self.add_node(obj_id, label=obj.get("label", "Entity"), properties=obj)
-            self.add_edge(subj_id, obj_id, relation=pred, properties=item.get("properties", {}))
+            edge_props = dict(item.get("properties", {}))
+            edge_props.setdefault("confidence", item.get("confidence", 1.0))
+            edge_props.setdefault("source_session", item.get("source_session", ""))
+            self.add_edge(subj_id, obj_id, relation=pred, properties=edge_props)
 
     def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """双向关键词匹配搜索（开发用）。
@@ -97,3 +110,52 @@ class NetworkXGraphStore(BaseMemoryStore):
 
     def get_all(self) -> list[dict[str, Any]]:
         return [{"id": n, **d} for n, d in self.graph.nodes(data=True)]
+
+    def get_all_edges(self) -> list[dict[str, Any]]:
+        """返回所有边（含 relation, timestamp, confidence 等属性）。"""
+        return [
+            {"source": u, "target": v, **d}
+            for u, v, d in self.graph.edges(data=True)
+        ]
+
+    def search_by_relation(self, relation: str, top_k: int = 10) -> list[dict[str, Any]]:
+        """按关系类型检索边。"""
+        results = []
+        rel_lower = relation.lower()
+        for u, v, d in self.graph.edges(data=True):
+            edge_rel = str(d.get("relation", "")).lower()
+            if rel_lower in edge_rel or edge_rel in rel_lower:
+                results.append({"source": u, "target": v, **d})
+                if len(results) >= top_k:
+                    break
+        return results
+
+    def search_by_time(
+        self,
+        since: str | None = None,
+        until: str | None = None,
+        top_k: int = 10,
+    ) -> list[dict[str, Any]]:
+        """按时间范围检索边。
+
+        Args:
+            since: ISO 格式起始时间（含），None 表示不限。
+            until: ISO 格式截止时间（含），None 表示不限。
+            top_k: 最大返回数。
+
+        Returns:
+            符合时间范围的边列表，按时间降序。
+        """
+        edges = []
+        for u, v, d in self.graph.edges(data=True):
+            ts = d.get("timestamp", "")
+            if not ts:
+                continue
+            if since and ts < since:
+                continue
+            if until and ts > until:
+                continue
+            edges.append({"source": u, "target": v, **d})
+
+        edges.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+        return edges[:top_k]

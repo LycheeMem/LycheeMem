@@ -13,7 +13,7 @@ def main():
     parser = argparse.ArgumentParser(description="A-Frame Cognitive Memory Server")
     parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
-    parser.add_argument("--llm", default="openai", choices=["openai", "gemini", "ollama"],
+    parser.add_argument("--llm", default="gemini", choices=["openai", "gemini", "ollama"],
                         help="LLM backend (default: openai)")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload for development")
     args = parser.parse_args()

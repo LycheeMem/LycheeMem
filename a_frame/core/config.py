@@ -35,9 +35,9 @@ class Settings(BaseSettings):
     wm_block_threshold: float = 0.9
 
     # ─── 存储后端选择 ───
-    session_backend: str = "memory"   # "memory" | "sqlite"
-    graph_backend: str = "memory"     # "memory" | "neo4j"
-    skill_backend: str = "memory"     # "memory" | "lancedb"
+    session_backend: str = "sqlite"   # "memory" | "sqlite"
+    graph_backend: str = "neo4j"     # "memory" | "neo4j"
+    skill_backend: str = "lancedb"    # "memory" | "lancedb"
 
     # ─── SQLite (会话持久化) ───
     sqlite_db_path: str = "a_frame_sessions.db"

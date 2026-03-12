@@ -27,6 +27,9 @@ class SkillEntry:
     embedding: list[float]         # 意图的向量表示
     tool_chain: list[dict[str, Any]]  # 工具调用序列
     metadata: dict[str, Any] = field(default_factory=dict)
+    success_count: int = 0         # 成功使用次数
+    last_used: str | None = None   # 最后使用时间 (ISO 格式)
+    conditions: str = ""           # 适用条件描述
 
 
 class InMemorySkillStore(BaseMemoryStore):
@@ -43,8 +46,18 @@ class InMemorySkillStore(BaseMemoryStore):
                 embedding=item["embedding"],
                 tool_chain=item["tool_chain"],
                 metadata=item.get("metadata", {}),
+                success_count=item.get("success_count", 0),
+                last_used=item.get("last_used"),
+                conditions=item.get("conditions", ""),
             )
             self._skills[skill.id] = skill
+
+    def record_usage(self, skill_id: str) -> None:
+        """记录技能被成功使用一次。"""
+        import datetime
+        if skill_id in self._skills:
+            self._skills[skill_id].success_count += 1
+            self._skills[skill_id].last_used = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     def search(self, query: str, top_k: int = 5, query_embedding: list[float] | None = None) -> list[dict[str, Any]]:
         """向量相似度检索。需要传入 query_embedding。"""
@@ -67,6 +80,8 @@ class InMemorySkillStore(BaseMemoryStore):
                 "tool_chain": s.tool_chain,
                 "score": score,
                 "metadata": s.metadata,
+                "success_count": s.success_count,
+                "conditions": s.conditions,
             }
             for score, s in scored[:top_k]
         ]
@@ -77,6 +92,10 @@ class InMemorySkillStore(BaseMemoryStore):
 
     def get_all(self) -> list[dict[str, Any]]:
         return [
-            {"id": s.id, "intent": s.intent, "tool_chain": s.tool_chain, "metadata": s.metadata}
+            {
+                "id": s.id, "intent": s.intent, "tool_chain": s.tool_chain,
+                "metadata": s.metadata, "success_count": s.success_count,
+                "last_used": s.last_used, "conditions": s.conditions,
+            }
             for s in self._skills.values()
         ]

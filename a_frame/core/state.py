@@ -41,6 +41,8 @@ class PipelineState(TypedDict, total=False):
 
     # ─── 整合器输出 ───
     background_context: str   # 融合后的上下文注入字符串
+    skill_reuse_plan: list[dict[str, Any]]  # 可复用技能执行计划
+    provenance: list[dict[str, Any]]        # 记忆溯源信息
 
     # ─── 推理器输出 ───
     final_response: str

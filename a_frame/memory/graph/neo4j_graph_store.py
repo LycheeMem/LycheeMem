@@ -88,18 +88,16 @@ class Neo4jGraphStore(BaseMemoryStore):
 
     def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """双向关键词匹配搜索。"""
-        query_lower = query.lower()
         with self._driver.session(database=self._database) as session:
-            # 搜索节点 name 包含在 query 中，或 query 包含在节点 name 中
             result = session.run(
                 """
                 MATCH (n:Entity)
-                WHERE toLower(n.name) CONTAINS toLower($query)
-                   OR toLower($query) CONTAINS toLower(n.name)
+                WHERE toLower(n.name) CONTAINS toLower($search_term)
+                   OR toLower($search_term) CONTAINS toLower(n.name)
                 RETURN n
                 LIMIT $top_k
                 """,
-                query=query,
+                search_term=query,
                 top_k=top_k,
             )
             return [

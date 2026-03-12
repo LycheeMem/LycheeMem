@@ -57,6 +57,14 @@ class SQLiteSessionStore:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX IF NOT EXISTS idx_summaries_session ON summaries(session_id);
+
+            CREATE TABLE IF NOT EXISTS session_meta (
+                session_id TEXT PRIMARY KEY,
+                topic TEXT NOT NULL DEFAULT '',
+                tags TEXT NOT NULL DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
         """)
         conn.commit()
 
@@ -88,6 +96,11 @@ class SQLiteSessionStore:
             "INSERT INTO turns (session_id, role, content) VALUES (?, ?, ?)",
             (session_id, role, content),
         )
+        # upsert session_meta 的 updated_at
+        conn.execute(
+            "INSERT INTO session_meta (session_id) VALUES (?) ON CONFLICT(session_id) DO UPDATE SET updated_at=CURRENT_TIMESTAMP",
+            (session_id,),
+        )
         conn.commit()
 
     def get_turns(self, session_id: str) -> list[dict[str, str]]:
@@ -112,7 +125,58 @@ class SQLiteSessionStore:
         conn = self._get_conn()
         conn.execute("DELETE FROM turns WHERE session_id = ?", (session_id,))
         conn.execute("DELETE FROM summaries WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM session_meta WHERE session_id = ?", (session_id,))
         conn.commit()
+
+    def update_session_meta(self, session_id: str, topic: str | None = None, tags: list[str] | None = None) -> None:
+        """更新会话元数据。"""
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO session_meta (session_id) VALUES (?) ON CONFLICT(session_id) DO NOTHING",
+            (session_id,),
+        )
+        if topic is not None:
+            conn.execute("UPDATE session_meta SET topic=? WHERE session_id=?", (topic, session_id))
+        if tags is not None:
+            conn.execute("UPDATE session_meta SET tags=? WHERE session_id=?", (json.dumps(tags), session_id))
+        conn.commit()
+
+    def list_sessions(self, offset: int = 0, limit: int = 50) -> list[dict]:
+        """返回所有会话的摘要列表，按最新活动倒序，支持分页。"""
+        conn = self._get_conn()
+        rows = conn.execute("""
+            SELECT
+                t.session_id,
+                COUNT(*) AS turn_count,
+                (SELECT t2.content FROM turns t2
+                 WHERE t2.session_id = t.session_id AND t2.role = 'user'
+                 ORDER BY t2.id DESC LIMIT 1) AS last_message,
+                MAX(t.created_at) AS updated_at,
+                COALESCE(m.topic, '') AS topic,
+                COALESCE(m.tags, '[]') AS tags,
+                COALESCE(m.created_at, MIN(t.created_at)) AS session_created_at
+            FROM turns t
+            LEFT JOIN session_meta m ON m.session_id = t.session_id
+            GROUP BY t.session_id
+            ORDER BY updated_at DESC
+            LIMIT ? OFFSET ?
+        """, (limit, offset)).fetchall()
+        result = []
+        for row in rows:
+            try:
+                tags = json.loads(row["tags"])
+            except (json.JSONDecodeError, TypeError):
+                tags = []
+            result.append({
+                "session_id": row["session_id"],
+                "turn_count": row["turn_count"],
+                "last_message": (row["last_message"] or "")[:120],
+                "topic": row["topic"],
+                "tags": tags,
+                "created_at": row["session_created_at"],
+                "updated_at": row["updated_at"],
+            })
+        return result
 
     def close(self) -> None:
         if hasattr(self._local, "conn") and self._local.conn:

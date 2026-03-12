@@ -7,6 +7,7 @@ LLM 驱动的实体/关系三元组抽取。
 
 from __future__ import annotations
 
+import datetime
 import json
 from typing import Any
 
@@ -40,11 +41,12 @@ class EntityExtractor:
         self.llm = llm
         self.confidence_threshold = confidence_threshold
 
-    def extract(self, text: str) -> list[dict[str, Any]]:
+    def extract(self, text: str, source_session: str = "") -> list[dict[str, Any]]:
         """从文本中提取三元组列表。
 
         Args:
             text: 要分析的对话或文本内容。
+            source_session: 来源会话 ID，附加到每个三元组。
 
         Returns:
             过滤后的三元组列表，每个三元组包含 subject, predicate, object, confidence。
@@ -61,13 +63,20 @@ class EntityExtractor:
         )
 
         triples = self._parse_triples(response)
-        # 按置信度过滤
-        return [t for t in triples if t.get("confidence", 0) >= self.confidence_threshold]
+        # 按置信度过滤 + 附加元数据
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        result = []
+        for t in triples:
+            if t.get("confidence", 0) >= self.confidence_threshold:
+                t.setdefault("source_session", source_session)
+                t.setdefault("timestamp", now)
+                result.append(t)
+        return result
 
-    def extract_from_turns(self, turns: list[dict[str, str]]) -> list[dict[str, Any]]:
+    def extract_from_turns(self, turns: list[dict[str, str]], source_session: str = "") -> list[dict[str, Any]]:
         """从对话轮次中提取三元组。"""
         text = "\n".join(f"{t['role']}: {t['content']}" for t in turns)
-        return self.extract(text)
+        return self.extract(text, source_session=source_session)
 
     @staticmethod
     def _parse_triples(response: str) -> list[dict[str, Any]]:
