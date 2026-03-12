@@ -1,0 +1,67 @@
+"""测试整合排序器。"""
+
+from a_frame.agents.synthesizer_agent import SynthesizerAgent
+
+
+class FakeLLMSynthesizer:
+    def generate(self, messages, **kwargs):
+        return '{"kept_count": 2, "dropped_count": 0, "background_context": "张三在 Google 工作，住在北京。"}'
+
+
+class FakeLLMBroken:
+    def generate(self, messages, **kwargs):
+        return "这是一段自然语言的整合结果，不是 JSON"
+
+
+class TestSynthesizerAgent:
+    def test_synthesize_with_graph_memories(self):
+        synth = SynthesizerAgent(llm=FakeLLMSynthesizer())
+        result = synth.run(
+            user_query="张三的信息",
+            retrieved_graph_memories=[{
+                "anchor": {"node_id": "张三", "label": "Person"},
+                "subgraph": {
+                    "nodes": [{"id": "张三"}, {"id": "Google"}],
+                    "edges": [{"source": "张三", "target": "Google", "relation": "works_at"}],
+                },
+            }],
+        )
+        assert "background_context" in result
+        assert "张三" in result["background_context"]
+
+    def test_synthesize_empty_input(self):
+        synth = SynthesizerAgent(llm=FakeLLMSynthesizer())
+        result = synth.run(user_query="你好")
+        assert result["background_context"] == ""
+
+    def test_synthesize_broken_json_fallback(self):
+        synth = SynthesizerAgent(llm=FakeLLMBroken())
+        result = synth.run(
+            user_query="测试",
+            retrieved_sensory=[{"content": "感觉数据", "modality": "text", "timestamp": "2026-01-01"}],
+        )
+        # 应该 fallback 到原始 LLM 输出
+        assert "background_context" in result
+        assert len(result["background_context"]) > 0
+
+    def test_format_fragments_skills(self):
+        fragments = SynthesizerAgent._format_fragments(
+            graph_memories=[],
+            skills=[{"intent": "写爬虫", "tool_chain": [{"step": 1, "action": "get"}]}],
+            sensory=[],
+        )
+        assert "[技能库]" in fragments
+        assert "写爬虫" in fragments
+
+    def test_format_fragments_mixed(self):
+        fragments = SynthesizerAgent._format_fragments(
+            graph_memories=[{
+                "anchor": {"node_id": "A"},
+                "subgraph": {"nodes": [], "edges": [{"source": "A", "target": "B", "relation": "r"}]},
+            }],
+            skills=[{"intent": "t", "tool_chain": []}],
+            sensory=[{"content": "s", "modality": "text", "timestamp": "now"}],
+        )
+        assert "[知识图谱]" in fragments
+        assert "[技能库]" in fragments
+        assert "[感觉记忆]" in fragments
