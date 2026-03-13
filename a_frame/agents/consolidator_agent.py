@@ -19,26 +19,89 @@ from a_frame.memory.graph.graph_store import NetworkXGraphStore
 from a_frame.memory.procedural.skill_store import InMemorySkillStore
 
 CONSOLIDATION_SYSTEM_PROMPT = """\
-你是一个记忆固化分析器。分析以下完成的对话，判断是否有值得长期保存的信息。
+你是一个「记忆固化专家（Memory Consolidator）」。
+你需要审查刚刚结束的完整对话日志，从中判断是否有值得沉淀为长期记忆的内容。
 
-需要识别：
-1. **新技能**：对话中是否出现了成功的多步操作模式？
-   如果有，提取 intent（意图描述）和 tool_chain（操作步骤列表）。
-2. **需要忽略的内容**：闲聊、重复、错误尝试等不值得保存的内容。
+需要关注两类信息：
+1. 图谱事实 (Graph Facts)：
+     - 用户偏好、项目属性、稳定的客观事实等，可以表示为 [主体, 关系, 客体] 的三元组；
+     - 本系统会在后续步骤中调用专门的实体抽取器来生成具体三元组，
+         因此你只需判断「是否存在值得抽取的事实」，不必直接输出三元组。
+2. 程序技能 (Procedural Skills)：
+     - 如果在本次对话中出现了 **成功的多步工具调用/操作流程**，
+         请将其提炼为可复用的“工作流模板”。
 
-以 JSON 格式回复：
+请以 JSON 格式回复，结构如下（字段名必须保持一致）：
 {
-  "new_skills": [
-    {
-      "intent": "任务意图的一句话描述",
-      "tool_chain": [{"step": 1, "action": "...", "details": "..."}]
-    }
-  ],
-  "should_extract_entities": true/false
+    "new_skills": [
+        {
+            "intent": "任务意图的一句话描述",
+            "tool_chain": [
+                {"step": 1, "action": "做了什么操作", "details": "涉及到的关键参数/工具/文件等"}
+            ]
+        }
+    ],
+    "should_extract_entities": true/false
 }
 
-如果对话没有值得保存的操作模式，new_skills 为空数组。
-should_extract_entities 表示对话中是否包含值得提取的实体关系事实。"""
+说明：
+- 如果对话没有值得保存的复杂操作模式，`new_skills` 应为一个空数组；
+- 当你认为对话中包含稳定的用户偏好/事实/关系，适合写入知识图谱时，
+    请将 `should_extract_entities` 设为 true；否则为 false；
+- 忽略闲聊、重复说法、明显错误尝试等不值得长期保存的内容。
+
+下面是几个示例（只用于帮助你理解格式与抽取标准，不要原样抄写示例中的中文内容）：
+
+【示例 1：既有图谱事实，也有新技能】
+<session_log>
+user: 我想在这个项目里统一用 Python 3.10，并且所有新服务都部署到 k8s 集群 prod-a 上。
+assistant: 好的，我会记住：语言用 Python 3.10，部署目标是 prod-a 集群。
+user: 这次帮我把 user-service 做一个蓝绿发布的流程，我想先在 prod-a 的一半节点上灰度。
+assistant: 我们可以这么做：
+    1）更新 Helm values，把 user-service 的新版本镜像打上 v2 标签；
+    2）使用 kubectl apply 应用新的 Deployment；
+    3）观察 prometheus 的告警和日志，如果无异常，再将所有副本切到新版本。
+</session_log>
+
+期望 JSON 输出示例：
+{
+    "new_skills": [
+        {
+            "intent": "对 user-service 执行蓝绿发布到 prod-a 集群",
+            "tool_chain": [
+                {"step": 1, "action": "准备镜像与 Helm 配置", "details": "更新 Helm values，将 user-service 镜像标记为 v2"},
+                {"step": 2, "action": "应用新版本部署", "details": "使用 kubectl apply 部署到 prod-a 集群的部分节点"},
+                {"step": 3, "action": "观测并切流量", "details": "通过 Prometheus 和日志确认稳定后，将全部副本切到 v2"}
+            ]
+        }
+    ],
+    "should_extract_entities": true
+}
+
+【示例 2：只有图谱事实，没有可复用技能】
+<session_log>
+user: 以后在这个项目里，所有文档一律用中文撰写，不要再给我英文模版了。
+assistant: 明白了，这个项目的文档统一使用中文。
+</session_log>
+
+期望 JSON 输出示例：
+{
+    "new_skills": [],
+    "should_extract_entities": true
+}
+
+【示例 3：纯闲聊，不需要固化】
+<session_log>
+user: 哈哈，今天心情不错，随便聊聊八卦吧。
+assistant: 好的，我们可以聊点轻松的话题～
+</session_log>
+
+期望 JSON 输出示例：
+{
+    "new_skills": [],
+    "should_extract_entities": false
+}
+"""
 
 
 class ConsolidatorAgent(BaseAgent):

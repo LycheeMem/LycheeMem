@@ -27,13 +27,11 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from fastapi.staticfiles import StaticFiles
 
 from a_frame.api.models import (
     ChatRequest,
@@ -111,56 +109,35 @@ def create_app(pipeline=None) -> FastAPI:
 
     @app.post("/chat")
     async def chat_stream(req: ChatRequest):
-        """SSE 流式对话（带丰富中间状态）。
+        """SSE 流式对话。
 
         流式 chunk 格式 (Server-Sent Events):
-          data: {"type": "agent", "agent": "wm_manager", "status": "running"}
-          data: {"type": "agent", "agent": "router", "status": "done", "data": {...}}
-          data: {"type": "memories", "graph": [...], "skills": [...], "sensory": [...]}
+          data: {"type": "status", "content": "routing..."}
+          data: {"type": "status", "content": "searching..."}
           data: {"type": "answer", "content": "最终回答文本"}
-          data: {"type": "done", "session_id": "...", ...}
+          data: {"type": "done", "session_id": "...", "memories_retrieved": 0}
         """
         pipeline = _get_pipeline(app)
 
         async def event_stream():
-            # 1. Working memory
-            yield _sse({"type": "agent", "agent": "wm_manager", "status": "running"})
+            yield _sse({"type": "status", "content": "processing"})
+
             result = pipeline.run(user_query=req.message, session_id=req.session_id)
-            yield _sse({"type": "agent", "agent": "wm_manager", "status": "done",
-                         "data": {"wm_token_usage": result.get("wm_token_usage", 0)}})
 
-            # 2. Router
             route = result.get("route", {})
-            route_data = route if isinstance(route, dict) else {}
-            yield _sse({"type": "agent", "agent": "router", "status": "done",
-                         "data": route_data})
+            if route.get("need_graph") or route.get("need_skills") or route.get("need_sensory"):
+                yield _sse({"type": "status", "content": "retrieved"})
 
-            # 3. Search coordinator – memories
-            graph_mems = result.get("retrieved_graph_memories", [])
-            skill_mems = result.get("retrieved_skills", [])
-            sensory_mems = result.get("retrieved_sensory", [])
-            if graph_mems or skill_mems or sensory_mems:
-                yield _sse({"type": "agent", "agent": "search_coordinator", "status": "done"})
-                yield _sse({"type": "memories",
-                             "graph": graph_mems[:20],
-                             "skills": skill_mems[:20],
-                             "sensory": sensory_mems[:20]})
-
-            # 4. Synthesizer
-            if result.get("background_context"):
-                yield _sse({"type": "agent", "agent": "synthesizer", "status": "done",
-                             "data": {"provenance": result.get("provenance", []),
-                                      "skill_reuse_plan": result.get("skill_reuse_plan", [])}})
-
-            # 5. Reasoner answer
-            yield _sse({"type": "agent", "agent": "reasoner", "status": "done"})
             yield _sse({
                 "type": "answer",
                 "content": result.get("final_response", ""),
             })
 
-            # 6. Done
-            memories = len(graph_mems) + len(skill_mems) + len(sensory_mems)
+            memories = (
+                len(result.get("retrieved_graph_memories", []))
+                + len(result.get("retrieved_skills", []))
+                + len(result.get("retrieved_sensory", []))
+            )
             yield _sse({
                 "type": "done",
                 "session_id": req.session_id,
@@ -418,17 +395,6 @@ def create_app(pipeline=None) -> FastAPI:
             skill_count=skill_count,
             sensory_buffer_size=sensory_size,
         )
-
-    # ── Demo 前端静态文件 ──
-    demo_dir = Path(__file__).resolve().parent.parent / "demo"
-    if demo_dir.is_dir():
-        from fastapi.responses import FileResponse
-
-        @app.get("/demo")
-        async def demo_page():
-            return FileResponse(demo_dir / "index.html")
-
-        app.mount("/demo-static", StaticFiles(directory=str(demo_dir)), name="demo-static")
 
     return app
 

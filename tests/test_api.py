@@ -134,7 +134,7 @@ class TestChatSSE:
         # 解析 SSE 事件
         events = _parse_sse(resp.text)
         types = [e["type"] for e in events]
-        assert "agent" in types
+        assert "status" in types
         assert "answer" in types
         assert "done" in types
 

@@ -7,3 +7,5 @@ __pycache__
 uv.lock
 a_frame_sessions.db
 .pytest_cache
+node_modules
+.next

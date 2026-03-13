@@ -19,29 +19,74 @@ from a_frame.memory.procedural.skill_store import InMemorySkillStore
 from a_frame.memory.sensory.buffer import SensoryBuffer
 
 HYDE_SYSTEM_PROMPT = """\
-你是一个假设文档生成器。给定用户查询，生成一段假设性的"理想回答"文本。
-这段文本将被用于向量检索，因此应该包含与查询相关的关键概念和词汇。
+你是一个「HyDE 假设性回答生成器」。
 
-注意：你生成的不是真正的回答，而是一个用于语义匹配的"锚点文本"。
-保持简洁（2-3 句话），聚焦关键实体和概念。"""
+目标：
+- 给定用户查询，为“程序/技能类”意图生成一段 **假设性的理想回答文本（Draft Answer）**。
+- 这段草稿回答不会直接返回给用户，而是作为向量检索的“锚点文本”，用来提高召回率。
+
+要求：
+1. 假装你已经成功完成了用户想要的任务，用 2-3 句话描述一个合理的解决方案草稿。
+2. 文本中应自然包含：可能会调用的工具名称、关键参数名、重要中间产物等关键信息。
+3. 保持简洁，聚焦关键实体、步骤和概念，不要展开长篇解释。
+4. 不要使用列表或 JSON，只输出连续自然语言段落。
+
+示例（仅用于你在脑中参考，不要原样抄写）：
+
+- 用户查询："帮我写一个脚本，每天凌晨 3 点备份 PostgreSQL 数据库到 S3。"
+    假设性回答示例：
+    "我为你编写了一个使用 `pg_dump` 的备份脚本，并通过 crontab 配置在每天凌晨 3 点运行。脚本会将生成的备份文件上传到你指定的 S3 bucket，并使用时间戳作为文件名，方便后续检索和清理。"
+
+- 用户查询："搭一个最简单的 FastAPI 服务，并用 Docker 部署。"
+    假设性回答示例：
+    "我创建了一个包含单个 `/health` 路由的 FastAPI 应用，并编写了一个使用 `python:3.10-slim` 基础镜像的 Dockerfile。通过 `docker build` 构建镜像后，在服务器上使用 `docker run -p 8000:8000` 运行该服务。"
+"""
 
 RETRIEVAL_PLAN_PROMPT = """\
-你是一个检索规划器。根据用户查询，生成结构化的检索计划。
-分析查询需要哪些子问题，以及每个子问题应该查询哪个记忆源。
+你是一个「记忆检索协调器（Search Coordinator）」的规划子模块。
 
-以 JSON 格式回复：
+你的任务是：将粗粒度的用户查询，转化为面向不同记忆源的 **多路子查询（Multi-Query）** 检索计划。
+
+针对需要检索的每一种记忆源（图谱/技能/感觉），请：
+1. 将复杂问题拆解为 1-3 个更具体、可直接检索的子查询；
+2. 子查询应比原问题更聚焦，明确实体、时间、任务目标等关键信息；
+3. 避免重复或语义等价的子查询。
+
+以 JSON 格式回复（保持字段名与下方完全一致）：
 {
-  "sub_queries": [
-    {"source": "graph", "query": "针对图谱的子查询"},
-    {"source": "skill", "query": "针对技能库的子查询"}
-  ],
-  "reasoning": "为什么这样分解查询"
+    "sub_queries": [
+        {"source": "graph", "query": "针对知识图谱的子查询"},
+        {"source": "skill", "query": "针对技能库的子查询"}
+    ],
+    "reasoning": "用一两句话解释你为何这样拆分和分配到不同源"
 }
 
 规则：
-- source 只能是 "graph", "skill", "sensory" 之一
-- 如果查询简单不需要分解，sub_queries 可以只有一个元素
-- 每个子查询应该比原查询更精确"""
+- source 只能是 "graph", "skill", "sensory" 之一；
+- 如果查询简单不需要分解，可以只返回 1 个子查询；
+- 每个子查询应该比原查询更具体，便于检索；
+- 不要输出任何 JSON 以外的文字。
+
+示例（仅用于你在脑中参考，不要原样抄写）：
+
+用户查询：
+    "回顾一下上次我们部署订单服务的流程，然后看看知识图谱里有没有和支付相关的错误模式。"
+
+期望 JSON 输出示例：
+{
+    "sub_queries": [
+        {
+            "source": "skill",
+            "query": "订单服务 部署 流程"
+        },
+        {
+            "source": "graph",
+            "query": "支付 错误 模式"
+        }
+    ],
+    "reasoning": "该查询同时涉及复用历史中的订单服务部署流程（技能库）以及与支付相关的错误模式（图谱），因此需要拆分为 skill 与 graph 两路精简子查询。"
+}
+"""
 
 
 class SearchCoordinator(BaseAgent):
@@ -129,9 +174,45 @@ class SearchCoordinator(BaseAgent):
             response = self._call_llm(query, system_content=RETRIEVAL_PLAN_PROMPT)
             parsed = self._parse_json(response)
             sub_queries = parsed.get("sub_queries", [])
-            return {sq["source"]: sq["query"] for sq in sub_queries if "source" in sq and "query" in sq}
+            result = {sq["source"]: sq["query"] for sq in sub_queries if "source" in sq and "query" in sq}
+            if result:
+                return result
         except Exception:
+            # 如果 LLM 规划失败，退回到基于空格的简单拆分逻辑
+            pass
+
+        # 降级方案：当需要多源检索且用户主动用空格拼接多个关键词时，
+        # 按 source 顺序将空格分隔的片段映射到各自的子查询。
+        sources_in_order: list[str] = []
+        if route.get("need_graph"):
+            sources_in_order.append("graph")
+        if route.get("need_skills"):
+            sources_in_order.append("skill")
+        if route.get("need_sensory"):
+            sources_in_order.append("sensory")
+
+        # 只在确实需要多源时才尝试拆分
+        if len(sources_in_order) <= 1:
             return {}
+
+        # 按空格拆分 query，过滤掉空片段
+        parts = [p.strip() for p in query.split() if p.strip()]
+        if len(parts) <= 1:
+            return {}
+
+        fallback_result: dict[str, str] = {}
+
+        # 将每个 source 对应到一个片段，剩余片段合并到最后一个 source
+        for idx, source in enumerate(sources_in_order):
+            if idx >= len(parts):
+                break
+            if idx == len(sources_in_order) - 1:
+                # 最后一个 source 接收剩余所有片段
+                fallback_result[source] = " ".join(parts[idx:])
+            else:
+                fallback_result[source] = parts[idx]
+
+        return fallback_result
 
     def _search_graph(self, query: str) -> list[dict[str, Any]]:
         """在知识图谱中检索相关节点和邻居。"""

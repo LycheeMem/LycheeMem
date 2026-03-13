@@ -16,14 +16,14 @@ class Settings(BaseSettings):
     openai_api_base: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o-mini"
 
-    gemini_api_key: str = ""
-    gemini_model: str = "gemini-3-flash-preview"
+    gemini_api_key: str = "AIzaSyAjQwxhESxBLa3gJ_6geCVutRYrmgePQEg"
+    gemini_model: str = "gemini-3.1-flash-lite-preview"
 
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5"
 
     # ─── Embedder ───
-    embedding_backend: str = "openai"  # "openai" or "gemini"
+    embedding_backend: str = "gemini"  # "openai" or "gemini"
     embedding_model: str = "text-embedding-3-small"
     embedding_dim: int = 1536
     gemini_embedding_model: str = "gemini-embedding-2-preview"

@@ -1,0 +1,282 @@
+.panel {
+  background: var(--panel);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 20px;
+}
+
+.panelHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.panelHeader h2 {
+  margin: 0;
+}
+
+.panelHeader p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.counter {
+  background: var(--panel-2);
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.timelineRow {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  gap: 12px;
+  align-items: center;
+}
+
+.timelineLabel {
+  font-weight: 600;
+}
+
+.timelineHint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.badge {
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  text-align: center;
+}
+
+.badge-idle {
+  background: #e2e8f0;
+  color: #475569;
+}
+
+.badge-active {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+.badge-done {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.badge-error {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.statusGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.statusCard {
+  background: var(--panel);
+  border-radius: var(--radius-sm);
+  padding: 14px;
+  box-shadow: var(--shadow-soft);
+  border: 1px solid var(--line);
+}
+
+.statusLabel {
+  font-size: 12px;
+  text-transform: uppercase;
+  color: var(--muted);
+  letter-spacing: 0.12em;
+}
+
+.statusValue {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.memoryGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.scrollArea {
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sessionRow {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  background: #fbfcff;
+  cursor: pointer;
+  text-align: left;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sessionId {
+  font-weight: 600;
+}
+
+.sessionMeta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tagRow {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.tag {
+  background: #e2e8f0;
+  color: #475569;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.skillCard {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  background: #fbfcff;
+}
+
+.skillTitle {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.skillMeta {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.skillChain {
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 10px;
+  border-radius: 8px;
+  font-size: 11px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.sensoryRow {
+  border: 1px dashed #cbd5f5;
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  background: #f8fafc;
+}
+
+.sensoryTop {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.sensoryModality {
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.sensoryContent {
+  font-size: 13px;
+}
+
+.sessionDetailHeader {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.sessionDetailTurns {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.turnRow {
+  display: grid;
+  grid-template-columns: 70px 1fr;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.turnRole {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.summaryBlock {
+  margin-top: 12px;
+  background: #f8fafc;
+  padding: 10px;
+  border-radius: 10px;
+}
+
+.summaryTitle {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.summaryRow {
+  display: flex;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.summaryIndex {
+  color: var(--muted);
+}
+
+.empty {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.provenanceRow {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  background: #fbfcff;
+}
+
+.provenanceHeader {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.provenanceScore {
+  font-weight: 600;
+}
+
+.provenanceSummary {
+  font-size: 13px;
+  color: var(--ink-2);
+}

@@ -121,22 +121,37 @@ class WorkingMemoryCompressor:
 
     @staticmethod
     def _default_compression_prompt() -> str:
-        return """你是一个对话历史压缩专家。请将以下对话历史压缩为一份结构化的"状态交接文档"。
+        return """Your task is to create a comprehensive, detailed summary of the provided conversation history. This summary will be used to compact the conversation while preserving critical technical details, decisions, tool executions, and progress for seamless continuation.
 
-要求输出包含以下三个部分（严格使用这些标题）：
+    ## Recent Context Analysis
+    Pay special attention to the most recent agent commands and tool executions. Include:
+    - Last Agent Commands: What specific actions/tools were just executed
+    - Tool Results: Key outcomes from recent tool calls (truncate if very long, but preserve essential information)
+    - Immediate State: What was the system doing right before summarization
 
-## Intent Mapping
-用户的原始目标和关键约束条件。
+    ## Analysis Process
+    Before providing your final summary, wrap your analysis in `<analysis>` tags to organize your thoughts systematically:
+    1. Chronological Review
+    2. Intent Mapping
+    3. Technical Inventory
+    4. Progress Assessment
+    5. Recent Commands Analysis
 
-## Progress Assessment
-已完成的工作（列举要点）和尚未完成的工作。
+    ### Input History to Compress
+    <history_to_compress>
+    {history}
+    </history_to_compress>
 
-## Recent Commands Analysis
-对话中最后几次关键操作（工具调用、代码执行等）的核心输入输出。
+    ### Output Format (MUST follow this EXACT structure)
+    <analysis>
+    [Your step-by-step thinking process here]
+    </analysis>
 
-请确保压缩后的文档足够简洁，但不丢失继续完成任务所需的关键状态信息。
-
----
-
-对话历史：
-{history}"""
+    <summary>
+    1. Conversation Overview: [Primary Objectives and Session Context]
+    2. Technical Foundation / Environment: [Core tech, paths, setups]
+    3. Problem Resolution: [Issues encountered and solutions implemented]
+    4. Progress Tracking: [Completed vs. Pending]
+    5. Recent Operations: [Last tool calls and results summary]
+    6. Continuation Plan: [Immediate next steps]
+    </summary>"""

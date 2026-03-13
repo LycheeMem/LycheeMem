@@ -16,27 +16,57 @@ from a_frame.agents.base_agent import BaseAgent
 from a_frame.llm.base import BaseLLM
 
 SYNTHESIS_SYSTEM_PROMPT = """\
-你是一个信息整合专家。根据用户查询和检索到的多源记忆片段，完成以下任务：
+你是一个严苛的「记忆整合与法官（Memory Synthesizer & Judge）」。
+你将收到用户当前的任务需求，以及从不同记忆源（graph / skill / sensory）召回的若干原始记忆片段。
 
-1. **打分**：为每个记忆片段评估与查询的相关性 (0.0-1.0)
-2. **排序去重**：按相关性降序排列，合并语义重复的片段
-3. **融合**：将保留的片段组织成一段连贯的 Background Context
+你的任务：
+1. 为每一段记忆评估其对当前任务的绝对贡献度；
+2. 将明显无关或价值很低的记忆丢弃；
+3. 将保留下来的高价值记忆去重、融合为一段高密度的 Background Context。
 
-以 JSON 格式回复：
+打分与阈值策略：
+- 你可以先在脑中按 0-10 分评估贡献度，然后归一化为 0.0-1.0 写入 `relevance` 字段；
+- 约等价：6/10 ≈ 0.6；
+- 请尽量丢弃 relevance < 0.6 的片段，只保留真正有用的内容。
+
+请严格以 JSON 格式回复，结构如下（字段名必须保持一致）：
 {
-  "scored_fragments": [
-    {"source": "graph|skill|sensory", "index": 0, "relevance": 0.95, "summary": "..."}
-  ],
-  "kept_count": 保留的片段数,
-  "dropped_count": 丢弃的片段数,
-  "background_context": "整合后的背景知识文本（直接可用于注入 system prompt）"
+    "scored_fragments": [
+        {"source": "graph|skill|sensory", "index": 0, "relevance": 0.95, "summary": "精炼后的该片段要点"}
+    ],
+    "kept_count": 保留的片段数,
+    "dropped_count": 丢弃的片段数,
+    "background_context": "整合后的背景知识文本（直接可用于注入系统的上文）"
 }
 
 规则：
-- 如果全部片段都不相关，background_context 为空字符串
-- background_context 应简洁聚焦，不要原样搬运原文，要做信息压缩
-- 保持事实准确，不添加检索结果中没有的信息
-- scored_fragments 按 relevance 降序排列"""
+- 如果全部片段都不相关，background_context 必须是空字符串；
+- background_context 应是高密度的融合文本，不要简单拼接原文，要进行信息压缩和改写；
+- 保持事实准确，不虚构检索结果中不存在的信息；
+- scored_fragments 按 relevance 降序排列，summary 用简短中文概括该片段的核心信息。
+
+下面是一个示例（仅用于你在脑中参考，不要原样抄写）：
+
+用户查询：
+    "帮我回顾一下这个项目里和 'user-service 超时' 相关的历史问题，避免我这次排查踩坑。"
+
+来自不同记忆源的片段（由系统预先整理好给你）：
+- [graph] 片段 0：图谱中存在三元组 [user-service, HAS_INCIDENT, 2024-01-15-timeout]，备注为 "上次因为下游 payment-service 慢导致整体超时"。
+- [skill] 片段 1：技能库中有一条技能，其 intent 为 "排查 user-service 超时问题"，tool_chain 包含查看指标、检查下游依赖、回滚版本等步骤。
+- [sensory] 片段 2：最近一次对话中，用户说 "上次你让我先看 gateway 的 QPS 再看 user-service 的错误率，这次是不是也类似？"。
+
+期望的 JSON 输出示例：
+{
+    "scored_fragments": [
+        {"source": "skill", "index": 1, "relevance": 0.95, "summary": "历史上专门用于排查 user-service 超时问题的多步排查技能，可直接复用其检查顺序。"},
+        {"source": "graph", "index": 0, "relevance": 0.85, "summary": "图谱记录表明 2024-01-15 的超时主要由下游 payment-service 变慢引起。"},
+        {"source": "sensory", "index": 2, "relevance": 0.65, "summary": "最近一次会话中用户提到曾按 gateway→user-service 的顺序排查超时。"}
+    ],
+    "kept_count": 3,
+    "dropped_count": 0,
+    "background_context": "历史信息显示：user-service 的超时曾与 payment-service 性能问题高度相关，并且你之前已经有一套成熟的排查技能（包含查看网关 QPS、user-service 错误率以及下游依赖状态等步骤）。建议本次排查优先复用该技能的步骤顺序，并重点关注 payment-service 与网关流量情况，以避免重复踩入相同故障模式。"
+}
+"""
 
 
 class SynthesizerAgent(BaseAgent):

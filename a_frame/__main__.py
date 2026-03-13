@@ -7,6 +7,9 @@
 
 import argparse
 import sys
+from pathlib import Path
+
+curr_dir = Path(__file__).parent
 
 
 def main():
