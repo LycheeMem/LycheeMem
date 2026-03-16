@@ -1,11 +1,10 @@
-"""
-程序记忆 / 技能库。
+"""程序记忆 / 技能库。
 
 Key = 任务意图 embedding
-Value = 成功的工具调用序列（JSON）
+Value = 技能说明文档（Markdown）
 
 开发阶段：内存字典 + numpy cosine similarity
-生产阶段：Qdrant
+生产阶段：向量数据库（可替换实现）
 """
 
 from __future__ import annotations
@@ -25,7 +24,7 @@ class SkillEntry:
     id: str
     intent: str                    # 任务意图描述
     embedding: list[float]         # 意图的向量表示
-    tool_chain: list[dict[str, Any]]  # 工具调用序列
+    doc_markdown: str              # 技能说明（Markdown）
     metadata: dict[str, Any] = field(default_factory=dict)
     success_count: int = 0         # 成功使用次数
     last_used: str | None = None   # 最后使用时间 (ISO 格式)
@@ -44,7 +43,7 @@ class InMemorySkillStore(BaseMemoryStore):
                 id=item.get("id", str(uuid.uuid4())),
                 intent=item["intent"],
                 embedding=item["embedding"],
-                tool_chain=item["tool_chain"],
+                doc_markdown=item["doc_markdown"],
                 metadata=item.get("metadata", {}),
                 success_count=item.get("success_count", 0),
                 last_used=item.get("last_used"),
@@ -77,7 +76,7 @@ class InMemorySkillStore(BaseMemoryStore):
             {
                 "id": s.id,
                 "intent": s.intent,
-                "tool_chain": s.tool_chain,
+                "doc_markdown": s.doc_markdown,
                 "score": score,
                 "metadata": s.metadata,
                 "success_count": s.success_count,
@@ -93,7 +92,7 @@ class InMemorySkillStore(BaseMemoryStore):
     def get_all(self) -> list[dict[str, Any]]:
         return [
             {
-                "id": s.id, "intent": s.intent, "tool_chain": s.tool_chain,
+                "id": s.id, "intent": s.intent, "doc_markdown": s.doc_markdown,
                 "metadata": s.metadata, "success_count": s.success_count,
                 "last_used": s.last_used, "conditions": s.conditions,
             }

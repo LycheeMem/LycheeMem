@@ -55,6 +55,18 @@ OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini
 ```
 
+技能库向量存储后端（可选）：
+
+```bash
+# 默认：单文件落盘（无需额外依赖）
+SKILL_BACKEND=file
+SKILL_FILE_PATH=a_frame_skills.json
+
+# 可选：LanceDB（需要安装 lancedb/pyarrow）
+# SKILL_BACKEND=lancedb
+# LANCEDB_PATH=a_frame_lancedb
+```
+
 ## API 端点
 
 | 端点 | 方法 | 说明 |

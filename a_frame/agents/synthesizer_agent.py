@@ -52,7 +52,7 @@ SYNTHESIS_SYSTEM_PROMPT = """\
 
 来自不同记忆源的片段（由系统预先整理好给你）：
 - [graph] 片段 0：图谱中存在三元组 [user-service, HAS_INCIDENT, 2024-01-15-timeout]，备注为 "上次因为下游 payment-service 慢导致整体超时"。
-- [skill] 片段 1：技能库中有一条技能，其 intent 为 "排查 user-service 超时问题"，tool_chain 包含查看指标、检查下游依赖、回滚版本等步骤。
+- [skill] 片段 1：技能库中有一条技能，其 intent 为 "排查 user-service 超时问题"，包含一份 Markdown 技能文档（步骤、命令、注意事项等）。
 - [sensory] 片段 2：最近一次对话中，用户说 "上次你让我先看 gateway 的 QPS 再看 user-service 的错误率，这次是不是也类似？"。
 
 期望的 JSON 输出示例：
@@ -128,14 +128,14 @@ class SynthesizerAgent(BaseAgent):
 
     @staticmethod
     def _build_reuse_plan(skills: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """从标记了 reusable=True 的技能构建执行计划。"""
+        """从标记了 reusable=True 的技能构建“可复用技能文档列表”。"""
         plan = []
         for skill in skills:
             if skill.get("reusable"):
                 plan.append({
                     "skill_id": skill.get("id", ""),
                     "intent": skill.get("intent", ""),
-                    "tool_chain": skill.get("tool_chain", []),
+                    "doc_markdown": skill.get("doc_markdown", ""),
                     "score": skill.get("score", 0),
                     "conditions": skill.get("conditions", ""),
                 })
@@ -168,9 +168,11 @@ class SynthesizerAgent(BaseAgent):
         if skills:
             lines = ["[技能库]"]
             for i, skill in enumerate(skills, 1):
+                doc = str(skill.get("doc_markdown", ""))
+                doc_preview = doc.replace("\n", " ").strip()[:200]
                 lines.append(
                     f"  技能{i}: 意图={skill.get('intent', '?')}, "
-                    f"命令链={json.dumps(skill.get('tool_chain', []), ensure_ascii=False)[:200]}"
+                    f"文档={doc_preview}"
                 )
             sections.append("\n".join(lines))
 

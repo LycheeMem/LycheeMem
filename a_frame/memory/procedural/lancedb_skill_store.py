@@ -36,7 +36,7 @@ class LanceDBSkillStore(BaseMemoryStore):
             schema = pa.schema([
                 pa.field("id", pa.utf8()),
                 pa.field("intent", pa.utf8()),
-                pa.field("tool_chain", pa.utf8()),       # JSON 序列化
+                pa.field("doc_markdown", pa.utf8()),     # Markdown 文档
                 pa.field("metadata", pa.utf8()),          # JSON 序列化
                 pa.field("vector", pa.list_(pa.float32(), self._embedding_dim)),
             ])
@@ -46,14 +46,14 @@ class LanceDBSkillStore(BaseMemoryStore):
         return self._db.open_table(self.TABLE_NAME)
 
     def add(self, items: list[dict[str, Any]]) -> None:
-        """添加技能条目。每个 item 需包含 intent, embedding, tool_chain。"""
+        """添加技能条目。每个 item 需包含 intent, embedding, doc_markdown。"""
         import json
         rows = []
         for item in items:
             rows.append({
                 "id": item.get("id", str(uuid.uuid4())),
                 "intent": item["intent"],
-                "tool_chain": json.dumps(item["tool_chain"], ensure_ascii=False),
+                "doc_markdown": item["doc_markdown"],
                 "metadata": json.dumps(item.get("metadata", {}), ensure_ascii=False),
                 "vector": item["embedding"],
             })
@@ -83,7 +83,7 @@ class LanceDBSkillStore(BaseMemoryStore):
             {
                 "id": r["id"],
                 "intent": r["intent"],
-                "tool_chain": json.loads(r["tool_chain"]),
+                "doc_markdown": r.get("doc_markdown", ""),
                 "score": 1.0 - r.get("_distance", 0.0),  # LanceDB 返回 L2 距离
                 "metadata": json.loads(r.get("metadata", "{}")),
             }
@@ -106,7 +106,7 @@ class LanceDBSkillStore(BaseMemoryStore):
             {
                 "id": row["id"],
                 "intent": row["intent"],
-                "tool_chain": json.loads(row["tool_chain"]),
+                "doc_markdown": row.get("doc_markdown", ""),
                 "metadata": json.loads(row.get("metadata", "{}")),
             }
             for _, row in rows.iterrows()

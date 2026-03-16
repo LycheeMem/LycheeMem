@@ -27,11 +27,13 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from a_frame.api.models import (
     ChatRequest,
@@ -82,6 +84,23 @@ def create_app(pipeline=None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # ── Demo UI (optional) ──
+    demo_dir = Path(__file__).resolve().parents[1] / "demo"
+    if demo_dir.exists():
+        app.mount(
+            "/demo-static",
+            StaticFiles(directory=str(demo_dir), html=False),
+            name="demo-static",
+        )
+
+        @app.get("/demo")
+        async def demo_index():
+            return FileResponse(str(demo_dir / "index.html"))
+
+        @app.get("/demo/")
+        async def demo_index_slash():
+            return RedirectResponse(url="/demo")
 
     # ── 中间件：trace_id 注入 ──
 

@@ -24,7 +24,11 @@ class FakeLLM:
 
         if "路由分析" in system_msg or "need_graph" in system_msg:
             return '{"need_graph": false, "need_skills": false, "need_sensory": false, "reasoning": "test"}'
-        if "信息整合" in system_msg:
+        if (
+            "记忆整合与法官" in system_msg
+            or "Memory Synthesizer" in system_msg
+            or "scored_fragments" in system_msg
+        ):
             return '{"kept_count": 0, "dropped_count": 0, "background_context": ""}'
         if "压缩" in system_msg or "状态交接" in system_msg:
             return "## Summary\ntest"

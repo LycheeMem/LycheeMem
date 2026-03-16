@@ -5,7 +5,7 @@ Pydantic Settings 配置。
 所有字段扁平定义在 Settings 中，直接映射环境变量。
 """
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     # ─── 存储后端选择 ───
     session_backend: str = "sqlite"   # "memory" | "sqlite"
     graph_backend: str = "neo4j"     # "memory" | "neo4j"
-    skill_backend: str = "lancedb"    # "memory" | "lancedb"
+    skill_backend: str = "file"       # "memory" | "file" | "lancedb"
 
     # ─── SQLite (会话持久化) ───
     sqlite_db_path: str = "a_frame_sessions.db"
@@ -45,16 +45,19 @@ class Settings(BaseSettings):
     # ─── Neo4j (图谱持久化) ───
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
-    neo4j_password: str = ""
+    neo4j_password: str = "Lejda-EpJh266.k"
 
     # ─── LanceDB (向量持久化) ───
     lancedb_path: str = "a_frame_lancedb"
+
+    # ─── File Skill Store (轻量级向量持久化) ───
+    skill_file_path: str = "a_frame_skills.json"
 
     # ─── API ───
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = SettingsConfigDict(extra='ignore', env_file='.env', env_file_encoding='utf-8')
 
 
 settings = Settings()

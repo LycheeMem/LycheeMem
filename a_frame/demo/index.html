@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Console — Memory System</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/demo-static/style.css">
+</head>
+<body>
+  <!-- ═══ Header ═══ -->
+  <header id="app-header">
+    <div class="header-left">
+      <div class="logo">
+        <svg width="28" height="28" viewBox="0 0 28 28"><circle cx="14" cy="14" r="12" fill="none" stroke="url(#lg)" stroke-width="2.5"/><path d="M9 14l3 3 7-7" stroke="url(#lg)" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><defs><linearGradient id="lg" x1="0" y1="0" x2="28" y2="28"><stop stop-color="#6366f1"/><stop offset="1" stop-color="#06b6d4"/></linearGradient></defs></svg>
+        <span class="logo-text">记忆系统<span class="logo-accent">Console</span></span>
+      </div>
+    </div>
+    <div class="header-center">
+      <div class="session-selector">
+        <select id="session-select"><option value="">新建会话</option></select>
+        <button id="btn-new-session" class="icon-btn" title="新建会话">＋</button>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="status-chips" id="status-chips">
+        <span class="chip" id="chip-sessions" title="会话数">📋 0</span>
+        <span class="chip" id="chip-graph" title="图谱节点">🔵 0</span>
+        <span class="chip" id="chip-skills" title="技能数">⚡ 0</span>
+        <span class="chip" id="chip-sensory" title="感觉缓冲">👁 0</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ═══ Main Layout ═══ -->
+  <main id="app-main">
+    <!-- ─── Left: Chat ─── -->
+    <section id="panel-chat" class="panel">
+      <div class="panel-header">
+        <h2>💬 对话</h2>
+        <span class="session-id-label" id="current-session-label"></span>
+      </div>
+      <div id="chat-messages" class="chat-messages"></div>
+      <div id="agent-timeline" class="agent-timeline hidden"></div>
+      <form id="chat-form" class="chat-input-area">
+        <textarea id="chat-input" placeholder="输入消息… (Enter 发送, Shift+Enter 换行)" rows="1"></textarea>
+        <button type="submit" id="btn-send" class="send-btn" title="发送">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M22 2L11 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </form>
+    </section>
+
+    <!-- ─── Center Top: Graph ─── -->
+    <section id="panel-graph" class="panel">
+      <div class="panel-header">
+        <h2>🔗 知识图谱</h2>
+        <div class="panel-actions">
+          <button id="btn-graph-refresh" class="icon-btn" title="刷新图谱">↻</button>
+          <button id="btn-graph-fit" class="icon-btn" title="适配视图">⊞</button>
+        </div>
+      </div>
+      <div id="graph-container" class="graph-container">
+        <canvas id="graph-canvas"></canvas>
+        <div id="graph-tooltip" class="graph-tooltip hidden"></div>
+        <div id="graph-empty" class="empty-state">
+          <span>暂无图谱数据</span>
+          <span class="sub">对话后知识实体将自动提取并展示</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─── Right: Memory Panels ─── -->
+    <section id="panel-memory" class="panel">
+      <div class="panel-header">
+        <h2>🧠 记忆状态</h2>
+      </div>
+      <div class="memory-tabs">
+        <button class="tab active" data-tab="tab-agents">Agents</button>
+        <button class="tab" data-tab="tab-working">工作记忆</button>
+        <button class="tab" data-tab="tab-graph-mem">图谱记忆</button>
+        <button class="tab" data-tab="tab-skills">技能记忆</button>
+        <button class="tab" data-tab="tab-sensory">感觉记忆</button>
+      </div>
+
+      <!-- Agents Tab -->
+      <div id="tab-agents" class="tab-content active">
+        <div class="agents-grid" id="agents-grid">
+          <div class="agent-card" data-agent="wm_manager">
+            <div class="agent-icon">🧩</div>
+            <div class="agent-name">WM Manager</div>
+            <div class="agent-status idle">待机</div>
+          </div>
+          <div class="agent-card" data-agent="router">
+            <div class="agent-icon">🔀</div>
+            <div class="agent-name">Router</div>
+            <div class="agent-status idle">待机</div>
+          </div>
+          <div class="agent-card" data-agent="search_coordinator">
+            <div class="agent-icon">🔍</div>
+            <div class="agent-name">Search</div>
+            <div class="agent-status idle">待机</div>
+          </div>
+          <div class="agent-card" data-agent="synthesizer">
+            <div class="agent-icon">🔬</div>
+            <div class="agent-name">Synthesizer</div>
+            <div class="agent-status idle">待机</div>
+          </div>
+          <div class="agent-card" data-agent="reasoner">
+            <div class="agent-icon">💡</div>
+            <div class="agent-name">Reasoner</div>
+            <div class="agent-status idle">待机</div>
+          </div>
+          <div class="agent-card" data-agent="consolidator">
+            <div class="agent-icon">📦</div>
+            <div class="agent-name">Consolidator</div>
+            <div class="agent-status idle">待机</div>
+          </div>
+        </div>
+        <div id="route-info" class="route-info hidden">
+          <div class="route-title">路由决策</div>
+          <div id="route-detail" class="route-detail"></div>
+        </div>
+      </div>
+
+      <!-- Working Memory Tab -->
+      <div id="tab-working" class="tab-content">
+        <div class="wm-stats" id="wm-stats">
+          <div class="stat-bar">
+            <div class="stat-label">Token 使用量</div>
+            <div class="progress-bar"><div class="progress-fill" id="wm-progress" style="width:0%"></div></div>
+            <div class="stat-value" id="wm-tokens">0 / 128,000</div>
+          </div>
+        </div>
+        <div id="wm-turns" class="memory-list"></div>
+      </div>
+
+      <!-- Graph Memory Tab -->
+      <div id="tab-graph-mem" class="tab-content">
+        <div id="graph-mem-list" class="memory-list">
+          <div class="empty-hint">对话后图谱记忆将在此展示</div>
+        </div>
+      </div>
+
+      <!-- Skills Tab -->
+      <div id="tab-skills" class="tab-content">
+        <div id="skills-list" class="memory-list">
+          <div class="empty-hint">技能记忆将在此展示</div>
+        </div>
+      </div>
+
+      <!-- Sensory Tab -->
+      <div id="tab-sensory" class="tab-content">
+        <div id="sensory-list" class="memory-list">
+          <div class="empty-hint">感觉缓冲区内容将在此展示</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script src="/demo-static/app.js"></script>
+</body>
+</html>

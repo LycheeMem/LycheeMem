@@ -24,7 +24,7 @@ REASONING_SYSTEM_PROMPT = """\
 
 规则：
 - 优先使用记忆中的事实信息回答
-- 如果有可复用的技能执行计划，优先按计划执行
+- 如果有可复用的技能文档（Markdown），优先参考其中的步骤、命令与注意事项
 - 如果记忆信息不足以回答，可以基于通用知识回答，但需说明
 - 保持回答简洁聚焦
 - 不要虚构不存在的事实"""
@@ -92,16 +92,24 @@ class ReasoningAgent(BaseAgent):
 
     @staticmethod
     def _format_skill_plan(plan: list[dict] | None) -> str:
-        """将可复用技能计划格式化为 system prompt 片段。"""
+        """将可复用技能文档列表格式化为 system prompt 片段。"""
         if not plan:
             return ""
-        import json
-        lines = ["以下是可直接复用的技能执行计划："]
+        lines = ["以下是可复用的技能文档（Markdown），可作为操作指南："]
         for i, step in enumerate(plan, 1):
-            lines.append(
-                f"  计划{i}: 意图={step.get('intent', '?')}, "
-                f"命令链={json.dumps(step.get('tool_chain', []), ensure_ascii=False)[:300]}"
-            )
-            if step.get("conditions"):
-                lines.append(f"    适用条件: {step['conditions']}")
+            intent = step.get("intent", "?")
+            skill_id = step.get("skill_id", "")
+            score = step.get("score", 0)
+            conditions = step.get("conditions", "")
+            doc = step.get("doc_markdown", "")
+            header = f"\n---\n技能{i}: {intent}"
+            if skill_id:
+                header += f" (id={skill_id})"
+            if score:
+                header += f" | score={score:.2f}" if isinstance(score, (int, float)) else ""
+            lines.append(header)
+            if conditions:
+                lines.append(f"适用条件：{conditions}")
+            if doc:
+                lines.append(doc)
         return "\n".join(lines)

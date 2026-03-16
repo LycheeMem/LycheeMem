@@ -66,7 +66,7 @@ class TestSearchCoordinator:
         self.skill_store.add([{
             "intent": "写一个爬虫",
             "embedding": [0.1] * 8,
-            "tool_chain": [{"step": 1, "action": "requests.get"}],
+            "doc_markdown": "# 写一个爬虫\n\n1. requests.get\n",
         }])
 
         route = {"need_graph": False, "need_skills": True, "need_sensory": False}

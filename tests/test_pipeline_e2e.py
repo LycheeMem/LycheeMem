@@ -36,7 +36,11 @@ class FakeLLMForPipeline:
             return '{"need_graph": false, "need_skills": false, "need_sensory": false, "reasoning": "简单对话"}'
 
         # 整合器（放在压缩器之前，因为 SYNTHESIS_SYSTEM_PROMPT 包含 "压缩" 子串）
-        if "信息整合" in system_msg:
+        if (
+            "记忆整合与法官" in system_msg
+            or "Memory Synthesizer" in system_msg
+            or "scored_fragments" in system_msg
+        ):
             self.call_log.append("synthesizer")
             return '{"kept_count": 1, "dropped_count": 0, "background_context": "张三在 Google 工作。"}'
 

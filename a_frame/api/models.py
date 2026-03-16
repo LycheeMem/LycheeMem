@@ -47,7 +47,7 @@ class GraphResponse(BaseModel):
 class SkillItem(BaseModel):
     id: str
     intent: str = ""
-    tool_chain: list[str] = []
+    doc_markdown: str = ""
     metadata: dict[str, Any] = {}
 
 

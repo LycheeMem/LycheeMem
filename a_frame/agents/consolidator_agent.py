@@ -25,8 +25,8 @@ CONSOLIDATION_SYSTEM_PROMPT = """\
 需要关注两类信息：
 1. 图谱事实 (Graph Facts)：
      - 用户偏好、项目属性、稳定的客观事实等，可以表示为 [主体, 关系, 客体] 的三元组；
-     - 本系统会在后续步骤中调用专门的实体抽取器来生成具体三元组，
-         因此你只需判断「是否存在值得抽取的事实」，不必直接输出三元组。
+     - 本系统会在后续步骤中调用专门的实体识别/三元组生成组件来产出具体三元组，
+         因此你只需判断「是否存在值得沉淀的事实」，不必直接输出三元组。
 2. 程序技能 (Procedural Skills)：
      - 如果在本次对话中出现了 **成功的多步工具调用/操作流程**，
          请将其提炼为可复用的“工作流模板”。
@@ -36,9 +36,7 @@ CONSOLIDATION_SYSTEM_PROMPT = """\
     "new_skills": [
         {
             "intent": "任务意图的一句话描述",
-            "tool_chain": [
-                {"step": 1, "action": "做了什么操作", "details": "涉及到的关键参数/工具/文件等"}
-            ]
+            "doc_markdown": "# 技能标题\\n\\n用 Markdown 写一份可复用的操作说明文档（可包含步骤、命令、注意事项、输入输出等）"
         }
     ],
     "should_extract_entities": true/false
@@ -46,9 +44,16 @@ CONSOLIDATION_SYSTEM_PROMPT = """\
 
 说明：
 - 如果对话没有值得保存的复杂操作模式，`new_skills` 应为一个空数组；
-- 当你认为对话中包含稳定的用户偏好/事实/关系，适合写入知识图谱时，
+- 当你认为对话中包含稳定的用户偏好/事实/关系，适合写入图谱存储时，
     请将 `should_extract_entities` 设为 true；否则为 false；
 - 忽略闲聊、重复说法、明显错误尝试等不值得长期保存的内容。
+- **输出必须是严格 JSON**（不要代码块）。注意：JSON 字符串里不能出现裸换行，换行必须写成 `\\n`。
+
+技能文档（doc_markdown）要求：
+- 必须是 Markdown 纯文本，不要输出 JSON/YAML。
+- 建议包含：适用场景、前置条件、步骤（编号列表）、关键命令/代码块、常见错误与排查。
+
+注意：这里的图谱指“关系图谱/长期事实存储”，你不需要在本步骤直接输出三元组。
 
 下面是几个示例（只用于帮助你理解格式与抽取标准，不要原样抄写示例中的中文内容）：
 
@@ -68,11 +73,7 @@ assistant: 我们可以这么做：
     "new_skills": [
         {
             "intent": "对 user-service 执行蓝绿发布到 prod-a 集群",
-            "tool_chain": [
-                {"step": 1, "action": "准备镜像与 Helm 配置", "details": "更新 Helm values，将 user-service 镜像标记为 v2"},
-                {"step": 2, "action": "应用新版本部署", "details": "使用 kubectl apply 部署到 prod-a 集群的部分节点"},
-                {"step": 3, "action": "观测并切流量", "details": "通过 Prometheus 和日志确认稳定后，将全部副本切到 v2"}
-            ]
+            "doc_markdown": "# user-service 蓝绿发布（prod-a）\\n\\n## 适用场景\\n- 需要将 user-service 发布到 prod-a，并先灰度一半节点\\n\\n## 步骤\\n1. 更新 Helm values，将镜像标记为 v2\\n2. `kubectl apply` 部署到部分节点\\n3. 观察 Prometheus 告警与日志，无异常后将全部副本切到 v2\\n"
         }
     ],
     "should_extract_entities": true
@@ -160,13 +161,13 @@ class ConsolidatorAgent(BaseAgent):
         new_skills = analysis.get("new_skills", [])
         for skill in new_skills:
             intent = skill.get("intent", "")
-            tool_chain = skill.get("tool_chain", [])
-            if intent and tool_chain:
+            doc_markdown = skill.get("doc_markdown", "")
+            if intent and doc_markdown:
                 embedding = self.embedder.embed_query(intent)
                 self.skill_store.add([{
                     "intent": intent,
                     "embedding": embedding,
-                    "tool_chain": tool_chain,
+                    "doc_markdown": doc_markdown,
                 }])
                 skills_added += 1
 

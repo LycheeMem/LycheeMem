@@ -47,7 +47,7 @@ class TestSynthesizerAgent:
     def test_format_fragments_skills(self):
         fragments = SynthesizerAgent._format_fragments(
             graph_memories=[],
-            skills=[{"intent": "写爬虫", "tool_chain": [{"step": 1, "action": "get"}]}],
+            skills=[{"intent": "写爬虫", "doc_markdown": "# 写爬虫\n\n1. GET\n"}],
             sensory=[],
         )
         assert "[技能库]" in fragments
@@ -59,7 +59,7 @@ class TestSynthesizerAgent:
                 "anchor": {"node_id": "A"},
                 "subgraph": {"nodes": [], "edges": [{"source": "A", "target": "B", "relation": "r"}]},
             }],
-            skills=[{"intent": "t", "tool_chain": []}],
+            skills=[{"intent": "t", "doc_markdown": "# t\n"}],
             sensory=[{"content": "s", "modality": "text", "timestamp": "now"}],
         )
         assert "[知识图谱]" in fragments

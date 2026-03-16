@@ -171,7 +171,7 @@ class TestSkillReuse:
     def test_skill_entry_has_new_fields(self):
         """SkillEntry 应有 success_count, last_used, conditions。"""
         entry = SkillEntry(
-            id="s1", intent="test", embedding=[0.1], tool_chain=[],
+            id="s1", intent="test", embedding=[0.1], doc_markdown="# test\n",
             success_count=5, last_used="2024-01-01", conditions="当用户要求时",
         )
         assert entry.success_count == 5
@@ -181,7 +181,7 @@ class TestSkillReuse:
     def test_skill_store_record_usage(self):
         """record_usage 应增加 success_count。"""
         store = InMemorySkillStore()
-        store.add([{"id": "s1", "intent": "test", "embedding": [0.1], "tool_chain": []}])
+        store.add([{"id": "s1", "intent": "test", "embedding": [0.1], "doc_markdown": "# test\n"}])
         store.record_usage("s1")
         store.record_usage("s1")
         all_skills = store.get_all()
@@ -193,7 +193,7 @@ class TestSkillReuse:
         store = InMemorySkillStore()
         store.add([{
             "id": "s1", "intent": "test", "embedding": [0.1] * 8,
-            "tool_chain": [], "success_count": 3, "conditions": "任何场景",
+            "doc_markdown": "# test\n", "success_count": 3, "conditions": "任何场景",
         }])
         results = store.search("test", top_k=5, query_embedding=[0.1] * 8)
         assert results[0]["success_count"] == 3
@@ -206,7 +206,7 @@ class TestSkillReuse:
         store = InMemorySkillStore()
         store.add([{
             "id": "s1", "intent": "test", "embedding": [0.1] * 8,
-            "tool_chain": [{"step": "run"}],
+            "doc_markdown": "# test\n\n1. run\n",
         }])
         sc = SearchCoordinator(
             llm=llm, embedder=embedder,
@@ -225,9 +225,9 @@ class TestSkillReuse:
         result = synth.run(
             user_query="测试",
             retrieved_skills=[
-                {"id": "s1", "intent": "跑测试", "tool_chain": [{"step": "pytest"}],
+                {"id": "s1", "intent": "跑测试", "doc_markdown": "# 跑测试\n\n- `pytest -q`\n",
                  "score": 0.95, "reusable": True, "conditions": ""},
-                {"id": "s2", "intent": "其他", "tool_chain": [],
+                {"id": "s2", "intent": "其他", "doc_markdown": "# 其他\n",
                  "score": 0.3, "reusable": False, "conditions": ""},
             ],
         )
@@ -244,7 +244,7 @@ class TestSkillReuse:
             skill_reuse_plan=[{
                 "skill_id": "s1",
                 "intent": "跑测试",
-                "tool_chain": [{"step": "pytest"}],
+                "doc_markdown": "# 跑测试\n\n- `pytest -q`\n",
                 "score": 0.95,
                 "conditions": "",
             }],
@@ -427,8 +427,8 @@ class TestThreeStepSynthesizer:
     def test_build_reuse_plan_static(self):
         """_build_reuse_plan 应只包含 reusable=True 的技能。"""
         plan = SynthesizerAgent._build_reuse_plan([
-            {"id": "s1", "intent": "a", "tool_chain": [], "score": 0.9, "reusable": True, "conditions": ""},
-            {"id": "s2", "intent": "b", "tool_chain": [], "score": 0.3, "reusable": False, "conditions": ""},
+            {"id": "s1", "intent": "a", "doc_markdown": "# a", "score": 0.9, "reusable": True, "conditions": ""},
+            {"id": "s2", "intent": "b", "doc_markdown": "# b", "score": 0.3, "reusable": False, "conditions": ""},
         ])
         assert len(plan) == 1
         assert plan[0]["skill_id"] == "s1"

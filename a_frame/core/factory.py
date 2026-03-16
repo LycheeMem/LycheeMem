@@ -48,6 +48,9 @@ def _create_graph_store(settings=None):
 def _create_skill_store(settings=None, embedding_dim: int = 768):
     """根据配置创建技能库。"""
     backend = getattr(settings, "skill_backend", "memory") if settings else "memory"
+    if backend == "file":
+        from a_frame.memory.procedural.file_skill_store import FileSkillStore
+        return FileSkillStore(file_path=settings.skill_file_path)
     if backend == "lancedb":
         from a_frame.memory.procedural.lancedb_skill_store import LanceDBSkillStore
         return LanceDBSkillStore(

@@ -18,7 +18,7 @@ class FakeLLMConsolidate:
 ]"""
         return """{
   "new_skills": [
-    {"intent": "用 Python 爬取网页", "tool_chain": [{"step": 1, "action": "requests.get", "details": "获取网页内容"}]}
+        {"intent": "用 Python 爬取网页", "doc_markdown": "# 用 Python 爬取网页\\n\\n## 步骤\\n1. 使用 requests 获取网页内容\\n2. 解析 HTML 并提取所需信息\\n"}
   ],
   "should_extract_entities": true
 }"""
