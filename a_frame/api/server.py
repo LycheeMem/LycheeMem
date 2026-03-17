@@ -38,6 +38,7 @@ from a_frame.api.models import (
     ChatResponse,
     ConsolidatorTrace,
     DeleteResponse,
+    FactEdgesResponse,
     GraphEdgeAddRequest,
     GraphMemoryHit,
     GraphNodeAddRequest,
@@ -85,7 +86,7 @@ def create_app(pipeline=None) -> FastAPI:
     # ── CORS ──
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],           # 生产环境建议改为具体域名
+        allow_origins=["*"],  # 生产环境建议改为具体域名
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -149,26 +150,29 @@ def create_app(pipeline=None) -> FastAPI:
 
             result = pipeline.run(user_query=req.message, session_id=req.session_id)
 
-            memories = (
-                len(result.get("retrieved_graph_memories", []))
-                + len(result.get("retrieved_skills", []))
+            memories = len(result.get("retrieved_graph_memories", [])) + len(
+                result.get("retrieved_skills", [])
             )
             if memories:
                 yield _sse({"type": "status", "content": "retrieved"})
 
-            yield _sse({
-                "type": "answer",
-                "content": result.get("final_response", ""),
-            })
+            yield _sse(
+                {
+                    "type": "answer",
+                    "content": result.get("final_response", ""),
+                }
+            )
 
             trace = _build_trace(result)
-            yield _sse({
-                "type": "done",
-                "session_id": req.session_id,
-                "memories_retrieved": memories,
-                "wm_token_usage": result.get("wm_token_usage", 0),
-                "trace": trace.model_dump(),
-            })
+            yield _sse(
+                {
+                    "type": "done",
+                    "session_id": req.session_id,
+                    "memories_retrieved": memories,
+                    "wm_token_usage": result.get("wm_token_usage", 0),
+                    "trace": trace.model_dump(),
+                }
+            )
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -201,9 +205,7 @@ def create_app(pipeline=None) -> FastAPI:
         skill_results: list[dict[str, Any]] = []
         if req.include_skills:
             q_emb = sc.embedder.embed_query(req.query)
-            skill_results = sc.skill_store.search(
-                req.query, top_k=req.top_k, query_embedding=q_emb
-            )
+            skill_results = sc.skill_store.search(req.query, top_k=req.top_k, query_embedding=q_emb)
 
         total = len(graph_results) + len(skill_results)
         return MemorySearchResponse(
@@ -218,14 +220,24 @@ def create_app(pipeline=None) -> FastAPI:
     @app.get("/memory/graph", response_model=GraphResponse)
     async def get_graph():
         pipeline = _get_pipeline(app)
+        graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
+        if graphiti is not None and hasattr(graphiti, "export_semantic_graph"):
+            try:
+                data = graphiti.export_semantic_graph()
+                return GraphResponse(nodes=data.get("nodes", []), edges=data.get("edges", []))
+            except Exception:
+                logger.warning(
+                    "Graphiti export_semantic_graph failed; falling back to legacy graph_store",
+                    exc_info=True,
+                )
+
         graph_store = pipeline.search_coordinator.graph_store
         nodes = graph_store.get_all()
         if hasattr(graph_store, "get_all_edges"):
             edges = graph_store.get_all_edges()
         else:
             edges = [
-                {"source": u, "target": v, **d}
-                for u, v, d in graph_store.graph.edges(data=True)
+                {"source": u, "target": v, **d} for u, v, d in graph_store.graph.edges(data=True)
             ]
         return GraphResponse(nodes=nodes, edges=edges)
 
@@ -236,6 +248,125 @@ def create_app(pipeline=None) -> FastAPI:
     ):
         """按关键词搜索图谱节点，返回处国子图。"""
         pipeline = _get_pipeline(app)
+
+        graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
+
+        def _cosine(a: list[float], b: list[float]) -> float:
+            if not a or not b or len(a) != len(b):
+                return 0.0
+            dot = 0.0
+            na = 0.0
+            nb = 0.0
+            for x, y in zip(a, b):
+                dot += float(x) * float(y)
+                na += float(x) * float(x)
+                nb += float(y) * float(y)
+            if na <= 0.0 or nb <= 0.0:
+                return 0.0
+            return dot / ((na**0.5) * (nb**0.5))
+
+        store = getattr(graphiti, "store", None) if graphiti is not None else None
+        if store is not None and hasattr(store, "export_semantic_subgraph"):
+            try:
+                sc = pipeline.search_coordinator
+
+                # 1) candidate entity ids (hybrid: fulltext first, then embedding scan best-effort)
+                candidate_ids: list[str] = []
+                seen: set[str] = set()
+
+                try:
+                    ft = store.fulltext_search_entities(query=q, limit=max(50, top_k * 5))
+                except Exception:
+                    ft = []
+
+                for r in ft:
+                    eid = str(r.get("entity_id") or "").strip()
+                    if eid and eid not in seen:
+                        candidate_ids.append(eid)
+                        seen.add(eid)
+
+                try:
+                    q_emb = sc.embedder.embed_query(q)
+                    scanned = store.scan_entities_with_embeddings(limit=2000)
+                    scored: list[tuple[float, str]] = []
+                    for r in scanned:
+                        eid = str(r.get("entity_id") or "").strip()
+                        emb = r.get("embedding")
+                        if not eid or not isinstance(emb, list):
+                            continue
+                        scored.append((_cosine(q_emb, emb), eid))
+                    scored.sort(key=lambda x: x[0], reverse=True)
+                    for score, eid in scored:
+                        if score < 0.75:
+                            break
+                        if eid not in seen:
+                            candidate_ids.append(eid)
+                            seen.add(eid)
+                except Exception:
+                    pass
+
+                anchor_ids = candidate_ids[:top_k]
+                data = store.export_semantic_subgraph(
+                    entity_ids=anchor_ids,
+                    edge_limit=min(500, max(50, top_k * 50)),
+                )
+
+                nodes = data.get("nodes", [])
+                edges = data.get("edges", [])
+
+                # Mark anchors (non-breaking extra metadata)
+                for n in nodes:
+                    try:
+                        nid = str(n.get("id") or "").strip()
+                        if nid and nid in set(anchor_ids):
+                            props = n.get("properties")
+                            if not isinstance(props, dict):
+                                props = {}
+                                n["properties"] = props
+                            props["is_anchor"] = True
+                    except Exception:
+                        continue
+
+                return GraphResponse(nodes=nodes, edges=edges)
+            except Exception:
+                logger.warning(
+                    "Graphiti native graph search failed; falling back to export_semantic_graph",
+                    exc_info=True,
+                )
+
+        if graphiti is not None and hasattr(graphiti, "export_semantic_graph"):
+            try:
+                data = graphiti.export_semantic_graph()
+                nodes_all = data.get("nodes", [])
+                edges_all = data.get("edges", [])
+                q_lower = q.lower()
+
+                matched = [
+                    n
+                    for n in nodes_all
+                    if q_lower in str(n.get("name") or "").lower()
+                    or q_lower in str(n.get("id") or n.get("node_id") or "").lower()
+                ]
+                matched = matched[:top_k]
+
+                node_ids = {
+                    str(n.get("id") or n.get("node_id") or "")
+                    for n in matched
+                    if (n.get("id") or n.get("node_id"))
+                }
+                edges = [
+                    e
+                    for e in edges_all
+                    if str(e.get("source") or "") in node_ids
+                    or str(e.get("target") or "") in node_ids
+                ]
+                return GraphResponse(nodes=matched, edges=edges)
+            except Exception:
+                logger.warning(
+                    "Graphiti graph search failed; falling back to legacy graph_store",
+                    exc_info=True,
+                )
+
         sc = pipeline.search_coordinator
         graph_store = sc.graph_store
         query_embedding = None
@@ -269,8 +400,12 @@ def create_app(pipeline=None) -> FastAPI:
         """手动添加一条关系边到知识图谱。"""
         pipeline = _get_pipeline(app)
         graph_store = pipeline.search_coordinator.graph_store
-        graph_store.add_edge(req.source, req.target, relation=req.relation, properties=req.properties)
-        return DeleteResponse(message=f"Edge '{req.source}' -{req.relation}-> '{req.target}' added.")
+        graph_store.add_edge(
+            req.source, req.target, relation=req.relation, properties=req.properties
+        )
+        return DeleteResponse(
+            message=f"Edge '{req.source}' -{req.relation}-> '{req.target}' added."
+        )
 
     @app.delete("/memory/graph/nodes/{node_id}", response_model=DeleteResponse)
     async def delete_graph_node(node_id: str):
@@ -351,6 +486,19 @@ def create_app(pipeline=None) -> FastAPI:
     ):
         """按关系类型检索图谱边。"""
         pipeline = _get_pipeline(app)
+
+        graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
+        store = getattr(graphiti, "store", None) if graphiti is not None else None
+        if store is not None and hasattr(store, "search_facts_by_relation"):
+            try:
+                edges = store.search_facts_by_relation(relation=relation, limit=top_k)
+                return {"edges": edges, "total": len(edges)}
+            except Exception:
+                logger.warning(
+                    "Graphiti search_facts_by_relation failed; falling back to legacy graph_store",
+                    exc_info=True,
+                )
+
         graph_store = pipeline.search_coordinator.graph_store
         if hasattr(graph_store, "search_by_relation"):
             edges = graph_store.search_by_relation(relation, top_k=top_k)
@@ -366,12 +514,146 @@ def create_app(pipeline=None) -> FastAPI:
     ):
         """按时间范围检索图谱边。"""
         pipeline = _get_pipeline(app)
+
+        graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
+        store = getattr(graphiti, "store", None) if graphiti is not None else None
+        if store is not None and hasattr(store, "search_facts_by_time"):
+            try:
+                edges = store.search_facts_by_time(since=since, until=until, limit=top_k)
+                return {"edges": edges, "total": len(edges)}
+            except Exception:
+                logger.warning(
+                    "Graphiti search_facts_by_time failed; falling back to legacy graph_store",
+                    exc_info=True,
+                )
+
         graph_store = pipeline.search_coordinator.graph_store
         if hasattr(graph_store, "search_by_time"):
             edges = graph_store.search_by_time(since=since, until=until, top_k=top_k)
         else:
             edges = []
         return {"edges": edges, "total": len(edges)}
+
+    # ── Graph: Facts view (PR4) ──
+
+    def _fact_row_to_edge(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "source": str(row.get("source") or row.get("subject_entity_id") or ""),
+            "target": str(row.get("target") or row.get("object_entity_id") or ""),
+            "relation": str(row.get("relation") or row.get("relation_type") or ""),
+            "confidence": float(row.get("confidence") or 1.0),
+            "fact": str(row.get("fact") or row.get("fact_text") or ""),
+            "evidence": str(row.get("evidence") or row.get("evidence_text") or ""),
+            "source_session": str(row.get("source_session") or ""),
+            "timestamp": str(
+                row.get("timestamp")
+                or row.get("t_valid_from")
+                or row.get("t_created")
+                or row.get("t_ref")
+                or ""
+            ),
+            "t_valid_from": str(row.get("t_valid_from") or ""),
+            "t_valid_to": str(row.get("t_valid_to") or ""),
+            "t_tx_created": str(row.get("t_tx_created") or ""),
+            "t_tx_expired": str(row.get("t_tx_expired") or ""),
+            "episode_ids": row.get("episode_ids")
+            if isinstance(row.get("episode_ids"), list)
+            else [],
+        }
+
+    @app.get("/memory/graph/facts/active", response_model=FactEdgesResponse)
+    async def list_active_facts(
+        subject: str = Query(..., min_length=1, description="subject_entity_id"),
+        relation: str | None = Query(default=None, description="relation_type (optional)"),
+        top_k: int = Query(default=200, ge=1, le=1000),
+    ):
+        """查看当前有效事实（Graphiti 优先）。"""
+
+        pipeline = _get_pipeline(app)
+        graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
+        store = getattr(graphiti, "store", None) if graphiti is not None else None
+
+        if store is not None:
+            try:
+                if relation and hasattr(store, "list_active_facts_for_subject_relation"):
+                    rows = store.list_active_facts_for_subject_relation(
+                        subject_entity_id=subject,
+                        relation_type=str(relation).strip().upper(),
+                        limit=top_k,
+                    )
+                elif hasattr(store, "list_active_facts_for_subject"):
+                    rows = store.list_active_facts_for_subject(subject_entity_id=subject, limit=top_k)
+                else:
+                    rows = []
+
+                edges = [_fact_row_to_edge(dict(r)) for r in (rows or [])]
+                return {"edges": edges, "total": len(edges)}
+            except Exception:
+                logger.warning(
+                    "Graphiti list_active_facts failed; falling back to legacy graph_store",
+                    exc_info=True,
+                )
+
+        # Legacy fallback: best-effort filter from current graph edges (no versioning).
+        graph_store = pipeline.search_coordinator.graph_store
+        if hasattr(graph_store, "get_all_edges"):
+            all_edges = graph_store.get_all_edges()
+        else:
+            all_edges = [
+                {"source": u, "target": v, **d} for u, v, d in graph_store.graph.edges(data=True)
+            ]
+
+        rel_upper = str(relation).strip().upper() if relation else None
+        edges = []
+        for e in all_edges:
+            if str(e.get("source") or "") != subject:
+                continue
+            if rel_upper and str(e.get("relation") or "").strip().upper() != rel_upper:
+                continue
+            edges.append(_fact_row_to_edge(e))
+            if len(edges) >= top_k:
+                break
+        return {"edges": edges, "total": len(edges)}
+
+    @app.get("/memory/graph/facts/history", response_model=FactEdgesResponse)
+    async def list_fact_history(
+        subject: str = Query(..., min_length=1, description="subject_entity_id"),
+        relation: str | None = Query(default=None, description="relation_type (optional)"),
+        top_k: int = Query(default=200, ge=1, le=1000),
+    ):
+        """查看事实历史版本（含已失效）。
+
+        Notes:
+        - Graphiti store：返回 Fact-node 的版本历史（t_valid_* + t_tx_*）。
+        - Legacy triples：没有事实版本概念，返回空列表。
+        """
+
+        pipeline = _get_pipeline(app)
+        graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
+        store = getattr(graphiti, "store", None) if graphiti is not None else None
+
+        if store is not None:
+            try:
+                if relation and hasattr(store, "list_facts_for_subject_relation"):
+                    rows = store.list_facts_for_subject_relation(
+                        subject_entity_id=subject,
+                        relation_type=str(relation).strip().upper(),
+                        limit=top_k,
+                    )
+                elif hasattr(store, "list_facts_for_subject"):
+                    rows = store.list_facts_for_subject(subject_entity_id=subject, limit=top_k)
+                else:
+                    rows = []
+
+                edges = [_fact_row_to_edge(dict(r)) for r in (rows or [])]
+                return {"edges": edges, "total": len(edges)}
+            except Exception:
+                logger.warning(
+                    "Graphiti list_fact_history failed; falling back to legacy graph_store",
+                    exc_info=True,
+                )
+
+        return {"edges": [], "total": 0}
 
     # ── Pipeline Status ──
 
@@ -422,9 +704,8 @@ def _get_pipeline(app: FastAPI):
 
 
 def _build_chat_response(session_id: str, result: dict[str, Any]) -> ChatResponse:
-    memories = (
-        len(result.get("retrieved_graph_memories", []))
-        + len(result.get("retrieved_skills", []))
+    memories = len(result.get("retrieved_graph_memories", [])) + len(
+        result.get("retrieved_skills", [])
     )
     return ChatResponse(
         session_id=session_id,
@@ -457,21 +738,25 @@ def _build_trace(result: dict[str, Any]) -> PipelineTrace:
         subgraph = mem.get("subgraph", {})
         neighbor_count = len(subgraph.get("nodes", [])) + len(subgraph.get("edges", []))
         props = anchor.get("properties", {})
-        graph_hits.append(GraphMemoryHit(
-            node_id=str(anchor.get("node_id", anchor.get("id", ""))),
-            name=str(props.get("name", anchor.get("name", ""))),
-            label=str(anchor.get("label", props.get("label", ""))),
-            score=float(anchor.get("score", 0.0)),
-            neighbor_count=neighbor_count,
-        ))
+        graph_hits.append(
+            GraphMemoryHit(
+                node_id=str(anchor.get("node_id", anchor.get("id", ""))),
+                name=str(props.get("name", anchor.get("name", ""))),
+                label=str(anchor.get("label", props.get("label", ""))),
+                score=float(anchor.get("score", 0.0)),
+                neighbor_count=neighbor_count,
+            )
+        )
     skill_hits = []
     for sk in skills:
-        skill_hits.append(SkillHit(
-            skill_id=str(sk.get("id", sk.get("skill_id", ""))),
-            intent=str(sk.get("intent", "")),
-            score=float(sk.get("score", 0.0)),
-            reusable=bool(sk.get("reusable", False)),
-        ))
+        skill_hits.append(
+            SkillHit(
+                skill_id=str(sk.get("id", sk.get("skill_id", ""))),
+                intent=str(sk.get("intent", "")),
+                score=float(sk.get("score", 0.0)),
+                reusable=bool(sk.get("reusable", False)),
+            )
+        )
     search = SearchCoordinatorTrace(
         graph_memories=graph_hits,
         skills=skill_hits,

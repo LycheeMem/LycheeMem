@@ -105,6 +105,33 @@ class GraphResponse(BaseModel):
     edges: list[dict[str, Any]]
 
 
+class FactEdge(BaseModel):
+    """Graphiti Fact-node 映射出来的兼容 edge 视图（PR4）。"""
+
+    source: str
+    target: str
+    relation: str = ""
+
+    # Optional enriched fields (keep defaults to stay backward/forward compatible)
+    confidence: float = 1.0
+    fact: str = ""
+    evidence: str = ""
+    source_session: str = ""
+    timestamp: str = ""
+
+    t_valid_from: str = ""
+    t_valid_to: str = ""
+    t_tx_created: str = ""
+    t_tx_expired: str = ""
+
+    episode_ids: list[str] = Field(default_factory=list)
+
+
+class FactEdgesResponse(BaseModel):
+    edges: list[FactEdge]
+    total: int
+
+
 class SkillItem(BaseModel):
     id: str
     intent: str = ""

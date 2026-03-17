@@ -138,6 +138,667 @@ class GraphitiNeo4jStore:
             return [dict(r) for r in rs]
 
     # ──────────────────────────────────────
+    # Entity (PR3)
+    # ──────────────────────────────────────
+
+    @staticmethod
+    def entity_upsert_cypher() -> str:
+        return (
+            "MERGE (e:Entity {entity_id: $entity_id}) "
+            "SET e.name = $name, "
+            "    e.summary = $summary, "
+            "    e.aliases = $aliases, "
+            "    e.type_label = $type_label, "
+            "    e.embedding = $embedding, "
+            "    e.source_session = $source_session, "
+            "    e.t_created = coalesce(e.t_created, $t_created), "
+            "    e.t_updated = $t_updated "
+            "RETURN e.entity_id AS entity_id"
+        )
+
+    def upsert_entity(
+        self,
+        *,
+        entity_id: str,
+        name: str,
+        summary: str = "",
+        aliases: list[str] | None = None,
+        type_label: str = "",
+        embedding: list[float] | None = None,
+        source_session: str = "",
+        t_created: str | None = None,
+    ) -> str:
+        if t_created is None:
+            t_created = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        t_updated = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(
+                self.entity_upsert_cypher(),
+                entity_id=entity_id,
+                name=name,
+                summary=summary,
+                aliases=list(aliases or []),
+                type_label=type_label,
+                embedding=embedding,
+                source_session=source_session,
+                t_created=t_created,
+                t_updated=t_updated,
+            )
+            record = rs.single()
+        return (record or {}).get("entity_id") or entity_id
+
+    @staticmethod
+    def fulltext_search_entities_cypher() -> str:
+        return (
+            "CALL db.index.fulltext.queryNodes('entity_fulltext', $q) "
+            "YIELD node, score "
+            "RETURN node.entity_id AS entity_id, node.name AS name, node.summary AS summary, "
+            "node.aliases AS aliases, node.type_label AS type_label, score AS score "
+            "ORDER BY score DESC "
+            "LIMIT $limit"
+        )
+
+    def fulltext_search_entities(self, *, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(self.fulltext_search_entities_cypher(), q=query, limit=limit)
+            return [dict(r) for r in rs]
+
+    @staticmethod
+    def scan_entities_with_embeddings_cypher() -> str:
+        return (
+            "MATCH (e:Entity) WHERE exists(e.embedding) "
+            "RETURN e.entity_id AS entity_id, e.name AS name, e.summary AS summary, "
+            "e.aliases AS aliases, e.type_label AS type_label, e.embedding AS embedding "
+            "LIMIT $limit"
+        )
+
+    def scan_entities_with_embeddings(self, *, limit: int = 2000) -> list[dict[str, Any]]:
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(self.scan_entities_with_embeddings_cypher(), limit=limit)
+            return [dict(r) for r in rs]
+
+    @staticmethod
+    def entity_embeddings_by_ids_cypher() -> str:
+        return (
+            "MATCH (e:Entity) "
+            "WHERE e.entity_id IN $entity_ids "
+            "RETURN e.entity_id AS entity_id, e.embedding AS embedding"
+        )
+
+    def get_entity_embeddings_by_ids(self, *, entity_ids: list[str]) -> list[dict[str, Any]]:
+        entity_ids = [str(e).strip() for e in (entity_ids or []) if str(e).strip()]
+        if not entity_ids:
+            return []
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(self.entity_embeddings_by_ids_cypher(), entity_ids=entity_ids)
+            return [dict(r) for r in rs]
+
+    @staticmethod
+    def recent_entity_ids_for_session_cypher() -> str:
+        return (
+            "MATCH (e:Entity) "
+            "WHERE e.source_session = $session_id "
+            "RETURN e.entity_id AS entity_id "
+            "ORDER BY coalesce(e.t_updated, e.t_created, '') DESC "
+            "LIMIT $limit"
+        )
+
+    def list_recent_entity_ids_for_session(self, *, session_id: str, limit: int = 50) -> list[str]:
+        if not str(session_id or "").strip():
+            return []
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(
+                self.recent_entity_ids_for_session_cypher(), session_id=session_id, limit=int(limit)
+            )
+            return [str(r.get("entity_id") or "").strip() for r in rs if str(r.get("entity_id") or "").strip()]
+
+    # ──────────────────────────────────────
+    # Subgraph export for search (PR3 closing)
+    # ──────────────────────────────────────
+
+    @staticmethod
+    def entities_by_ids_cypher() -> str:
+        return (
+            "MATCH (e:Entity) "
+            "WHERE e.entity_id IN $entity_ids "
+            "RETURN e.entity_id AS id, coalesce(e.name, e.entity_id) AS name, "
+            "coalesce(e.type_label, e.label, '') AS label, properties(e) AS properties"
+        )
+
+    def get_entities_by_ids(self, *, entity_ids: list[str]) -> list[dict[str, Any]]:
+        entity_ids = [str(e).strip() for e in (entity_ids or []) if str(e).strip()]
+        if not entity_ids:
+            return []
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(self.entities_by_ids_cypher(), entity_ids=entity_ids)
+            return [dict(r) for r in rs]
+
+    @staticmethod
+    def fact_edges_incident_to_entities_cypher() -> str:
+        return (
+            "MATCH (f:Fact) "
+            "WHERE exists(f.subject_entity_id) AND exists(f.object_entity_id) "
+            "  AND (f.subject_entity_id IN $entity_ids OR f.object_entity_id IN $entity_ids) "
+            "OPTIONAL MATCH (e:Episode)-[:EVIDENCE_FOR]->(f) "
+            "WITH f, collect(e.episode_id) AS episode_ids "
+            "RETURN "
+            "f.fact_id AS fact_id, "
+            "f.subject_entity_id AS source, "
+            "f.object_entity_id AS target, "
+            "coalesce(f.relation_type, '') AS relation, "
+            "coalesce(f.confidence, 1.0) AS confidence, "
+            "coalesce(f.fact_text, '') AS fact, "
+            "coalesce(f.evidence_text, '') AS evidence, "
+            "coalesce(f.source_session, '') AS source_session, "
+            "coalesce(f.t_valid_from, f.t_created, '') AS timestamp, "
+            "coalesce(f.t_valid_from, '') AS t_valid_from, "
+            "coalesce(f.t_valid_to, '') AS t_valid_to, "
+            "episode_ids AS episode_ids "
+            "ORDER BY f.t_created DESC "
+            "LIMIT $edge_limit"
+        )
+
+    def export_semantic_subgraph(
+        self,
+        *,
+        entity_ids: list[str],
+        edge_limit: int = 200,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """导出以给定实体为锚点的语义子图。
+
+        返回结构与 `/memory/graph` 的 GraphResponse 兼容：
+        `{ "nodes": [...], "edges": [...] }`
+
+        Notes:
+        - 当前仅返回 Entity 作为 nodes，Fact 映射为 edges。
+        - edges 额外返回 `episode_ids`（如果存在 Episode→Fact 证据关系）。
+        """
+
+        entity_ids = [str(e).strip() for e in (entity_ids or []) if str(e).strip()]
+        if not entity_ids:
+            return {"nodes": [], "edges": []}
+
+        with self._driver.session(database=self._database) as session:
+            edges_rs = session.run(
+                self.fact_edges_incident_to_entities_cypher(),
+                entity_ids=entity_ids,
+                edge_limit=int(edge_limit),
+            )
+            edges = [dict(r) for r in edges_rs]
+
+            expanded_ids = set(entity_ids)
+            for e in edges:
+                s = str(e.get("source") or "").strip()
+                t = str(e.get("target") or "").strip()
+                if s:
+                    expanded_ids.add(s)
+                if t:
+                    expanded_ids.add(t)
+
+            nodes_rs = session.run(
+                self.entities_by_ids_cypher(),
+                entity_ids=list(expanded_ids),
+            )
+            nodes = [dict(r) for r in nodes_rs]
+
+        return {"nodes": nodes, "edges": edges}
+
+    # ──────────────────────────────────────
+    # Fact (PR3)
+    # ──────────────────────────────────────
+
+    @staticmethod
+    def fact_upsert_cypher() -> str:
+        return (
+            "MERGE (f:Fact {fact_id: $fact_id}) "
+            "SET f.subject_entity_id = $subject_entity_id, "
+            "    f.object_entity_id = $object_entity_id, "
+            "    f.relation_type = $relation_type, "
+            "    f.fact_text = $fact_text, "
+            "    f.evidence_text = $evidence_text, "
+            "    f.confidence = $confidence, "
+            "    f.source_session = $source_session, "
+            "    f.t_created = coalesce(f.t_created, $t_created), "
+            "    f.t_valid_from = coalesce(f.t_valid_from, $t_valid_from), "
+            "    f.t_valid_to = coalesce(f.t_valid_to, $t_valid_to), "
+            "    f.t_tx_created = coalesce(f.t_tx_created, $t_tx_created), "
+            "    f.t_updated = $t_updated "
+            "WITH f "
+            "MATCH (s:Entity {entity_id: $subject_entity_id}) "
+            "MATCH (o:Entity {entity_id: $object_entity_id}) "
+            "MERGE (s)-[:SUBJECT_OF]->(f) "
+            "MERGE (f)-[:OBJECT_OF]->(o) "
+            "RETURN f.fact_id AS fact_id"
+        )
+
+    def upsert_fact(
+        self,
+        *,
+        fact_id: str,
+        subject_entity_id: str,
+        object_entity_id: str,
+        relation_type: str,
+        fact_text: str,
+        evidence_text: str = "",
+        confidence: float = 1.0,
+        source_session: str = "",
+        t_created: str | None = None,
+        t_valid_from: str | None = None,
+        t_valid_to: str | None = None,
+        t_tx_created: str | None = None,
+    ) -> str:
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        if t_created is None:
+            t_created = now_iso
+        if t_valid_from is None:
+            t_valid_from = t_created
+        if t_tx_created is None:
+            t_tx_created = t_created
+        t_updated = now_iso
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(
+                self.fact_upsert_cypher(),
+                fact_id=fact_id,
+                subject_entity_id=subject_entity_id,
+                object_entity_id=object_entity_id,
+                relation_type=relation_type,
+                fact_text=fact_text,
+                evidence_text=evidence_text,
+                confidence=float(confidence),
+                source_session=source_session,
+                t_created=t_created,
+                t_valid_from=t_valid_from,
+                t_valid_to=t_valid_to,
+                t_tx_created=t_tx_created,
+                t_updated=t_updated,
+            )
+            record = rs.single()
+        return (record or {}).get("fact_id") or fact_id
+
+    @staticmethod
+    def list_facts_between_cypher() -> str:
+        return (
+            "MATCH (f:Fact) "
+            "WHERE f.subject_entity_id = $subject_entity_id AND f.object_entity_id = $object_entity_id "
+            "RETURN f.fact_id AS fact_id, f.relation_type AS relation_type, f.fact_text AS fact_text, "
+            "f.evidence_text AS evidence_text, f.confidence AS confidence, f.t_created AS t_created "
+            "ORDER BY f.t_created DESC "
+            "LIMIT $limit"
+        )
+
+    def list_facts_between(
+        self,
+        *,
+        subject_entity_id: str,
+        object_entity_id: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(
+                self.list_facts_between_cypher(),
+                subject_entity_id=subject_entity_id,
+                object_entity_id=object_entity_id,
+                limit=limit,
+            )
+            return [dict(r) for r in rs]
+
+    # ──────────────────────────────────────
+    # Temporal / Bi-temporal helpers (PR4)
+    # ──────────────────────────────────────
+
+    @staticmethod
+    def expire_fact_cypher() -> str:
+        return (
+            "MATCH (f:Fact {fact_id: $fact_id}) "
+            "SET f.t_valid_to = $t_valid_to, "
+            "    f.t_tx_expired = $t_tx_expired, "
+            "    f.t_updated = $t_updated "
+            "RETURN f.fact_id AS fact_id"
+        )
+
+    def expire_fact(self, *, fact_id: str, t_valid_to: str, t_tx_expired: str | None = None) -> None:
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        if t_tx_expired is None:
+            t_tx_expired = now_iso
+        with self._driver.session(database=self._database) as session:
+            session.run(
+                self.expire_fact_cypher(),
+                fact_id=fact_id,
+                t_valid_to=t_valid_to,
+                t_tx_expired=t_tx_expired,
+                t_updated=now_iso,
+            )
+
+    @staticmethod
+    def list_active_facts_for_subject_relation_cypher() -> str:
+        return (
+            "MATCH (f:Fact) "
+            "WHERE f.subject_entity_id = $subject_entity_id "
+            "  AND f.relation_type = $relation_type "
+            "  AND (NOT exists(f.t_valid_to) OR f.t_valid_to IS NULL OR f.t_valid_to = '') "
+            "RETURN f.fact_id AS fact_id, f.subject_entity_id AS subject_entity_id, "
+            "f.object_entity_id AS object_entity_id, f.relation_type AS relation_type, "
+            "f.fact_text AS fact_text, f.evidence_text AS evidence_text, f.confidence AS confidence, "
+            "coalesce(f.t_valid_from, f.t_created, '') AS t_valid_from, "
+            "coalesce(f.t_valid_to, '') AS t_valid_to, "
+            "coalesce(f.t_tx_created, '') AS t_tx_created, "
+            "coalesce(f.t_tx_expired, '') AS t_tx_expired "
+            "ORDER BY coalesce(f.t_valid_from, f.t_created, '') DESC "
+            "LIMIT $limit"
+        )
+
+    def list_active_facts_for_subject_relation(
+        self,
+        *,
+        subject_entity_id: str,
+        relation_type: str,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(
+                self.list_active_facts_for_subject_relation_cypher(),
+                subject_entity_id=subject_entity_id,
+                relation_type=relation_type,
+                limit=limit,
+            )
+            return [dict(r) for r in rs]
+
+    @staticmethod
+    def list_active_facts_for_subject_cypher() -> str:
+        return (
+            "MATCH (f:Fact) "
+            "WHERE f.subject_entity_id = $subject_entity_id "
+            "  AND (NOT exists(f.t_valid_to) OR f.t_valid_to IS NULL OR f.t_valid_to = '') "
+            "RETURN f.fact_id AS fact_id, f.subject_entity_id AS subject_entity_id, "
+            "f.object_entity_id AS object_entity_id, f.relation_type AS relation_type, "
+            "f.fact_text AS fact_text, f.evidence_text AS evidence_text, f.confidence AS confidence, "
+            "coalesce(f.t_valid_from, f.t_created, '') AS t_valid_from, "
+            "coalesce(f.t_valid_to, '') AS t_valid_to, "
+            "coalesce(f.t_tx_created, '') AS t_tx_created, "
+            "coalesce(f.t_tx_expired, '') AS t_tx_expired "
+            "ORDER BY coalesce(f.t_valid_from, f.t_created, '') DESC "
+            "LIMIT $limit"
+        )
+
+    def list_active_facts_for_subject(
+        self,
+        *,
+        subject_entity_id: str,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(
+                self.list_active_facts_for_subject_cypher(),
+                subject_entity_id=subject_entity_id,
+                limit=limit,
+            )
+            return [dict(r) for r in rs]
+
+    # ──────────────────────────────────────
+    # Historical facts (PR4)
+    # ──────────────────────────────────────
+
+    @staticmethod
+    def list_facts_for_subject_relation_cypher() -> str:
+        return (
+            "MATCH (f:Fact) "
+            "WHERE f.subject_entity_id = $subject_entity_id "
+            "  AND f.relation_type = $relation_type "
+            "RETURN f.fact_id AS fact_id, f.subject_entity_id AS subject_entity_id, "
+            "f.object_entity_id AS object_entity_id, f.relation_type AS relation_type, "
+            "f.fact_text AS fact_text, f.evidence_text AS evidence_text, f.confidence AS confidence, "
+            "coalesce(f.t_valid_from, f.t_created, '') AS t_valid_from, "
+            "coalesce(f.t_valid_to, '') AS t_valid_to, "
+            "coalesce(f.t_tx_created, '') AS t_tx_created, "
+            "coalesce(f.t_tx_expired, '') AS t_tx_expired "
+            "ORDER BY coalesce(f.t_valid_from, f.t_created, '') DESC "
+            "LIMIT $limit"
+        )
+
+    def list_facts_for_subject_relation(
+        self,
+        *,
+        subject_entity_id: str,
+        relation_type: str,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(
+                self.list_facts_for_subject_relation_cypher(),
+                subject_entity_id=subject_entity_id,
+                relation_type=relation_type,
+                limit=limit,
+            )
+            return [dict(r) for r in rs]
+
+    @staticmethod
+    def list_facts_for_subject_cypher() -> str:
+        return (
+            "MATCH (f:Fact) "
+            "WHERE f.subject_entity_id = $subject_entity_id "
+            "RETURN f.fact_id AS fact_id, f.subject_entity_id AS subject_entity_id, "
+            "f.object_entity_id AS object_entity_id, f.relation_type AS relation_type, "
+            "f.fact_text AS fact_text, f.evidence_text AS evidence_text, f.confidence AS confidence, "
+            "coalesce(f.t_valid_from, f.t_created, '') AS t_valid_from, "
+            "coalesce(f.t_valid_to, '') AS t_valid_to, "
+            "coalesce(f.t_tx_created, '') AS t_tx_created, "
+            "coalesce(f.t_tx_expired, '') AS t_tx_expired "
+            "ORDER BY coalesce(f.t_valid_from, f.t_created, '') DESC "
+            "LIMIT $limit"
+        )
+
+    def list_facts_for_subject(
+        self,
+        *,
+        subject_entity_id: str,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(
+                self.list_facts_for_subject_cypher(),
+                subject_entity_id=subject_entity_id,
+                limit=limit,
+            )
+            return [dict(r) for r in rs]
+
+    @staticmethod
+    def search_facts_by_relation_cypher() -> str:
+        return (
+            "MATCH (f:Fact) "
+            "WHERE toUpper(coalesce(f.relation_type, '')) = toUpper($relation) "
+            "RETURN "
+            "f.fact_id AS fact_id, "
+            "f.subject_entity_id AS source, "
+            "f.object_entity_id AS target, "
+            "coalesce(f.relation_type, '') AS relation, "
+            "coalesce(f.confidence, 1.0) AS confidence, "
+            "coalesce(f.fact_text, '') AS fact, "
+            "coalesce(f.evidence_text, '') AS evidence, "
+            "coalesce(f.source_session, '') AS source_session, "
+            "coalesce(f.t_valid_from, f.t_created, '') AS timestamp, "
+            "coalesce(f.t_valid_from, '') AS t_valid_from, "
+            "coalesce(f.t_valid_to, '') AS t_valid_to "
+            "ORDER BY coalesce(f.t_valid_from, f.t_created, '') DESC "
+            "LIMIT $limit"
+        )
+
+    def search_facts_by_relation(self, *, relation: str, limit: int = 10) -> list[dict[str, Any]]:
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(self.search_facts_by_relation_cypher(), relation=relation, limit=limit)
+            return [dict(r) for r in rs]
+
+    @staticmethod
+    def search_facts_by_time_cypher() -> str:
+        # Interval overlap semantics for validity time:
+        # - treat missing t_valid_from as t_created
+        # - treat missing t_valid_to as open interval (+infinity)
+        # Query window is [since, until].
+        # Overlap when: f_from <= until AND f_to >= since.
+        return (
+            "MATCH (f:Fact) "
+            "WITH f, "
+            "  coalesce(f.t_valid_from, f.t_created, '') AS f_from, "
+            "  coalesce(f.t_valid_to, '9999-12-31T23:59:59+00:00') AS f_to "
+            "WHERE "
+            "  ($until IS NULL OR f_from <= $until) "
+            "  AND ($since IS NULL OR f_to >= $since) "
+            "RETURN "
+            "f.fact_id AS fact_id, "
+            "f.subject_entity_id AS source, "
+            "f.object_entity_id AS target, "
+            "coalesce(f.relation_type, '') AS relation, "
+            "coalesce(f.confidence, 1.0) AS confidence, "
+            "coalesce(f.fact_text, '') AS fact, "
+            "coalesce(f.evidence_text, '') AS evidence, "
+            "coalesce(f.source_session, '') AS source_session, "
+            "f_from AS timestamp, "
+            "coalesce(f.t_valid_from, '') AS t_valid_from, "
+            "coalesce(f.t_valid_to, '') AS t_valid_to "
+            "ORDER BY f_from DESC "
+            "LIMIT $limit"
+        )
+
+    # ──────────────────────────────────────
+    # Fulltext search: Facts / Communities (PR5)
+    # ──────────────────────────────────────
+
+    @staticmethod
+    def fulltext_search_facts_cypher() -> str:
+        return (
+            "CALL db.index.fulltext.queryNodes('fact_fulltext', $q) "
+            "YIELD node, score "
+            "RETURN node.fact_id AS fact_id, node.subject_entity_id AS source, node.object_entity_id AS target, "
+            "coalesce(node.relation_type, '') AS relation, coalesce(node.fact_text, '') AS fact, "
+            "coalesce(node.evidence_text, '') AS evidence, coalesce(node.confidence, 1.0) AS confidence, "
+            "coalesce(node.source_session, '') AS source_session, "
+            "coalesce(node.t_valid_from, node.t_created, '') AS timestamp, "
+            "coalesce(node.t_valid_from, '') AS t_valid_from, coalesce(node.t_valid_to, '') AS t_valid_to, "
+            "score AS score "
+            "ORDER BY score DESC "
+            "LIMIT $limit"
+        )
+
+    def fulltext_search_facts(self, *, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(self.fulltext_search_facts_cypher(), q=query, limit=limit)
+            return [dict(r) for r in rs]
+
+    @staticmethod
+    def community_upsert_cypher() -> str:
+        return (
+            "MERGE (c:Community {community_id: $community_id}) "
+            "SET c.name = $name, "
+            "    c.summary = $summary, "
+            "    c.embedding = $embedding, "
+            "    c.t_created = coalesce(c.t_created, $t_created), "
+            "    c.t_updated = $t_updated "
+            "RETURN c.community_id AS community_id"
+        )
+
+    def upsert_community(
+        self,
+        *,
+        community_id: str,
+        name: str,
+        summary: str = "",
+        embedding: list[float] | None = None,
+        t_created: str | None = None,
+    ) -> str:
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        if t_created is None:
+            t_created = now_iso
+        t_updated = now_iso
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(
+                self.community_upsert_cypher(),
+                community_id=community_id,
+                name=name,
+                summary=summary,
+                embedding=embedding,
+                t_created=t_created,
+                t_updated=t_updated,
+            )
+            record = rs.single()
+        return (record or {}).get("community_id") or community_id
+
+    @staticmethod
+    def link_entity_to_community_cypher() -> str:
+        return (
+            "MATCH (e:Entity {entity_id: $entity_id}) "
+            "MATCH (c:Community {community_id: $community_id}) "
+            "MERGE (e)-[:IN_COMMUNITY]->(c)"
+        )
+
+    def link_entity_to_community(self, *, entity_id: str, community_id: str) -> None:
+        with self._driver.session(database=self._database) as session:
+            session.run(
+                self.link_entity_to_community_cypher(),
+                entity_id=entity_id,
+                community_id=community_id,
+            )
+
+    @staticmethod
+    def fulltext_search_communities_cypher() -> str:
+        return (
+            "CALL db.index.fulltext.queryNodes('community_fulltext', $q) "
+            "YIELD node, score "
+            "RETURN node.community_id AS community_id, coalesce(node.name, node.community_id) AS name, "
+            "coalesce(node.summary, '') AS summary, score AS score "
+            "ORDER BY score DESC "
+            "LIMIT $limit"
+        )
+
+    def fulltext_search_communities(self, *, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(self.fulltext_search_communities_cypher(), q=query, limit=limit)
+            return [dict(r) for r in rs]
+
+    @staticmethod
+    def scan_communities_with_embeddings_cypher() -> str:
+        return (
+            "MATCH (c:Community) WHERE exists(c.embedding) "
+            "RETURN c.community_id AS community_id, c.name AS name, c.summary AS summary, c.embedding AS embedding "
+            "LIMIT $limit"
+        )
+
+    def scan_communities_with_embeddings(self, *, limit: int = 2000) -> list[dict[str, Any]]:
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(self.scan_communities_with_embeddings_cypher(), limit=limit)
+            return [dict(r) for r in rs]
+
+    def search_facts_by_time(
+        self,
+        *,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(
+                self.search_facts_by_time_cypher(),
+                since=since,
+                until=until,
+                limit=limit,
+            )
+            return [dict(r) for r in rs]
+
+    # ──────────────────────────────────────
+    # Episode ↔ Fact linking (PR3)
+    # ──────────────────────────────────────
+
+    @staticmethod
+    def link_episode_to_fact_cypher() -> str:
+        return (
+            "MATCH (e:Episode {episode_id: $episode_id}) "
+            "MATCH (f:Fact {fact_id: $fact_id}) "
+            "MERGE (e)-[:EVIDENCE_FOR]->(f)"
+        )
+
+    def link_episode_to_fact(self, *, episode_id: str, fact_id: str) -> None:
+        with self._driver.session(database=self._database) as session:
+            session.run(self.link_episode_to_fact_cypher(), episode_id=episode_id, fact_id=fact_id)
+
+    # ──────────────────────────────────────
     # Compatibility export
     # ──────────────────────────────────────
 
@@ -160,7 +821,7 @@ class GraphitiNeo4jStore:
         nodes_cypher = (
             "MATCH (e:Entity) "
             "RETURN e.entity_id AS id, coalesce(e.name, e.entity_id) AS name, "
-            "coalesce(e.type_label, e.label, '') AS label, e AS properties"
+            "coalesce(e.type_label, e.label, '') AS label, properties(e) AS properties"
         )
 
         edges_cypher = (
@@ -174,7 +835,9 @@ class GraphitiNeo4jStore:
             "coalesce(f.fact_text, '') AS fact, "
             "coalesce(f.evidence_text, '') AS evidence, "
             "coalesce(f.source_session, '') AS source_session, "
-            "coalesce(f.t_created, '') AS timestamp"
+            "coalesce(f.t_valid_from, f.t_created, '') AS timestamp, "
+            "coalesce(f.t_valid_from, '') AS t_valid_from, "
+            "coalesce(f.t_valid_to, '') AS t_valid_to"
         )
 
         return GraphitiNeo4jStore.SemanticGraphExportQuery(

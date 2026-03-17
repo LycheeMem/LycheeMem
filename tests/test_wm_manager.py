@@ -46,7 +46,7 @@ class TestWMManager:
             self.wm.run(session_id="s1", user_query=f"{long_text} 第{i}轮")
             self.wm.append_assistant_turn("s1", f"回复 {long_text}")
 
-        result = self.wm.run(session_id="s1", user_query="最新查询")
+        self.wm.run(session_id="s1", user_query="最新查询")
 
         # 应该有摘要产生
         log = self.store.get_or_create("s1")

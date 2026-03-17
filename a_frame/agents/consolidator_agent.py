@@ -131,6 +131,19 @@ class ConsolidatorAgent(BaseAgent):
         self.entity_extractor = entity_extractor
         self.graphiti_engine = graphiti_engine
 
+        self._graphiti_last_episode_ingested: dict[str, int] = {}
+        self._graphiti_last_user_semantic: dict[str, int] = {}
+
+        self._graphiti_semantic_builder = None
+        if self.graphiti_engine is not None and hasattr(self.graphiti_engine, "store"):
+            from a_frame.memory.graph.graphiti_semantic import GraphitiSemanticBuilder
+
+            self._graphiti_semantic_builder = GraphitiSemanticBuilder(
+                llm=self.llm,
+                embedder=self.embedder,
+                store=self.graphiti_engine.store,
+            )
+
     @staticmethod
     def _episode_id(*, session_id: str, turn_index: int, role: str, content: str) -> str:
         raw = f"{session_id}|{turn_index}|{role}|{content}".encode("utf-8")
@@ -138,7 +151,7 @@ class ConsolidatorAgent(BaseAgent):
 
     def run(
         self,
-        turns: list[dict[str, str]],
+        turns: list[dict[str, Any]],
         session_id: str | None = None,
         **kwargs,
     ) -> dict[str, Any]:
@@ -153,20 +166,27 @@ class ConsolidatorAgent(BaseAgent):
         if not turns:
             return {"entities_added": 0, "skills_added": 0}
 
-        # 0. Episode raw ingestion（可选；不影响后续检索/回答）
+        # 0. Graphiti: Episode raw ingestion + Semantic build（可选；不影响现有检索/回答）
+        graphiti_entities_added = 0
+        graphiti_facts_added = 0
         if self.graphiti_engine is not None and session_id:
             now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            for idx, t in enumerate(turns):
-                role = t.get("role", "")
-                content = t.get("content", "")
+
+            # 0.1 仅写入新增 turns 的 Episode（幂等）
+            last_ingested = self._graphiti_last_episode_ingested.get(session_id, -1)
+            for idx in range(last_ingested + 1, len(turns)):
+                t = turns[idx] or {}
+                role = str(t.get("role") or "")
+                content = str(t.get("content") or "")
                 if not role and not content:
                     continue
+                t_ref = str(t.get("created_at") or now_iso)
                 self.graphiti_engine.ingest_episode(
                     session_id=session_id,
                     turn_index=idx,
                     role=role,
                     content=content,
-                    t_ref=now_iso,
+                    t_ref=t_ref,
                     episode_id=self._episode_id(
                         session_id=session_id,
                         turn_index=idx,
@@ -174,6 +194,48 @@ class ConsolidatorAgent(BaseAgent):
                         content=content,
                     ),
                 )
+            self._graphiti_last_episode_ingested[session_id] = len(turns) - 1
+
+            # 0.2 只对“最新 user turn”做语义抽取（结合最近 n=4 上下文）
+            if self._graphiti_semantic_builder is not None:
+                latest_user_idx = None
+                for i in range(len(turns) - 1, -1, -1):
+                    if str((turns[i] or {}).get("role") or "") == "user":
+                        latest_user_idx = i
+                        break
+
+                if latest_user_idx is not None:
+                    last_semantic = self._graphiti_last_user_semantic.get(session_id, -1)
+                    if latest_user_idx > last_semantic:
+                        current_turn = turns[latest_user_idx] or {}
+                        previous_turns = turns[max(0, latest_user_idx - 4) : latest_user_idx]
+                        episode_id = self._episode_id(
+                            session_id=session_id,
+                            turn_index=latest_user_idx,
+                            role=str(current_turn.get("role") or ""),
+                            content=str(current_turn.get("content") or ""),
+                        )
+                        reference_timestamp = str(current_turn.get("created_at") or now_iso)
+                        built = self._graphiti_semantic_builder.ingest_user_turn(
+                            session_id=session_id,
+                            episode_id=episode_id,
+                            previous_turns=previous_turns,
+                            current_turn=current_turn,
+                            reference_timestamp=reference_timestamp,
+                        )
+                        graphiti_entities_added = int(built.get("entities_added", 0))
+                        graphiti_facts_added = int(built.get("facts_added", 0))
+                        self._graphiti_last_user_semantic[session_id] = latest_user_idx
+
+                        # PR5: best-effort 社区 refresh（不阻塞主流程；失败不影响固化）
+                        try:
+                            if hasattr(self.graphiti_engine, "refresh_communities_for_session"):
+                                self.graphiti_engine.refresh_communities_for_session(
+                                    session_id=session_id,
+                                    limit=50,
+                                )
+                        except Exception:
+                            pass
 
         # 格式化对话用于分析
         conversation_text = "\n".join(f"{t['role']}: {t['content']}" for t in turns)
@@ -190,10 +252,12 @@ class ConsolidatorAgent(BaseAgent):
         skills_added = 0
 
         # 2. 实体抽取 → 更新图谱
-        if analysis.get("should_extract_entities", False):
+        # Graphiti 模式下使用 Fact-node 语义子图；暂不写入 legacy triples（避免双写与语义冲突）。
+        if self.graphiti_engine is not None and session_id:
+            entities_added = graphiti_entities_added
+        elif analysis.get("should_extract_entities", False):
             triples = self.entity_extractor.extract_from_turns(
-                turns,
-                source_session=session_id or "",
+                turns, source_session=session_id or ""
             )
             if triples:
                 self.graph_store.add(triples)
@@ -217,10 +281,13 @@ class ConsolidatorAgent(BaseAgent):
                 )
                 skills_added += 1
 
-        return {
+        result: dict[str, Any] = {
             "entities_added": entities_added,
             "skills_added": skills_added,
         }
+        if self.graphiti_engine is not None and session_id:
+            result["facts_added"] = graphiti_facts_added
+        return result
 
     def _safe_parse(self, response: str) -> dict[str, Any]:
         """安全解析 LLM 输出，失败时返回安全默认值。"""

@@ -2,6 +2,7 @@
 
 from a_frame.agents.search_coordinator import SearchCoordinator
 from a_frame.memory.graph.graph_store import NetworkXGraphStore
+from a_frame.memory.graph.graphiti_engine import GraphitiSearchResult
 from a_frame.memory.procedural.skill_store import InMemorySkillStore
 
 
@@ -73,3 +74,25 @@ class TestSearchCoordinator:
         result = self.coordinator.run(user_query="测试")
         assert len(result["retrieved_graph_memories"]) >= 1
         assert "retrieved_skills" in result
+
+    def test_graphiti_engine_injection_produces_constructed_context(self):
+        class FakeGraphitiEngine:
+            def search(self, **kwargs):
+                return GraphitiSearchResult(
+                    context="[GraphitiRetrievedFacts]\n- Alice --EMPLOYED_BY--> Acme: ...\n",
+                    provenance=[{"fact_id": "f1"}],
+                )
+
+        coordinator = SearchCoordinator(
+            llm=FakeLLM(),
+            embedder=FakeEmbedder(),
+            graph_store=NetworkXGraphStore(),
+            skill_store=InMemorySkillStore(),
+            graphiti_engine=FakeGraphitiEngine(),
+        )
+
+        result = coordinator.run(user_query="Alice")
+        graph_memories = result["retrieved_graph_memories"]
+        assert len(graph_memories) == 1
+        assert "constructed_context" in graph_memories[0]
+        assert "GraphitiRetrievedFacts" in graph_memories[0]["constructed_context"]

@@ -74,10 +74,39 @@ def schema_statements() -> list[CypherStatement]:
             ),
         ),
         CypherStatement(
-            name="index_fact_temporal",
+            name="index_fact_subject_relation",
             cypher=(
-                "CREATE INDEX fact_temporal IF NOT EXISTS "
-                "FOR (f:Fact) ON (f.t_valid, f.t_invalid, f.t_created, f.t_expired)"
+                "CREATE INDEX fact_subject_relation IF NOT EXISTS "
+                "FOR (f:Fact) ON (f.subject_entity_id, f.relation_type)"
+            ),
+        ),
+        # PR4 bi-temporal indexes
+        CypherStatement(
+            name="index_fact_t_valid_from",
+            cypher=(
+                "CREATE INDEX fact_t_valid_from IF NOT EXISTS "
+                "FOR (f:Fact) ON (f.t_valid_from)"
+            ),
+        ),
+        CypherStatement(
+            name="index_fact_t_valid_to",
+            cypher=(
+                "CREATE INDEX fact_t_valid_to IF NOT EXISTS "
+                "FOR (f:Fact) ON (f.t_valid_to)"
+            ),
+        ),
+        CypherStatement(
+            name="index_fact_t_tx_created",
+            cypher=(
+                "CREATE INDEX fact_t_tx_created IF NOT EXISTS "
+                "FOR (f:Fact) ON (f.t_tx_created)"
+            ),
+        ),
+        CypherStatement(
+            name="index_fact_t_tx_expired",
+            cypher=(
+                "CREATE INDEX fact_t_tx_expired IF NOT EXISTS "
+                "FOR (f:Fact) ON (f.t_tx_expired)"
             ),
         ),
         # ── Fulltext indexes (BM25 / keyword) ──

@@ -71,9 +71,13 @@ class SQLiteSessionStore:
         """获取完整会话日志，不存在则返回空日志。"""
         conn = self._get_conn()
         turns = [
-            {"role": row["role"], "content": row["content"]}
+            {
+                "role": row["role"],
+                "content": row["content"],
+                "created_at": row["created_at"],
+            }
             for row in conn.execute(
-                "SELECT role, content FROM turns WHERE session_id = ? ORDER BY id",
+                "SELECT role, content, created_at FROM turns WHERE session_id = ? ORDER BY id",
                 (session_id,),
             )
         ]
@@ -105,9 +109,13 @@ class SQLiteSessionStore:
     def get_turns(self, session_id: str) -> list[dict[str, str]]:
         conn = self._get_conn()
         return [
-            {"role": row["role"], "content": row["content"]}
+            {
+                "role": row["role"],
+                "content": row["content"],
+                "created_at": row["created_at"],
+            }
             for row in conn.execute(
-                "SELECT role, content FROM turns WHERE session_id = ? ORDER BY id",
+                "SELECT role, content, created_at FROM turns WHERE session_id = ? ORDER BY id",
                 (session_id,),
             )
         ]
@@ -127,7 +135,9 @@ class SQLiteSessionStore:
         conn.execute("DELETE FROM session_meta WHERE session_id = ?", (session_id,))
         conn.commit()
 
-    def update_session_meta(self, session_id: str, topic: str | None = None, tags: list[str] | None = None) -> None:
+    def update_session_meta(
+        self, session_id: str, topic: str | None = None, tags: list[str] | None = None
+    ) -> None:
         """更新会话元数据。"""
         conn = self._get_conn()
         conn.execute(
@@ -137,13 +147,16 @@ class SQLiteSessionStore:
         if topic is not None:
             conn.execute("UPDATE session_meta SET topic=? WHERE session_id=?", (topic, session_id))
         if tags is not None:
-            conn.execute("UPDATE session_meta SET tags=? WHERE session_id=?", (json.dumps(tags), session_id))
+            conn.execute(
+                "UPDATE session_meta SET tags=? WHERE session_id=?", (json.dumps(tags), session_id)
+            )
         conn.commit()
 
     def list_sessions(self, offset: int = 0, limit: int = 50) -> list[dict]:
         """返回所有会话的摘要列表，按最新活动倒序，支持分页。"""
         conn = self._get_conn()
-        rows = conn.execute("""
+        rows = conn.execute(
+            """
             SELECT
                 t.session_id,
                 COUNT(*) AS turn_count,
@@ -159,22 +172,26 @@ class SQLiteSessionStore:
             GROUP BY t.session_id
             ORDER BY updated_at DESC
             LIMIT ? OFFSET ?
-        """, (limit, offset)).fetchall()
+        """,
+            (limit, offset),
+        ).fetchall()
         result = []
         for row in rows:
             try:
                 tags = json.loads(row["tags"])
             except (json.JSONDecodeError, TypeError):
                 tags = []
-            result.append({
-                "session_id": row["session_id"],
-                "turn_count": row["turn_count"],
-                "last_message": (row["last_message"] or "")[:120],
-                "topic": row["topic"],
-                "tags": tags,
-                "created_at": row["session_created_at"],
-                "updated_at": row["updated_at"],
-            })
+            result.append(
+                {
+                    "session_id": row["session_id"],
+                    "turn_count": row["turn_count"],
+                    "last_message": (row["last_message"] or "")[:120],
+                    "topic": row["topic"],
+                    "tags": tags,
+                    "created_at": row["session_created_at"],
+                    "updated_at": row["updated_at"],
+                }
+            )
         return result
 
     def close(self) -> None:

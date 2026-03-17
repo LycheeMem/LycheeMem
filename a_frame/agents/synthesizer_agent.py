@@ -89,6 +89,18 @@ class SynthesizerAgent(BaseAgent):
             dict 包含：background_context, skill_reuse_plan, provenance
         """
         skills = retrieved_skills or []
+
+        # 收集检索阶段 provenance（Graphiti constructor/rerank 信号等），用于 pipeline 端到端溯源。
+        retrieval_provenance: list[dict[str, Any]] = []
+        for mem in (retrieved_graph_memories or []):
+            p = mem.get("provenance")
+            if isinstance(p, list):
+                for item in p:
+                    if isinstance(item, dict):
+                        retrieval_provenance.append(item)
+        if len(retrieval_provenance) > 50:
+            retrieval_provenance = retrieval_provenance[:50]
+
         fragments = self._format_fragments(
             retrieved_graph_memories or [],
             skills,
@@ -101,7 +113,11 @@ class SynthesizerAgent(BaseAgent):
             return {
                 "background_context": "",
                 "skill_reuse_plan": skill_reuse_plan,
-                "provenance": [],
+                "provenance": (
+                    [{"source": "graphiti_retrieval", "items": retrieval_provenance}]
+                    if retrieval_provenance
+                    else []
+                ),
             }
 
         user_content = f"用户查询：{user_query}\n\n检索到的记忆片段：\n{fragments}"
@@ -114,6 +130,10 @@ class SynthesizerAgent(BaseAgent):
         try:
             parsed = self._parse_json(response)
             provenance = parsed.get("scored_fragments", [])
+            if not isinstance(provenance, list):
+                provenance = []
+            if retrieval_provenance:
+                provenance.append({"source": "graphiti_retrieval", "items": retrieval_provenance})
             return {
                 "background_context": parsed.get("background_context", ""),
                 "skill_reuse_plan": skill_reuse_plan,
@@ -123,7 +143,11 @@ class SynthesizerAgent(BaseAgent):
             return {
                 "background_context": response,
                 "skill_reuse_plan": skill_reuse_plan,
-                "provenance": [],
+                "provenance": (
+                    [{"source": "graphiti_retrieval", "items": retrieval_provenance}]
+                    if retrieval_provenance
+                    else []
+                ),
             }
 
     @staticmethod
@@ -156,6 +180,15 @@ class SynthesizerAgent(BaseAgent):
                 subgraph = mem.get("subgraph", {})
                 edges = subgraph.get("edges", [])
                 lines.append(f"  片段{i}: 锚点={json.dumps(anchor, ensure_ascii=False)}")
+
+                constructed = str(mem.get("constructed_context", "")).strip()
+                if constructed:
+                    preview = constructed.strip().replace("\r\n", "\n")
+                    # 控制长度，避免 prompt 过长
+                    if len(preview) > 1500:
+                        preview = preview[:1500] + "…"
+                    lines.append(f"    构造上下文: {preview}")
+
                 if edges:
                     for edge in edges[:5]:  # 限制数量防止过长
                         fact = str(edge.get("fact", "")).strip()

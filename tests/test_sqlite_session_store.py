@@ -22,8 +22,13 @@ class TestSQLiteSessionStore:
 
             turns = store.get_turns("s1")
             assert len(turns) == 2
-            assert turns[0] == {"role": "user", "content": "你好"}
-            assert turns[1] == {"role": "assistant", "content": "你好！"}
+            assert turns[0]["role"] == "user"
+            assert turns[0]["content"] == "你好"
+            assert turns[0].get("created_at")
+
+            assert turns[1]["role"] == "assistant"
+            assert turns[1]["content"] == "你好！"
+            assert turns[1].get("created_at")
             store.close()
 
     def test_get_or_create_empty(self):

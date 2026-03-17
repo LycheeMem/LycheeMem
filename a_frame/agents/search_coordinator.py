@@ -14,6 +14,7 @@ from a_frame.agents.base_agent import BaseAgent
 from a_frame.embedder.base import BaseEmbedder
 from a_frame.llm.base import BaseLLM
 from a_frame.memory.graph.graph_store import NetworkXGraphStore
+from a_frame.memory.graph.graphiti_engine import GraphitiEngine
 from a_frame.memory.procedural.skill_store import InMemorySkillStore
 
 HYDE_SYSTEM_PROMPT = """\
@@ -96,6 +97,7 @@ class SearchCoordinator(BaseAgent):
         embedder: BaseEmbedder,
         graph_store: NetworkXGraphStore,
         skill_store: InMemorySkillStore,
+        graphiti_engine: GraphitiEngine | None = None,
         graph_search_depth: int = 1,
         skill_top_k: int = 3,
         skill_reuse_threshold: float = 0.85,
@@ -104,6 +106,7 @@ class SearchCoordinator(BaseAgent):
         self.embedder = embedder
         self.graph_store = graph_store
         self.skill_store = skill_store
+        self.graphiti_engine = graphiti_engine
         self.graph_search_depth = graph_search_depth
         self.skill_top_k = skill_top_k
         self.skill_reuse_threshold = skill_reuse_threshold
@@ -166,6 +169,33 @@ class SearchCoordinator(BaseAgent):
             query_embedding = self.embedder.embed_query(query)
         except Exception:
             query_embedding = None
+
+        # PR5: Graphiti 优先（若注入），保留 legacy 回退。
+        if self.graphiti_engine is not None:
+            try:
+                r = self.graphiti_engine.search(
+                    query=query,
+                    top_k=3,
+                    query_embedding=query_embedding,
+                    include_communities=True,
+                )
+                if r.context.strip():
+                    return [
+                        {
+                            "anchor": {
+                                "node_id": "graphiti_context",
+                                "name": "GraphitiContext",
+                                "label": "Context",
+                                "score": 1.0,
+                            },
+                            "subgraph": {"nodes": [], "edges": []},
+                            "constructed_context": r.context,
+                            "provenance": r.provenance,
+                        }
+                    ]
+            except Exception:
+                # best-effort: do not break retrieval if Graphiti fails
+                pass
 
         hits = self.graph_store.search(query, top_k=3, query_embedding=query_embedding)
         if not hits:

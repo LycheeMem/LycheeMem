@@ -19,8 +19,9 @@ def _now_iso() -> str:
 @dataclass
 class SessionLog:
     """单个会话的完整对话日志。"""
+
     session_id: str
-    turns: list[dict[str, str]] = field(default_factory=list)
+    turns: list[dict[str, Any]] = field(default_factory=list)
     summaries: list[dict[str, Any]] = field(default_factory=list)
     # summaries 结构：[{"boundary_index": int, "content": str}]
     topic: str = ""
@@ -42,10 +43,10 @@ class InMemorySessionStore:
 
     def append_turn(self, session_id: str, role: str, content: str) -> None:
         log = self.get_or_create(session_id)
-        log.turns.append({"role": role, "content": content})
+        log.turns.append({"role": role, "content": content, "created_at": _now_iso()})
         log.updated_at = _now_iso()
 
-    def get_turns(self, session_id: str) -> list[dict[str, str]]:
+    def get_turns(self, session_id: str) -> list[dict[str, Any]]:
         return self.get_or_create(session_id).turns
 
     def add_summary(self, session_id: str, boundary_index: int, summary_text: str) -> None:
@@ -55,7 +56,9 @@ class InMemorySessionStore:
     def delete_session(self, session_id: str) -> None:
         self._store.pop(session_id, None)
 
-    def update_session_meta(self, session_id: str, topic: str | None = None, tags: list[str] | None = None) -> None:
+    def update_session_meta(
+        self, session_id: str, topic: str | None = None, tags: list[str] | None = None
+    ) -> None:
         """更新会话元数据。"""
         log = self.get_or_create(session_id)
         if topic is not None:
@@ -67,17 +70,17 @@ class InMemorySessionStore:
         """返回所有会话的摘要列表，按最新活动倒序，支持分页。"""
         result = []
         for session_id, log in self._store.items():
-            last_user = next(
-                (t["content"] for t in reversed(log.turns) if t["role"] == "user"), ""
+            last_user = next((t["content"] for t in reversed(log.turns) if t["role"] == "user"), "")
+            result.append(
+                {
+                    "session_id": session_id,
+                    "turn_count": len(log.turns),
+                    "last_message": last_user[:120],
+                    "topic": log.topic,
+                    "tags": log.tags,
+                    "created_at": log.created_at,
+                    "updated_at": log.updated_at,
+                }
             )
-            result.append({
-                "session_id": session_id,
-                "turn_count": len(log.turns),
-                "last_message": last_user[:120],
-                "topic": log.topic,
-                "tags": log.tags,
-                "created_at": log.created_at,
-                "updated_at": log.updated_at,
-            })
         result.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
-        return result[offset:offset + limit]
+        return result[offset : offset + limit]

@@ -130,19 +130,6 @@ def create_pipeline(
     # 实体抽取器
     entity_extractor = EntityExtractor(llm=llm)
 
-    # 5 个认知组件
-    wm_manager = WMManager(session_store=session_store, compressor=compressor)
-    search_coordinator = SearchCoordinator(
-        llm=llm,
-        embedder=embedder,
-        graph_store=graph_store,
-        skill_store=skill_store,
-        graph_search_depth=graph_search_depth,
-        skill_top_k=skill_top_k,
-    )
-    synthesizer = SynthesizerAgent(llm=llm)
-    reasoner = ReasoningAgent(llm=llm)
-
     graphiti_engine = None
     if settings and getattr(settings, "graphiti_enabled", False):
         from a_frame.memory.graph.graphiti_engine import GraphitiEngine
@@ -156,6 +143,20 @@ def create_pipeline(
             init_schema=True,
         )
         graphiti_engine = GraphitiEngine(store=graphiti_store)
+
+    # 5 个认知组件
+    wm_manager = WMManager(session_store=session_store, compressor=compressor)
+    search_coordinator = SearchCoordinator(
+        llm=llm,
+        embedder=embedder,
+        graph_store=graph_store,
+        skill_store=skill_store,
+        graphiti_engine=graphiti_engine,
+        graph_search_depth=graph_search_depth,
+        skill_top_k=skill_top_k,
+    )
+    synthesizer = SynthesizerAgent(llm=llm)
+    reasoner = ReasoningAgent(llm=llm)
 
     consolidator = ConsolidatorAgent(
         llm=llm,

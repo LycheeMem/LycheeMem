@@ -34,6 +34,7 @@ from a_frame.memory.working.session_store import InMemorySessionStore
 
 class FakeLLM:
     """通用 FakeLLM，根据关键词分支。"""
+
     def generate(self, messages, **kwargs):
         system_msg = ""
         user_msg = ""
@@ -57,7 +58,7 @@ class FakeLLM:
         if "固化" in system_msg or "new_skills" in system_msg:
             return '{"new_skills": [], "should_extract_entities": false}'
         if "知识图谱实体抽取" in system_msg:
-            return '[]'
+            return "[]"
         return "Hello from A-Frame!"
 
     async def agenerate(self, messages, **kwargs):
@@ -118,7 +119,6 @@ class TestDualThresholdCompression:
             store.append_turn("s1", "assistant", f"回答 {i} " * 10)
         # 此时触发 run 应产生同步压缩
         result = wm.run(session_id="s1", user_query="最终查询")
-        log = store.get_or_create("s1")
         # 由于 budget 极小，应该触发了压缩 → summaries 非空
         # (具体取决于 compressor 实现，但 raw_recent_turns 应少于全部)
         assert "raw_recent_turns" in result
@@ -168,8 +168,13 @@ class TestSkillReuse:
     def test_skill_entry_has_new_fields(self):
         """SkillEntry 应有 success_count, last_used, conditions。"""
         entry = SkillEntry(
-            id="s1", intent="test", embedding=[0.1], doc_markdown="# test\n",
-            success_count=5, last_used="2024-01-01", conditions="当用户要求时",
+            id="s1",
+            intent="test",
+            embedding=[0.1],
+            doc_markdown="# test\n",
+            success_count=5,
+            last_used="2024-01-01",
+            conditions="当用户要求时",
         )
         assert entry.success_count == 5
         assert entry.last_used == "2024-01-01"
@@ -188,10 +193,18 @@ class TestSkillReuse:
     def test_skill_search_returns_new_fields(self):
         """搜索结果应包含 success_count 和 conditions。"""
         store = InMemorySkillStore()
-        store.add([{
-            "id": "s1", "intent": "test", "embedding": [0.1] * 8,
-            "doc_markdown": "# test\n", "success_count": 3, "conditions": "任何场景",
-        }])
+        store.add(
+            [
+                {
+                    "id": "s1",
+                    "intent": "test",
+                    "embedding": [0.1] * 8,
+                    "doc_markdown": "# test\n",
+                    "success_count": 3,
+                    "conditions": "任何场景",
+                }
+            ]
+        )
         results = store.search("test", top_k=5, query_embedding=[0.1] * 8)
         assert results[0]["success_count"] == 3
         assert results[0]["conditions"] == "任何场景"
@@ -201,12 +214,19 @@ class TestSkillReuse:
         llm = FakeLLM()
         embedder = FakeEmbedder()
         store = InMemorySkillStore()
-        store.add([{
-            "id": "s1", "intent": "test", "embedding": [0.1] * 8,
-            "doc_markdown": "# test\n\n1. run\n",
-        }])
+        store.add(
+            [
+                {
+                    "id": "s1",
+                    "intent": "test",
+                    "embedding": [0.1] * 8,
+                    "doc_markdown": "# test\n\n1. run\n",
+                }
+            ]
+        )
         sc = SearchCoordinator(
-            llm=llm, embedder=embedder,
+            llm=llm,
+            embedder=embedder,
             graph_store=NetworkXGraphStore(),
             skill_store=store,
             skill_reuse_threshold=0.5,  # 低阈值确保命中
@@ -221,10 +241,22 @@ class TestSkillReuse:
         result = synth.run(
             user_query="测试",
             retrieved_skills=[
-                {"id": "s1", "intent": "跑测试", "doc_markdown": "# 跑测试\n\n- `pytest -q`\n",
-                 "score": 0.95, "reusable": True, "conditions": ""},
-                {"id": "s2", "intent": "其他", "doc_markdown": "# 其他\n",
-                 "score": 0.3, "reusable": False, "conditions": ""},
+                {
+                    "id": "s1",
+                    "intent": "跑测试",
+                    "doc_markdown": "# 跑测试\n\n- `pytest -q`\n",
+                    "score": 0.95,
+                    "reusable": True,
+                    "conditions": "",
+                },
+                {
+                    "id": "s2",
+                    "intent": "其他",
+                    "doc_markdown": "# 其他\n",
+                    "score": 0.3,
+                    "reusable": False,
+                    "conditions": "",
+                },
             ],
         )
         assert "skill_reuse_plan" in result
@@ -237,13 +269,15 @@ class TestSkillReuse:
         agent = ReasoningAgent(llm=FakeLLM())
         result = agent.run(
             user_query="测试",
-            skill_reuse_plan=[{
-                "skill_id": "s1",
-                "intent": "跑测试",
-                "doc_markdown": "# 跑测试\n\n- `pytest -q`\n",
-                "score": 0.95,
-                "conditions": "",
-            }],
+            skill_reuse_plan=[
+                {
+                    "skill_id": "s1",
+                    "intent": "跑测试",
+                    "doc_markdown": "# 跑测试\n\n- `pytest -q`\n",
+                    "score": 0.95,
+                    "conditions": "",
+                }
+            ],
         )
         assert "final_response" in result
 
@@ -257,7 +291,8 @@ class TestStructuredRetrievalPlanning:
     def test_plan_retrieval_returns_dict(self):
         """_plan_retrieval 应返回 source→query 映射。"""
         sc = SearchCoordinator(
-            llm=FakeLLM(), embedder=FakeEmbedder(),
+            llm=FakeLLM(),
+            embedder=FakeEmbedder(),
             graph_store=NetworkXGraphStore(),
             skill_store=InMemorySkillStore(),
         )
@@ -266,11 +301,14 @@ class TestStructuredRetrievalPlanning:
 
     def test_plan_retrieval_fallback_on_error(self):
         """LLM 返回非法 JSON 时应安全回退。"""
+
         class BrokenLLM:
             def generate(self, messages, **kwargs):
                 return "这不是JSON"
+
         sc = SearchCoordinator(
-            llm=BrokenLLM(), embedder=FakeEmbedder(),
+            llm=BrokenLLM(),
+            embedder=FakeEmbedder(),
             graph_store=NetworkXGraphStore(),
             skill_store=InMemorySkillStore(),
         )
@@ -280,7 +318,8 @@ class TestStructuredRetrievalPlanning:
     def test_run_returns_both_sources(self):
         """run() 应同时返回图谱和技能检索结果。"""
         sc = SearchCoordinator(
-            llm=FakeLLM(), embedder=FakeEmbedder(),
+            llm=FakeLLM(),
+            embedder=FakeEmbedder(),
             graph_store=NetworkXGraphStore(),
             skill_store=InMemorySkillStore(),
         )
@@ -390,10 +429,12 @@ class TestThreeStepSynthesizer:
         synth = SynthesizerAgent(llm=FakeLLM())
         result = synth.run(
             user_query="测试",
-            retrieved_graph_memories=[{
-                "anchor": {"node_id": "A"},
-                "subgraph": {"nodes": [], "edges": []},
-            }],
+            retrieved_graph_memories=[
+                {
+                    "anchor": {"node_id": "A"},
+                    "subgraph": {"nodes": [], "edges": []},
+                }
+            ],
         )
         assert "provenance" in result
         assert isinstance(result["provenance"], list)
@@ -407,10 +448,26 @@ class TestThreeStepSynthesizer:
 
     def test_build_reuse_plan_static(self):
         """_build_reuse_plan 应只包含 reusable=True 的技能。"""
-        plan = SynthesizerAgent._build_reuse_plan([
-            {"id": "s1", "intent": "a", "doc_markdown": "# a", "score": 0.9, "reusable": True, "conditions": ""},
-            {"id": "s2", "intent": "b", "doc_markdown": "# b", "score": 0.3, "reusable": False, "conditions": ""},
-        ])
+        plan = SynthesizerAgent._build_reuse_plan(
+            [
+                {
+                    "id": "s1",
+                    "intent": "a",
+                    "doc_markdown": "# a",
+                    "score": 0.9,
+                    "reusable": True,
+                    "conditions": "",
+                },
+                {
+                    "id": "s2",
+                    "intent": "b",
+                    "doc_markdown": "# b",
+                    "score": 0.3,
+                    "reusable": False,
+                    "conditions": "",
+                },
+            ]
+        )
         assert len(plan) == 1
         assert plan[0]["skill_id"] == "s1"
 
@@ -486,6 +543,7 @@ class TestSessionMetadata:
 class TestEntityExtractorEnhanced:
     def test_extract_adds_timestamp(self):
         """提取结果应包含 timestamp。"""
+
         class FakeExtractLLM:
             def generate(self, messages, **kwargs):
                 return '[{"subject": {"name": "A", "label": "Person"}, "predicate": "knows", "object": {"name": "B", "label": "Person"}, "confidence": 0.9}]'
@@ -498,9 +556,10 @@ class TestEntityExtractorEnhanced:
 
     def test_extract_from_turns_with_session(self):
         """extract_from_turns 应传递 source_session。"""
+
         class FakeExtractLLM:
             def generate(self, messages, **kwargs):
-                return '[]'
+                return "[]"
 
         ext = EntityExtractor(llm=FakeExtractLLM())
         triples = ext.extract_from_turns(
@@ -530,10 +589,13 @@ class TestOperationalAPI:
         """PATCH /memory/session/{id}/meta 更新元数据。"""
         client = _make_client()
         client.post("/chat/complete", json={"session_id": "m1", "message": "hi"})
-        resp = client.patch("/memory/session/m1/meta", json={
-            "topic": "测试主题",
-            "tags": ["tag1", "tag2"],
-        })
+        resp = client.patch(
+            "/memory/session/m1/meta",
+            json={
+                "topic": "测试主题",
+                "tags": ["tag1", "tag2"],
+            },
+        )
         assert resp.status_code == 200
         assert "updated" in resp.json()["message"].lower()
 
@@ -613,11 +675,17 @@ class TestPipelineStateFields:
     def test_state_has_skill_reuse_plan(self):
         """PipelineState 应包含 skill_reuse_plan。"""
         from a_frame.core.state import PipelineState
+
         state: PipelineState = {"user_query": "test", "session_id": "s1", "skill_reuse_plan": []}
         assert state["skill_reuse_plan"] == []
 
     def test_state_has_provenance(self):
         """PipelineState 应包含 provenance。"""
         from a_frame.core.state import PipelineState
-        state: PipelineState = {"user_query": "test", "session_id": "s1", "provenance": [{"source": "graph"}]}
+
+        state: PipelineState = {
+            "user_query": "test",
+            "session_id": "s1",
+            "provenance": [{"source": "graph"}],
+        }
         assert len(state["provenance"]) == 1

@@ -81,3 +81,17 @@ class TestSynthesizerAgent:
             skills=[],
         )
         assert "事实: 张三在 Google 工作" in fragments
+
+    def test_format_graph_memories_include_constructed_context(self):
+        fragments = SynthesizerAgent._format_fragments(
+            graph_memories=[
+                {
+                    "anchor": {"node_id": "graphiti_context"},
+                    "subgraph": {"nodes": [], "edges": []},
+                    "constructed_context": "[GraphitiRetrievedFacts]\n- A --r--> B: something\n",
+                }
+            ],
+            skills=[],
+        )
+        assert "构造上下文:" in fragments
+        assert "GraphitiRetrievedFacts" in fragments

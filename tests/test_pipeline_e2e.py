@@ -5,6 +5,7 @@
 """
 
 from a_frame.core.factory import create_pipeline
+from a_frame.memory.graph.graphiti_engine import GraphitiSearchResult
 
 
 class FakeLLMForPipeline:
@@ -144,6 +145,29 @@ class TestPipelineWithGraphData:
         assert "background_context" in result
         assert result["final_response"]
         assert len(result.get("retrieved_graph_memories", [])) >= 1
+        assert "synthesizer" in llm.call_log
+        assert "reasoner" in llm.call_log
+
+
+class TestPipelineWithGraphitiSearch:
+    """在不依赖 Neo4j 的情况下验证 Graphiti constructor context 能被 pipeline 消费。"""
+
+    def test_graphiti_constructor_context_flow(self):
+        llm = FakeLLMForPipeline()
+        pipeline = create_pipeline(llm=llm, embedder=FakeEmbedder())
+
+        class FakeGraphitiEngine:
+            def search(self, **kwargs):
+                return GraphitiSearchResult(
+                    context="[GraphitiRetrievedFacts]\n- 张三 --works_at--> Google: 张三在 Google 工作\n",
+                    provenance=[{"fact_id": "f1", "mentions": True, "distance": 1}],
+                )
+
+        pipeline.search_coordinator.graphiti_engine = FakeGraphitiEngine()
+
+        result = pipeline.run(user_query="张三在哪里工作？", session_id="s-graphiti")
+        assert result.get("background_context")
+        assert result.get("final_response")
         assert "synthesizer" in llm.call_log
         assert "reasoner" in llm.call_log
 
