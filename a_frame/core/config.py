@@ -65,6 +65,11 @@ class Settings(BaseSettings):
 
     # ─── Graphiti GDS-based rerank/community ───
     graphiti_gds_distance_max_depth: int = 4
+    # Paper §2.3: periodic full-graph community refresh.
+    # refresh_all_communities() is called automatically every N episodes
+    # ingested globally (across all sessions) to correct drift from
+    # incremental dynamic extension.  Set to 0 to disable.
+    graphiti_community_refresh_every: int = 50
 
     # ─── Graphiti MMR (Maximal Marginal Relevance) ───
     graphiti_mmr_lambda: float = 0.5  # 1.0 = pure relevance, 0.0 = pure diversity

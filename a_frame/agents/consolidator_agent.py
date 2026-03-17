@@ -123,6 +123,7 @@ class ConsolidatorAgent(BaseAgent):
         skill_store: InMemorySkillStore,
         entity_extractor: EntityExtractor,
         graphiti_engine: "GraphitiEngine | None" = None,
+        community_refresh_every: int = 50,
     ):
         super().__init__(llm=llm, prompt_template=CONSOLIDATION_SYSTEM_PROMPT)
         self.embedder = embedder
@@ -133,6 +134,13 @@ class ConsolidatorAgent(BaseAgent):
 
         self._graphiti_last_episode_ingested: dict[str, int] = {}
         self._graphiti_last_semantic: dict[str, int] = {}
+
+        # Paper §2.3: periodic full-graph community refresh.
+        # Every _community_refresh_every semantic turns processed globally,
+        # refresh_all_communities() corrects drift from incremental dynamic
+        # extension (neighbor-voting).  0 = disabled.
+        self._community_refresh_every: int = max(0, community_refresh_every)
+        self._total_episodes_since_community_refresh: int = 0
 
         self._graphiti_semantic_builder = None
         if self.graphiti_engine is not None and hasattr(self.graphiti_engine, "store"):
@@ -252,6 +260,28 @@ class ConsolidatorAgent(BaseAgent):
                                 )
                             except Exception:
                                 pass
+
+                    # Paper §2.3: periodic full-graph community refresh.
+                    # Incremental dynamic extension (per-session above) drifts
+                    # over time; the paper requires periodic full-graph label
+                    # propagation to correct this drift.
+                    new_semantic_count = len(turns) - (last_semantic + 1)
+                    if new_semantic_count > 0:
+                        self._total_episodes_since_community_refresh += new_semantic_count
+                    if (
+                        self._community_refresh_every > 0
+                        and self._total_episodes_since_community_refresh
+                        >= self._community_refresh_every
+                        and hasattr(self.graphiti_engine, "refresh_all_communities")
+                    ):
+                        if strict:
+                            self.graphiti_engine.refresh_all_communities()
+                        else:
+                            try:
+                                self.graphiti_engine.refresh_all_communities()
+                            except Exception:
+                                pass
+                        self._total_episodes_since_community_refresh = 0
 
         # 格式化对话用于分析
         conversation_text = "\n".join(f"{t['role']}: {t['content']}" for t in turns)

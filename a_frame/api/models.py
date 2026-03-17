@@ -46,10 +46,36 @@ class SearchCoordinatorTrace(BaseModel):
 
 
 class ProvenanceItem(BaseModel):
-    source: str = ""
-    index: int = 0
-    relevance: float = 0.0
-    summary: str = ""
+    """溯源条目：携带一条 Fact 的检索评分元数据以及回溯到原始 Episode 的完整引用链。
+
+    Paper §2.1: "Semantic artifacts can be traced to their sources for citation
+    or quotation, while episodes can quickly retrieve their relevant entities
+    and facts."
+    """
+
+    # ── 评分/排名元数据 ──
+    source: str = ""          # 来源标识（如 "graphiti_retrieval"）
+    index: int = 0            # 在 provenance 列表中的位置（0-based）
+    relevance: float = 0.0    # 综合得分（RRF + boosts + cross-encoder）
+
+    # ── Fact 标识 ──
+    fact_id: str = ""         # 对应 Neo4j Fact 节点的 fact_id
+    summary: str = ""         # Fact 的 fact_text（人类可读）
+
+    # ── 检索信号细节 ──
+    rrf_score: float = 0.0
+    bm25_rank: int | None = None
+    bfs_rank: int | None = None
+    mention_count: int = 0
+    graph_distance: int | None = None
+    cross_encoder_score: float | None = None
+
+    # ── 双向 Episode 引用链（Paper §2.1）──
+    # 每条条目是一个 Episode 快照，包含 episode_id、session_id、role、
+    # content（原始文本）、turn_index、t_ref（参考时间戳）。
+    # 通过 EVIDENCE_FOR（Fact 直接证据）或 MENTIONS（实体出现）关系
+    # 从 Neo4j 回溯得到，按 turn_index 升序排列。
+    source_episodes: list[dict[str, Any]] = []
 
 
 class SynthesizerTrace(BaseModel):

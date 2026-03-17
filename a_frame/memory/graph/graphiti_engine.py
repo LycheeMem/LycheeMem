@@ -294,7 +294,6 @@ class GraphitiEngine:
         # Community retrieval (optional)
         # ──────────────────────────────────────
         communities: list[dict[str, Any]] = []
-        built_communities: list[dict[str, Any]] = []
         if include_communities:
             # 1) query-time retrieval
             if hasattr(self.store, "fulltext_search_communities"):
@@ -376,48 +375,6 @@ class GraphitiEngine:
                             extra = []
                     if extra:
                         communities.extend(list(extra))
-
-            # 2) dynamic refresh/build (label propagation)
-            if (
-                (not communities)
-                and session_id
-                and hasattr(self, "refresh_communities_for_session")
-            ):
-                if self.strict:
-                    built_communities = self.refresh_communities_for_session(
-                        session_id=session_id,
-                        limit=50,
-                    )
-                else:
-                    try:
-                        built_communities = self.refresh_communities_for_session(
-                            session_id=session_id,
-                            limit=50,
-                        )
-                    except Exception:
-                        built_communities = []
-
-            if (not communities) and (not built_communities) and anchor_entity_ids:
-                if self.strict:
-                    built_communities = self.build_or_refresh_communities_for_entities(
-                        anchor_entity_ids,
-                        entity_cache=entity_cache,
-                        edges=[(info.get("edge") or {}) for info in bfs_fact_candidates.values()],
-                    )
-                else:
-                    try:
-                        built_communities = self.build_or_refresh_communities_for_entities(
-                            anchor_entity_ids,
-                            entity_cache=entity_cache,
-                            edges=[
-                                (info.get("edge") or {}) for info in bfs_fact_candidates.values()
-                            ],
-                        )
-                    except Exception:
-                        built_communities = []
-
-            if not communities and built_communities:
-                communities = built_communities[:5]
 
         # ──────────────────────────────────────
         # Merge facts + rerank
@@ -700,6 +657,105 @@ class GraphitiEngine:
             n = entity_cache.get(eid) or {}
             return str(n.get("name") or eid)
 
+        # ──────────────────────────────────────
+        # Paper §2.1: Reverse Episode index — bidirectional citation lookup.
+        # "Semantic artifacts can be traced to their sources for citation or quotation,
+        #  while episodes can quickly retrieve their relevant entities and facts."
+        #
+        # For every ranked Fact: look up which Episodes have an EVIDENCE_FOR edge to it.
+        # For every anchor Entity: look up which Episodes have a MENTIONS edge to it.
+        # Results are stored in provenance_by_fact[fid]["source_episodes"] (list of episode
+        # dicts) and in a separate entity_source_episodes map, so the Constructor χ can
+        # emit a <SOURCES> block and callers can provide full citation chains.
+        # ──────────────────────────────────────
+
+        # Fact → source Episodes
+        fact_source_episodes: dict[str, list[dict[str, Any]]] = {}
+        if hasattr(self.store, "get_source_episodes_for_fact"):
+            for fid in ranked_fact_ids:
+                # Only trace canonical (non-synthetic) fact IDs stored in Neo4j.
+                # Synthetic BFS-only IDs (prefixed "fact:") are skip-safe.
+                if fid.startswith("fact:"):
+                    continue
+                if self.strict:
+                    episodes = self.store.get_source_episodes_for_fact(fact_id=fid, limit=10)
+                else:
+                    try:
+                        episodes = self.store.get_source_episodes_for_fact(
+                            fact_id=fid, limit=10
+                        )
+                    except Exception:
+                        episodes = []
+                if episodes:
+                    fact_source_episodes[fid] = [dict(ep) for ep in episodes]
+        elif self.strict:
+            raise RuntimeError(
+                "Graphiti strict search requires store.get_source_episodes_for_fact() "
+                "for bidirectional citation (paper §2.1)"
+            )
+
+        # Entity → source Episodes (for anchor entities and fact endpoints)
+        entity_source_episodes: dict[str, list[dict[str, Any]]] = {}
+        if hasattr(self.store, "get_source_episodes_for_entity"):
+            # Collect all entity IDs visible in the top-ranked results.
+            entity_ids_to_trace: list[str] = []
+            for eid in anchor_entity_ids:
+                if eid and eid not in entity_ids_to_trace:
+                    entity_ids_to_trace.append(eid)
+            for fid in ranked_fact_ids:
+                row = fact_by_id.get(fid) or {}
+                for endpoint in [row.get("source"), row.get("target")]:
+                    endpoint = (endpoint or "").strip()
+                    if endpoint and endpoint not in entity_ids_to_trace:
+                        entity_ids_to_trace.append(endpoint)
+
+            for eid in entity_ids_to_trace:
+                if self.strict:
+                    ep_list = self.store.get_source_episodes_for_entity(
+                        entity_id=eid, limit=5
+                    )
+                else:
+                    try:
+                        ep_list = self.store.get_source_episodes_for_entity(
+                            entity_id=eid, limit=5
+                        )
+                    except Exception:
+                        ep_list = []
+                if ep_list:
+                    entity_source_episodes[eid] = [dict(ep) for ep in ep_list]
+
+        # Enrich provenance_by_fact with the fetched Episode citations.
+        for fid in ranked_fact_ids:
+            if fid not in provenance_by_fact:
+                continue
+            row = fact_by_id.get(fid) or {}
+            src_eid = str(row.get("source") or "").strip()
+            tgt_eid = str(row.get("target") or "").strip()
+
+            # Source episodes from EVIDENCE_FOR (direct Fact citation)
+            fact_eps = fact_source_episodes.get(fid, [])
+
+            # Merge entity-originated episodes as fallback (MENTIONS)
+            # so even facts not directly linked via EVIDENCE_FOR can surface
+            # the Episodes that introduced the participating entities.
+            entity_ep_src = entity_source_episodes.get(src_eid, [])
+            entity_ep_tgt = entity_source_episodes.get(tgt_eid, [])
+
+            # Deduplicate by episode_id across all three lists.
+            seen_ep_ids: set[str] = set()
+            merged_eps: list[dict[str, Any]] = []
+            for ep in fact_eps + entity_ep_src + entity_ep_tgt:
+                ep_id = str(ep.get("episode_id") or "").strip()
+                if ep_id and ep_id not in seen_ep_ids:
+                    seen_ep_ids.add(ep_id)
+                    merged_eps.append(ep)
+
+            # Sort by turn_index ascending so citations appear in conversation order.
+            merged_eps.sort(key=lambda e: int(e.get("turn_index") or 0))
+
+            provenance_by_fact[fid]["source_episodes"] = merged_eps
+            provenance_by_fact[fid]["fact_id"] = fid
+
         # Constructor context (paper template)
         lines: list[str] = []
         lines.append("FACTS and ENTITIES represent relevant context to the current conversation.")
@@ -769,6 +825,65 @@ class GraphitiEngine:
                 else:
                     lines.append(f"- {name}")
             lines.append("</COMMUNITIES>")
+
+        # Paper §2.1: Sources block — bidirectional citation from semantic artifacts
+        # back to raw Episode data.  Each ranked Fact is annotated with the turn(s)
+        # that originally introduced it (via EVIDENCE_FOR) and the turns that first
+        # mentioned its participating entities (via MENTIONS).  This lets the LLM
+        # agent cite or quote source material rather than rely on its own paraphrase.
+        has_citations = any(
+            provenance_by_fact.get(fid, {}).get("source_episodes")
+            for fid in ranked_fact_ids
+        )
+        if has_citations:
+            lines.append(
+                "The following shows the original conversation turns each fact was extracted from."
+            )
+            lines.append("format: FACT_TEXT [turn N (role): excerpt]")
+            lines.append("<SOURCES>")
+            for fid in ranked_fact_ids:
+                prov = provenance_by_fact.get(fid) or {}
+                source_eps: list[dict[str, Any]] = prov.get("source_episodes") or []
+                if not source_eps:
+                    continue
+                row = fact_by_id.get(fid) or {}
+                fact_text = str(row.get("fact") or row.get("fact_text") or "").strip()
+                if not fact_text:
+                    src_eid = str(row.get("source") or "").strip()
+                    tgt_eid = str(row.get("target") or "").strip()
+                    rel = str(row.get("relation") or "").strip()
+                    fact_text = (
+                        f"{_entity_name(src_eid)} --{rel}--> {_entity_name(tgt_eid)}"
+                    ).strip()
+
+                # Render source citations: show at most 3 Episodes per Fact to
+                # avoid bloating the context window.
+                citation_parts: list[str] = []
+                for ep in source_eps[:3]:
+                    turn_idx = ep.get("turn_index")
+                    role = str(ep.get("role") or "").strip()
+                    content = str(ep.get("content") or "").strip()
+                    t_ref = str(ep.get("t_ref") or "").strip()
+
+                    # Trim content to a representative excerpt (first 120 chars).
+                    excerpt = content[:120].replace("\n", " ").strip()
+                    if len(content) > 120:
+                        excerpt += "…"
+
+                    if turn_idx is not None:
+                        label = f"turn {turn_idx}"
+                        if role:
+                            label += f" ({role})"
+                        if t_ref:
+                            label += f" @ {t_ref}"
+                    else:
+                        label = role or "unknown"
+
+                    citation_parts.append(f"[{label}: {excerpt}]")
+
+                if citation_parts:
+                    lines.append(f"- {fact_text} " + " ".join(citation_parts))
+            lines.append("</SOURCES>")
 
         context = "\n".join(lines).strip() + "\n"
 

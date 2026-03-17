@@ -228,6 +228,7 @@ def create_pipeline(
         skill_store=skill_store,
         entity_extractor=entity_extractor,
         graphiti_engine=graphiti_engine,
+        community_refresh_every=settings.graphiti_community_refresh_every,
     )
 
     return AFramePipeline(
