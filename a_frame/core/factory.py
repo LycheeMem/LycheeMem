@@ -199,10 +199,12 @@ def create_pipeline(
             store=graphiti_store,
             strict=strict,
             community_llm=llm,
+            embedder=embedder,
             gds_distance_max_depth=int(getattr(settings, "graphiti_gds_distance_max_depth", 4)),
             cross_encoder=cross_encoder,
             cross_encoder_top_n=int(getattr(settings, "graphiti_cross_encoder_top_n", 20)),
             cross_encoder_weight=float(getattr(settings, "graphiti_cross_encoder_weight", 1.0)),
+            mmr_lambda=float(getattr(settings, "graphiti_mmr_lambda", 0.5)),
         )
 
     # 5 个认知组件

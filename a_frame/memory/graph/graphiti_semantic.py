@@ -873,6 +873,11 @@ class GraphitiSemanticBuilder:
                     except Exception:
                         continue
 
+            # Paper §2.2.2 hyper-edge: canonical_fact_hash groups semantically
+            # identical facts across different entity pairs.
+            canonical_text = (resolved_fact.get("fact_text") or "").strip().lower()
+            canonical_fact_hash = _sha1(canonical_text) if canonical_text else None
+
             self.store.upsert_fact(
                 fact_id=fact_id,
                 subject_entity_id=subj_id,
@@ -883,6 +888,7 @@ class GraphitiSemanticBuilder:
                 embedding=fact_embedding,
                 confidence=float(resolved_fact.get("confidence") or 1.0),
                 source_session=session_id,
+                canonical_fact_hash=canonical_fact_hash,
                 t_created=reference_timestamp,
                 t_valid_from=t_valid_from,
                 t_valid_to=t_valid_to,

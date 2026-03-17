@@ -113,6 +113,14 @@ def schema_statements(
                 "CREATE INDEX fact_t_tx_expired IF NOT EXISTS FOR (f:Fact) ON (f.t_tx_expired)"
             ),
         ),
+        # Paper §2.2.2 hyper-edge: canonical_fact_hash groups the same semantic
+        # fact across different entity pairs.
+        CypherStatement(
+            name="index_fact_canonical_hash",
+            cypher=(
+                "CREATE INDEX fact_canonical_hash IF NOT EXISTS FOR (f:Fact) ON (f.canonical_fact_hash)"
+            ),
+        ),
         # ── Fulltext indexes (BM25 / keyword) ──
         CypherStatement(
             name="fulltext_entity",

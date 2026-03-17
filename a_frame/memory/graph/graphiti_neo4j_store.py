@@ -474,6 +474,7 @@ class GraphitiNeo4jStore:
             "MATCH (f:Fact) "
             "WHERE f.subject_entity_id IS NOT NULL AND f.object_entity_id IS NOT NULL "
             "  AND (f.subject_entity_id IN $entity_ids OR f.object_entity_id IN $entity_ids) "
+            "  AND f.t_tx_expired IS NULL "
             "OPTIONAL MATCH (e:Episode)-[:EVIDENCE_FOR]->(f) "
             "WITH f, collect(e.episode_id) AS episode_ids "
             "RETURN "
@@ -585,6 +586,7 @@ class GraphitiNeo4jStore:
             "    f.embedding = CASE WHEN $embedding IS NULL THEN f.embedding ELSE $embedding END, "
             "    f.confidence = $confidence, "
             "    f.source_session = $source_session, "
+            "    f.canonical_fact_hash = CASE WHEN $canonical_fact_hash IS NULL THEN f.canonical_fact_hash ELSE $canonical_fact_hash END, "
             "    f.t_created = coalesce(f.t_created, $t_created), "
             "    f.t_valid_from = coalesce(f.t_valid_from, $t_valid_from), "
             "    f.t_valid_to = coalesce(f.t_valid_to, $t_valid_to), "
@@ -610,6 +612,7 @@ class GraphitiNeo4jStore:
         embedding: list[float] | None = None,
         confidence: float = 1.0,
         source_session: str = "",
+        canonical_fact_hash: str | None = None,
         t_created: str | None = None,
         t_valid_from: str | None = None,
         t_valid_to: str | None = None,
@@ -635,6 +638,7 @@ class GraphitiNeo4jStore:
                 embedding=embedding,
                 confidence=float(confidence),
                 source_session=source_session,
+                canonical_fact_hash=canonical_fact_hash,
                 t_created=t_created,
                 t_valid_from=t_valid_from,
                 t_valid_to=t_valid_to,
@@ -643,6 +647,43 @@ class GraphitiNeo4jStore:
             )
             record = rs.single()
         return (record or {}).get("fact_id") or fact_id
+
+    # ──────────────────────────────────────
+    # Hyper-edge: canonical fact hash (Paper §2.2.2)
+    # ──────────────────────────────────────
+
+    @staticmethod
+    def list_facts_by_canonical_hash_cypher() -> str:
+        """Query all Fact instances sharing the same canonical_fact_hash.
+
+        Paper §2.2.2: "the same fact can be extracted multiple times between
+        different entities, enabling Graphiti to model complex multi-entity facts
+        through an implementation of hyper-edges."
+        """
+        return (
+            "MATCH (f:Fact) "
+            "WHERE f.canonical_fact_hash = $canonical_fact_hash "
+            "  AND f.t_tx_expired IS NULL "
+            "RETURN f.fact_id AS fact_id, f.subject_entity_id AS subject_entity_id, "
+            "f.object_entity_id AS object_entity_id, f.relation_type AS relation_type, "
+            "f.fact_text AS fact_text, f.evidence_text AS evidence_text, "
+            "f.confidence AS confidence, "
+            "coalesce(f.t_valid_from, '') AS t_valid_from, "
+            "coalesce(f.t_valid_to, '') AS t_valid_to "
+            "ORDER BY f.t_created DESC "
+            "LIMIT $limit"
+        )
+
+    def list_facts_by_canonical_hash(
+        self, *, canonical_fact_hash: str, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(
+                self.list_facts_by_canonical_hash_cypher(),
+                canonical_fact_hash=canonical_fact_hash,
+                limit=limit,
+            )
+            return [dict(r) for r in rs]
 
     @staticmethod
     def list_facts_between_cypher() -> str:
@@ -898,6 +939,7 @@ class GraphitiNeo4jStore:
         return (
             "CALL db.index.fulltext.queryNodes('fact_fulltext', $q) "
             "YIELD node, score "
+            "WHERE node.t_tx_expired IS NULL "
             "RETURN node.fact_id AS fact_id, node.subject_entity_id AS source, node.object_entity_id AS target, "
             "coalesce(node.relation_type, '') AS relation, coalesce(node.fact_text, '') AS fact, "
             "coalesce(node.evidence_text, '') AS evidence, coalesce(node.confidence, 1.0) AS confidence, "
@@ -914,6 +956,7 @@ class GraphitiNeo4jStore:
         return (
             "CALL db.index.vector.queryNodes('fact_embedding', $k, $embedding) "
             "YIELD node, score "
+            "WHERE node.t_tx_expired IS NULL "
             "RETURN node.fact_id AS fact_id, node.subject_entity_id AS source, node.object_entity_id AS target, "
             "coalesce(node.relation_type, '') AS relation, coalesce(node.fact_text, '') AS fact, "
             "coalesce(node.evidence_text, '') AS evidence, coalesce(node.confidence, 1.0) AS confidence, "

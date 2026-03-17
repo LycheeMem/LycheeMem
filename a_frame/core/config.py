@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     # ─── Graphiti GDS-based rerank/community ───
     graphiti_gds_distance_max_depth: int = 4
 
+    # ─── Graphiti MMR (Maximal Marginal Relevance) ───
+    graphiti_mmr_lambda: float = 0.5  # 1.0 = pure relevance, 0.0 = pure diversity
+
     # ─── Graphiti Cross-Encoder Rerank (Gemini) ───
     graphiti_cross_encoder_enabled: bool = True
     graphiti_cross_encoder_model: str = "gemini-3.1-flash-lite-preview"

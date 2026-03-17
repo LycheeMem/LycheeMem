@@ -132,7 +132,7 @@ class ConsolidatorAgent(BaseAgent):
         self.graphiti_engine = graphiti_engine
 
         self._graphiti_last_episode_ingested: dict[str, int] = {}
-        self._graphiti_last_user_semantic: dict[str, int] = {}
+        self._graphiti_last_semantic: dict[str, int] = {}
 
         self._graphiti_semantic_builder = None
         if self.graphiti_engine is not None and hasattr(self.graphiti_engine, "store"):
@@ -181,6 +181,9 @@ class ConsolidatorAgent(BaseAgent):
                 if not role and not content:
                     continue
                 t_ref = str(t.get("created_at") or now_iso)
+                # Paper §2.1: episode_type defaults to "message" for
+                # conversation turns.  Future callers may pass text/json.
+                ep_type = str(t.get("episode_type") or "message")
                 self.graphiti_engine.ingest_episode(
                     session_id=session_id,
                     turn_index=idx,
@@ -193,6 +196,7 @@ class ConsolidatorAgent(BaseAgent):
                         role=role,
                         content=content,
                     ),
+                    episode_type=ep_type,
                 )
             self._graphiti_last_episode_ingested[session_id] = len(turns) - 1
 
@@ -216,12 +220,14 @@ class ConsolidatorAgent(BaseAgent):
                             content=str(current_turn.get("content") or ""),
                         )
                         reference_timestamp = str(current_turn.get("created_at") or now_iso)
+                        ep_type = str(current_turn.get("episode_type") or "message")
                         built = self._graphiti_semantic_builder.ingest_user_turn(
                             session_id=session_id,
                             episode_id=episode_id,
                             previous_turns=previous_turns,
                             current_turn=current_turn,
                             reference_timestamp=reference_timestamp,
+                            episode_type=ep_type,
                         )
                         graphiti_entities_added = int(built.get("entities_added", 0))
                         graphiti_facts_added = int(built.get("facts_added", 0))
