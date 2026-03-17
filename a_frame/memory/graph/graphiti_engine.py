@@ -43,6 +43,7 @@ class GraphitiEngine:
         cross_encoder_top_n: int = 20,
         cross_encoder_weight: float = 1.0,
         mmr_lambda: float = 0.5,
+        bfs_recent_episode_limit: int = 4,
     ):
         self.store = store
         self.strict = bool(strict)
@@ -53,6 +54,8 @@ class GraphitiEngine:
         self.cross_encoder_top_n = max(1, int(cross_encoder_top_n))
         self.cross_encoder_weight = float(cross_encoder_weight)
         self.mmr_lambda = max(0.0, min(1.0, float(mmr_lambda)))
+        # Paper §3.1: configurable number of recent episodes used as BFS seeds.
+        self.bfs_recent_episode_limit = max(1, int(bfs_recent_episode_limit))
 
     @staticmethod
     def _default_episode_id(*, session_id: str, turn_index: int, role: str, content: str) -> str:
@@ -196,7 +199,7 @@ class GraphitiEngine:
                 try:
                     recent_episode_entity_ids = self.store.list_recent_entity_ids_from_episodes(
                         session_id=str(session_id),
-                        episode_limit=4,
+                        episode_limit=self.bfs_recent_episode_limit,
                         entity_limit=20,
                     )
                 except Exception as e:

@@ -65,6 +65,11 @@ class Settings(BaseSettings):
 
     # ─── Graphiti GDS-based rerank/community ───
     graphiti_gds_distance_max_depth: int = 4
+    # Paper §3.1: number of recent episodes used as BFS seeds (φ_bfs).
+    # "particularly valuable when using recent episodes as seeds for the
+    # breadth-first search" — default 4 mirrors the n=4 context window used
+    # for entity extraction (§2.2.1).
+    graphiti_bfs_recent_episode_limit: int = 4
     # Paper §2.3: periodic full-graph community refresh.
     # refresh_all_communities() is called automatically every N episodes
     # ingested globally (across all sessions) to correct drift from

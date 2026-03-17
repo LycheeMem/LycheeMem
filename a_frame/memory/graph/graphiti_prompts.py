@@ -247,6 +247,7 @@ Guidelines:
 2. Remove any entity that cannot be traced to the CURRENT MESSAGE text.
 3. Add any significant entity that was missed.
 4. Be conservative: only add entities with clear textual evidence.
+5. DO NOT add or retain entities for temporal information like dates, times, or years (e.g. "next Thursday", "2024", "last summer"). These are stored on edges, not as entity nodes.
 
 Return STRICT JSON as a list of objects (the corrected full entity list), each with:
 - name: string

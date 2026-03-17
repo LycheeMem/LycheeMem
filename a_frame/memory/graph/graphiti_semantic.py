@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass
 import datetime
 from typing import Any
@@ -36,6 +37,36 @@ from a_frame.memory.graph.graphiti_prompts import (
 
 def _sha1(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+# Paper §2.2.1 / Appendix §6.1.1: "DO NOT create nodes for temporal information
+# like dates, times or years".
+# Matches bare years (4-digit), date strings (YYYY-MM-DD, MM/DD/YYYY etc.),
+# ISO timestamps, relative-time phrases like "next Thursday" / "last summer",
+# and pure month/day names without a subject noun.
+_TEMPORAL_ENTITY_RE = re.compile(
+    r'^('  # full-name matches only
+    # bare 4-digit year
+    r'\d{4}'
+    # ISO date / datetime
+    r'|\d{4}-\d{2}-\d{2}(T[\d:Z.+-]+)?'
+    # US / EU numeric dates
+    r'|\d{1,2}[/\-\.]\d{1,2}([/\-\.]\d{2,4})?'
+    # relative-time phrases: "last/next/this + time-word"
+    r'|(?:last|next|this|past|coming)\s+(?:week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december|summer|winter|fall|spring|quarter)'
+    # bare time expressions: "two weeks ago", "in three days", etc.
+    r'|(?:in\s+)?(?:a\s+)?(?:few|couple\s+of|\d+)\s+(?:second|minute|hour|day|week|month|year)s?(?:\s+ago)?'
+    # just a month name alone
+    r'|(?:january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+\d{1,2}(?:st|nd|rd|th)?)?(?:,?\s*\d{4})?'
+    r')$',
+    re.IGNORECASE,
+)
+
+
+def _is_temporal_entity(name: str) -> bool:
+    """Return True if *name* looks like a bare date/time/year token that should
+    be stored on edges rather than as an entity node (paper §2.2.1)."""
+    return bool(_TEMPORAL_ENTITY_RE.match(name.strip()))
 
 
 def _safe_json_loads(text: str) -> Any:
@@ -114,6 +145,11 @@ class ResolvedEntity:
     summary: str = ""
     aliases: list[str] | None = None
     type_label: str = ""
+    # True when entity resolution identified a duplicate and the LLM produced
+    # a merged summary (paper §2.2.1 "generate an updated name and summary").
+    # Callers should pass force_summary=True to upsert_entity so the
+    # LLM-fused summary is never discarded by the length-comparison safety-net.
+    is_duplicate: bool = False
 
 
 @dataclass(slots=True)
@@ -298,6 +334,13 @@ class GraphitiSemanticBuilder:
             name = str(item.get("name") or "").strip()
             if not name:
                 continue
+            # Paper §2.2.1 / Appendix §6.1.1: "DO NOT create nodes for temporal
+            # information like dates, times or years".
+            # The reflection prompt carries this instruction, but LLMs can still
+            # slip temporal tokens through.  Guard programmatically by rejecting
+            # names that look like bare dates, years, or time expressions.
+            if _is_temporal_entity(name):
+                continue
             out.append(
                 {
                     "name": name,
@@ -403,13 +446,29 @@ class GraphitiSemanticBuilder:
         is_dup = bool(data.get("is_duplicate"))
         existing_id = str(data.get("existing_entity_id") or "").strip() or None
         resolved_name = str(data.get("name") or name).strip()
-        resolved_summary = str(data.get("summary") or new_entity.get("summary") or "").strip()
         resolved_aliases = (
             data.get("aliases")
             if isinstance(data.get("aliases"), list)
             else list(new_entity.get("aliases") or [])
         )
         resolved_type = str(data.get("type_label") or new_entity.get("type_label") or "").strip()
+
+        # Paper §2.2.1: when the LLM confirms a duplicate it is also asked to
+        # "generate an updated name and summary" having seen both the existing
+        # entity summary (in existing_nodes) and the new extraction.
+        # We therefore prefer data["summary"] (the LLM fusion) over the raw
+        # new_entity summary, but only fall back to the latter when the LLM
+        # returned nothing.
+        llm_fused_summary = str(data.get("summary") or "").strip()
+        if is_dup and llm_fused_summary:
+            # Genuine LLM-merged summary: mark for unconditional write-back.
+            resolved_summary = llm_fused_summary
+            force_summary = True
+        else:
+            # New entity or LLM returned empty summary: use extraction summary;
+            # let the Cypher length-guard decide on concurrent-write conflicts.
+            resolved_summary = str(data.get("summary") or new_entity.get("summary") or "").strip()
+            force_summary = False
 
         if is_dup and existing_id:
             entity_id = existing_id
@@ -422,6 +481,7 @@ class GraphitiSemanticBuilder:
             summary=resolved_summary,
             aliases=resolved_aliases,
             type_label=resolved_type,
+            is_duplicate=force_summary,
         )
 
     def extract_facts(
@@ -742,6 +802,9 @@ class GraphitiSemanticBuilder:
                 embedding=emb,
                 source_session=session_id,
                 t_created=reference_timestamp,
+                # Paper §2.2.1: when is_duplicate=True the summary is the
+                # LLM-fused version; write it unconditionally.
+                force_summary=r.is_duplicate,
             )
 
             # Paper: episodic edges linking Episode → referenced semantic entities.

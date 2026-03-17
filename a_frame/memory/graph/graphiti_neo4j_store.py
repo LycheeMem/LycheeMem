@@ -237,18 +237,24 @@ class GraphitiNeo4jStore:
 
     @staticmethod
     def entity_upsert_cypher() -> str:
-        # Paper §2.2.1: entity summary should accumulate across episodes.
-        # - New entity (e.summary IS NULL / ''): use $summary as-is.
-        # - Existing entity: keep the longer of old vs new summary to prevent
-        #   information loss from partial episode-local extractions.
-        #   Entity resolution already sees both summaries and returns a merged
-        #   one, so normally $summary is already the richest version.  The
-        #   size() guard is a safety net.
+        # Paper §2.2.1: entity summary accumulation strategy.
+        #
+        # When entity resolution identifies a duplicate it instructs the LLM to
+        # "generate an updated name and summary" (§2.2.1 / Appendix §6.1.2)
+        # seeing *both* the existing entity summary and the new extraction.
+        # That LLM-fused summary should ALWAYS be written back regardless of
+        # its character length (a concise merged summary is still better than
+        # a longer but stale one).  We signal this with $force_summary = true.
+        #
+        # For non-duplicate (new entity) writes, $force_summary = false and
+        # we fall back to the length guard as a safety-net (the entity may
+        # already exist from a concurrent write; keep the longer version).
         return (
             "MERGE (e:Entity {entity_id: $entity_id}) "
             "SET e.name = $name, "
             "    e.summary = CASE "
             "        WHEN $summary IS NULL OR $summary = '' THEN coalesce(e.summary, '') "
+            "        WHEN $force_summary THEN $summary "
             "        WHEN e.summary IS NULL OR e.summary = '' THEN $summary "
             "        WHEN size($summary) >= size(e.summary) THEN $summary "
             "        ELSE e.summary END, "
@@ -272,6 +278,7 @@ class GraphitiNeo4jStore:
         embedding: list[float] | None = None,
         source_session: str = "",
         t_created: str | None = None,
+        force_summary: bool = False,
     ) -> str:
         if t_created is None:
             t_created = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -288,6 +295,7 @@ class GraphitiNeo4jStore:
                 source_session=source_session,
                 t_created=t_created,
                 t_updated=t_updated,
+                force_summary=force_summary,
             )
             record = rs.single()
         return (record or {}).get("entity_id") or entity_id
