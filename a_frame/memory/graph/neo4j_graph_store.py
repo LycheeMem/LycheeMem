@@ -7,7 +7,6 @@ Neo4j 图谱存储。
 
 from __future__ import annotations
 
-import json
 import datetime
 from typing import Any
 from typing import Iterable

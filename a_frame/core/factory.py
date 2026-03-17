@@ -26,6 +26,7 @@ def _create_session_store(settings=None):
     backend = getattr(settings, "session_backend", "memory") if settings else "memory"
     if backend == "sqlite":
         from a_frame.memory.working.sqlite_session_store import SQLiteSessionStore
+
         return SQLiteSessionStore(db_path=settings.sqlite_db_path)
     return InMemorySessionStore()
 
@@ -35,11 +36,16 @@ def _create_graph_store(settings=None, embedder: BaseEmbedder | None = None):
     backend = getattr(settings, "graph_backend", "memory") if settings else "memory"
     enable_semantic_search = getattr(settings, "graph_semantic_search", True) if settings else True
     enable_semantic_merge = getattr(settings, "graph_semantic_merge", False) if settings else False
-    merge_threshold = getattr(settings, "graph_semantic_merge_threshold", 0.88) if settings else 0.88
-    search_threshold = getattr(settings, "graph_semantic_search_threshold", 0.55) if settings else 0.55
+    merge_threshold = (
+        getattr(settings, "graph_semantic_merge_threshold", 0.88) if settings else 0.88
+    )
+    search_threshold = (
+        getattr(settings, "graph_semantic_search_threshold", 0.55) if settings else 0.55
+    )
     scan_limit = getattr(settings, "graph_semantic_scan_limit", 5000) if settings else 5000
     if backend == "neo4j":
         from a_frame.memory.graph.neo4j_graph_store import Neo4jGraphStore
+
         return Neo4jGraphStore(
             uri=settings.neo4j_uri,
             user=settings.neo4j_user,
@@ -65,9 +71,11 @@ def _create_skill_store(settings=None, embedding_dim: int = 768):
     backend = getattr(settings, "skill_backend", "memory") if settings else "memory"
     if backend == "file":
         from a_frame.memory.procedural.file_skill_store import FileSkillStore
+
         return FileSkillStore(file_path=settings.skill_file_path)
     if backend == "lancedb":
         from a_frame.memory.procedural.lancedb_skill_store import LanceDBSkillStore
+
         return LanceDBSkillStore(
             db_path=settings.lancedb_path,
             embedding_dim=embedding_dim,
@@ -134,12 +142,28 @@ def create_pipeline(
     )
     synthesizer = SynthesizerAgent(llm=llm)
     reasoner = ReasoningAgent(llm=llm)
+
+    graphiti_engine = None
+    if settings and getattr(settings, "graphiti_enabled", False):
+        from a_frame.memory.graph.graphiti_engine import GraphitiEngine
+        from a_frame.memory.graph.graphiti_neo4j_store import GraphitiNeo4jStore
+
+        graphiti_store = GraphitiNeo4jStore(
+            uri=settings.neo4j_uri,
+            user=settings.neo4j_user,
+            password=settings.neo4j_password,
+            database=getattr(settings, "graphiti_database", "neo4j"),
+            init_schema=True,
+        )
+        graphiti_engine = GraphitiEngine(store=graphiti_store)
+
     consolidator = ConsolidatorAgent(
         llm=llm,
         embedder=embedder,
         graph_store=graph_store,
         skill_store=skill_store,
         entity_extractor=entity_extractor,
+        graphiti_engine=graphiti_engine,
     )
 
     return AFramePipeline(

@@ -35,9 +35,9 @@ class Settings(BaseSettings):
     wm_block_threshold: float = 0.9
 
     # ─── 存储后端选择 ───
-    session_backend: str = "sqlite"   # "memory" | "sqlite"
-    graph_backend: str = "neo4j"     # "memory" | "neo4j"
-    skill_backend: str = "file"       # "memory" | "file" | "lancedb"
+    session_backend: str = "sqlite"  # "memory" | "sqlite"
+    graph_backend: str = "neo4j"  # "memory" | "neo4j"
+    skill_backend: str = "file"  # "memory" | "file" | "lancedb"
 
     # ─── SQLite (会话持久化) ───
     sqlite_db_path: str = "a_frame_sessions.db"
@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = "Lejda-EpJh266.k"
+
+    # ─── Graphiti(论文) 图谱引擎 ───
+    graphiti_enabled: bool = False
+    graphiti_database: str = "neo4j"
 
     # ─── Graph Semantic (向量检索 / 同义合并) ───
     graph_semantic_search: bool = True
@@ -64,7 +68,7 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
-    model_config = SettingsConfigDict(extra='ignore', env_file='.env', env_file_encoding='utf-8')
+    model_config = SettingsConfigDict(extra="ignore", env_file=".env", env_file_encoding="utf-8")
 
 
 settings = Settings()

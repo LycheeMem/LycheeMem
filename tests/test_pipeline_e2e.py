@@ -95,7 +95,8 @@ class TestPipelineE2E:
         assert "retrieved_graph_memories" in result
         assert "retrieved_skills" in result
         assert "background_context" in result
-        assert "synthesizer" in llm.call_log
+        # Synthesizer 节点会运行，但当检索片段为空时会直接返回空 context（不触发 LLM 调用）。
+        assert "reasoner" in llm.call_log
 
     def test_session_persistence(self):
         """测试多轮对话的会话持久化。"""

@@ -9,7 +9,11 @@
 
 from __future__ import annotations
 
+import datetime
+import hashlib
 from typing import Any
+
+from typing import TYPE_CHECKING
 
 from a_frame.agents.base_agent import BaseAgent
 from a_frame.embedder.base import BaseEmbedder
@@ -17,6 +21,9 @@ from a_frame.llm.base import BaseLLM
 from a_frame.memory.graph.entity_extractor import EntityExtractor
 from a_frame.memory.graph.graph_store import NetworkXGraphStore
 from a_frame.memory.procedural.skill_store import InMemorySkillStore
+
+if TYPE_CHECKING:
+    from a_frame.memory.graph.graphiti_engine import GraphitiEngine
 
 CONSOLIDATION_SYSTEM_PROMPT = """\
 你是一个「记忆固化专家（Memory Consolidator）」。
@@ -115,12 +122,19 @@ class ConsolidatorAgent(BaseAgent):
         graph_store: NetworkXGraphStore,
         skill_store: InMemorySkillStore,
         entity_extractor: EntityExtractor,
+        graphiti_engine: "GraphitiEngine | None" = None,
     ):
         super().__init__(llm=llm, prompt_template=CONSOLIDATION_SYSTEM_PROMPT)
         self.embedder = embedder
         self.graph_store = graph_store
         self.skill_store = skill_store
         self.entity_extractor = entity_extractor
+        self.graphiti_engine = graphiti_engine
+
+    @staticmethod
+    def _episode_id(*, session_id: str, turn_index: int, role: str, content: str) -> str:
+        raw = f"{session_id}|{turn_index}|{role}|{content}".encode("utf-8")
+        return hashlib.sha1(raw).hexdigest()
 
     def run(
         self,
@@ -139,10 +153,30 @@ class ConsolidatorAgent(BaseAgent):
         if not turns:
             return {"entities_added": 0, "skills_added": 0}
 
+        # 0. Episode raw ingestion（可选；不影响后续检索/回答）
+        if self.graphiti_engine is not None and session_id:
+            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            for idx, t in enumerate(turns):
+                role = t.get("role", "")
+                content = t.get("content", "")
+                if not role and not content:
+                    continue
+                self.graphiti_engine.ingest_episode(
+                    session_id=session_id,
+                    turn_index=idx,
+                    role=role,
+                    content=content,
+                    t_ref=now_iso,
+                    episode_id=self._episode_id(
+                        session_id=session_id,
+                        turn_index=idx,
+                        role=role,
+                        content=content,
+                    ),
+                )
+
         # 格式化对话用于分析
-        conversation_text = "\n".join(
-            f"{t['role']}: {t['content']}" for t in turns
-        )
+        conversation_text = "\n".join(f"{t['role']}: {t['content']}" for t in turns)
 
         # 1. 用 LLM 分析对话，判断是否有新技能和是否需要实体抽取
         response = self._call_llm(
@@ -172,11 +206,15 @@ class ConsolidatorAgent(BaseAgent):
             doc_markdown = skill.get("doc_markdown", "")
             if intent and doc_markdown:
                 embedding = self.embedder.embed_query(intent)
-                self.skill_store.add([{
-                    "intent": intent,
-                    "embedding": embedding,
-                    "doc_markdown": doc_markdown,
-                }])
+                self.skill_store.add(
+                    [
+                        {
+                            "intent": intent,
+                            "embedding": embedding,
+                            "doc_markdown": doc_markdown,
+                        }
+                    ]
+                )
                 skills_added += 1
 
         return {
