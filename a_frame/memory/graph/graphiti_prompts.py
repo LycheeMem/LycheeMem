@@ -2,7 +2,9 @@
 
 说明：
 - 这些 prompts 参考论文附录的结构（entity/fact extraction + resolution）。
-- 这里以 message 类型 Episode 为主：previous_messages + current_message。
+- message 类型 Episode：previous_messages + current_message (对话格式)。
+- text / json 类型 Episode：same template placeholders，但 guideline
+  不包含 speaker extraction（论文 §2.1 要求 type-specific handling）。
 - 输出要求为严格 JSON（便于自动解析与单测 FakeLLM）。
 """
 
@@ -28,6 +30,34 @@ Guidelines:
 3. DO NOT create nodes for relationships or actions.
 4. DO NOT extract entities for temporal information like dates/times/years.
 5. Be as explicit as possible.
+
+Return STRICT JSON as a list of objects, each with:
+- name: string
+- type_label: string (optional)
+- summary: string (optional)
+- aliases: list[string] (optional)
+"""
+
+
+# Paper §2.1: text / JSON episodes have no speaker metadata.
+ENTITY_EXTRACTION_TEXT_JSON_SYSTEM_PROMPT = """\
+You are an information extraction system.
+
+Given the context below, extract entity nodes from the CURRENT CONTENT that are explicitly or implicitly mentioned.
+
+<PREVIOUS MESSAGES>
+{previous_messages}
+</PREVIOUS MESSAGES>
+
+<CURRENT CONTENT>
+{current_message}
+</CURRENT CONTENT>
+
+Guidelines:
+1. Extract all significant entities, concepts, or actors mentioned in the CURRENT CONTENT.
+2. DO NOT create nodes for relationships or actions.
+3. DO NOT extract entities for temporal information like dates/times/years.
+4. Be as explicit as possible in your node names, using full names.
 
 Return STRICT JSON as a list of objects, each with:
 - name: string
@@ -192,6 +222,40 @@ Return STRICT JSON with:
 """
 
 
+ENTITY_REFLECTION_SYSTEM_PROMPT = """\
+You are an entity extraction review system performing a reflection step.
+
+Given the conversation context and a PRELIMINARY list of extracted entities, review the extraction for:
+1. **Hallucinated entities**: Entities in the preliminary list that are NOT mentioned or implied in the CURRENT MESSAGE. Mark these for removal.
+2. **Missing entities**: Entities that ARE mentioned or implied in the CURRENT MESSAGE but were missed. Add these.
+3. **Incomplete entities**: Entities with incorrect or missing type_label, summary, or aliases. Correct these.
+
+<PREVIOUS MESSAGES>
+{previous_messages}
+</PREVIOUS MESSAGES>
+
+<CURRENT MESSAGE>
+{current_message}
+</CURRENT MESSAGE>
+
+<PRELIMINARY ENTITIES>
+{preliminary_entities}
+</PRELIMINARY ENTITIES>
+
+Guidelines:
+1. The speaker/actor MUST always be present. If missing, add it.
+2. Remove any entity that cannot be traced to the CURRENT MESSAGE text.
+3. Add any significant entity that was missed.
+4. Be conservative: only add entities with clear textual evidence.
+
+Return STRICT JSON as a list of objects (the corrected full entity list), each with:
+- name: string
+- type_label: string (optional)
+- summary: string (optional)
+- aliases: list[string] (optional)
+"""
+
+
 COMMUNITY_SUMMARY_MAP_SYSTEM_PROMPT = """\
 You are a community summarization system.
 
@@ -215,12 +279,15 @@ You are a community summarization system.
 
 Given PARTIAL SUMMARIES for the same community, produce a final summary and a short community name.
 
+The community name should contain key terms and relevant subjects from the summaries, \
+enabling effective retrieval via embedding similarity search.
+
 <PARTIAL SUMMARIES>
 {partial_summaries}
 </PARTIAL SUMMARIES>
 
 Guidelines:
-1. The name should be short (2-6 words) and reflect the theme.
+1. The name should contain key terms and relevant subjects (2-8 words) that best represent the community.
 2. The summary should be concise and information-dense.
 
 Return STRICT JSON with:

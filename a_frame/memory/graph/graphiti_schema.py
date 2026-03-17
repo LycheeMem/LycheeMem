@@ -71,6 +71,12 @@ def schema_statements(
             ),
         ),
         CypherStatement(
+            name="index_episode_type",
+            cypher=(
+                "CREATE INDEX episode_type IF NOT EXISTS FOR (e:Episode) ON (e.episode_type)"
+            ),
+        ),
+        CypherStatement(
             name="index_fact_subject_object",
             cypher=(
                 "CREATE INDEX fact_subject_object IF NOT EXISTS "

@@ -22,6 +22,8 @@ from a_frame.embedder.base import BaseEmbedder
 from a_frame.llm.base import BaseLLM
 from a_frame.memory.graph.graphiti_prompts import (
     ENTITY_EXTRACTION_SYSTEM_PROMPT,
+    ENTITY_EXTRACTION_TEXT_JSON_SYSTEM_PROMPT,
+    ENTITY_REFLECTION_SYSTEM_PROMPT,
     ENTITY_RESOLUTION_SYSTEM_PROMPT,
     FACT_EXTRACTION_SYSTEM_PROMPT,
     FACT_CONTRADICTION_SYSTEM_PROMPT,
@@ -70,6 +72,22 @@ def _format_turns(turns: list[dict[str, Any]]) -> str:
         actor = role_map.get(role, role or "User")
         lines.append(f"{actor}: {content}")
     return "\n".join(lines)
+
+
+def _format_current_message(turn: dict[str, Any]) -> str:
+    """Format a single episode turn into a current_message string.
+
+    Paper §2.1: message / text / JSON each need specific handling.
+    - message: 'Actor: content' dialogue format (speaker extracted as entity).
+    - text:    raw text with no speaker prefix.
+    - json:    raw serialised JSON with no speaker prefix.
+    """
+    role = str(turn.get("role") or "")
+    content = str(turn.get("content") or "")
+    if role in ("text", "json"):
+        return content
+    actor = {"user": "User", "assistant": "Assistant", "system": "System"}.get(role, role or "User")
+    return f"{actor}: {content}"
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -149,11 +167,16 @@ class GraphitiSemanticBuilder:
         current_turn: dict[str, Any],
     ) -> list[dict[str, Any]]:
         previous_messages = _format_turns(previous_turns)
-        role = str(current_turn.get("role") or "")
-        actor = {"user": "User", "assistant": "Assistant", "system": "System"}.get(role, role)
-        current_message = f"{actor}: {current_turn.get('content', '')}"
+        current_message = _format_current_message(current_turn)
 
-        prompt = ENTITY_EXTRACTION_SYSTEM_PROMPT.format(
+        # Paper §2.1: text/json episodes have no speaker — use dedicated prompt.
+        role = str(current_turn.get("role") or "")
+        extraction_prompt = (
+            ENTITY_EXTRACTION_TEXT_JSON_SYSTEM_PROMPT
+            if role in ("text", "json")
+            else ENTITY_EXTRACTION_SYSTEM_PROMPT
+        )
+        prompt = extraction_prompt.format(
             previous_messages=previous_messages,
             current_message=current_message,
         )
@@ -177,6 +200,55 @@ class GraphitiSemanticBuilder:
                 }
             )
         return out
+
+    def reflect_entities(
+        self,
+        *,
+        previous_turns: list[dict[str, Any]],
+        current_turn: dict[str, Any],
+        preliminary_entities: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Paper §2.2.1: Reflexion technique to minimize hallucinations and enhance coverage.
+
+        Takes preliminary extraction results and runs a second LLM pass to:
+        - Remove hallucinated entities not grounded in the CURRENT MESSAGE
+        - Add missing entities that were overlooked
+        - Correct incomplete type_label / summary / aliases
+        """
+        if not preliminary_entities:
+            return []
+
+        previous_messages = _format_turns(previous_turns)
+        current_message = _format_current_message(current_turn)
+
+        prompt = ENTITY_REFLECTION_SYSTEM_PROMPT.format(
+            previous_messages=previous_messages,
+            current_message=current_message,
+            preliminary_entities=json.dumps(preliminary_entities, ensure_ascii=False),
+        )
+        raw = self._call_llm(system_prompt=prompt, user_content="Return JSON only.")
+        data = _safe_json_loads(raw)
+        if not isinstance(data, list):
+            # Reflection failed to parse; fall back to preliminary results.
+            return preliminary_entities
+
+        out: list[dict[str, Any]] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            out.append(
+                {
+                    "name": name,
+                    "type_label": str(item.get("type_label") or "").strip(),
+                    "summary": str(item.get("summary") or "").strip(),
+                    "aliases": item.get("aliases") if isinstance(item.get("aliases"), list) else [],
+                }
+            )
+        # If reflection returned empty but preliminary was not, keep preliminary.
+        return out if out else preliminary_entities
 
     def resolve_entity(
         self,
@@ -249,9 +321,7 @@ class GraphitiSemanticBuilder:
             )
 
         previous_messages = _format_turns(previous_turns)
-        role = str(current_turn.get("role") or "")
-        actor = {"user": "User", "assistant": "Assistant", "system": "System"}.get(role, role)
-        current_message = f"{actor}: {current_turn.get('content', '')}"
+        current_message = _format_current_message(current_turn)
 
         prompt = ENTITY_RESOLUTION_SYSTEM_PROMPT.format(
             previous_messages=previous_messages,
@@ -306,9 +376,7 @@ class GraphitiSemanticBuilder:
             return []
 
         previous_messages = _format_turns(previous_turns)
-        role = str(current_turn.get("role") or "")
-        actor = {"user": "User", "assistant": "Assistant", "system": "System"}.get(role, role)
-        current_message = f"{actor}: {current_turn.get('content', '')}"
+        current_message = _format_current_message(current_turn)
         entity_payload = [
             {
                 "entity_id": e.entity_id,
@@ -395,9 +463,7 @@ class GraphitiSemanticBuilder:
         fact: dict[str, Any],
     ) -> dict[str, str | None]:
         previous_messages = _format_turns(previous_turns)
-        role = str(current_turn.get("role") or "")
-        actor = {"user": "User", "assistant": "Assistant", "system": "System"}.get(role, role)
-        current_message = f"{actor}: {current_turn.get('content', '')}"
+        current_message = _format_current_message(current_turn)
 
         prompt = FACT_TEMPORAL_SYSTEM_PROMPT.format(
             previous_messages=previous_messages,
@@ -540,17 +606,52 @@ class GraphitiSemanticBuilder:
         previous_turns: list[dict[str, Any]],
         current_turn: dict[str, Any],
         reference_timestamp: str,
+        episode_type: str = "message",
     ) -> dict[str, int]:
-        """从单个 user turn 里抽取 Entity/Fact 并写入 store。"""
+        """从单个 Episode 里抽取 Entity/Fact 并写入 store。
+
+        Paper §2.1: Episodes can be one of three core types — message, text,
+        or JSON.  Each type requires specific handling during graph construction.
+        """
 
         if not hasattr(self.store, "link_episode_to_entity"):
             raise RuntimeError(
                 "Graphiti semantic build requires store.link_episode_to_entity() (Episode→Entity episodic edges)"
             )
 
-        # 1) entity extraction + resolution + upsert
+        # ── Episode-type-aware preprocessing (Paper §2.1) ──
+        # "Episodes can be one of three core types: message, text, or JSON.
+        #  While each type requires specific handling during graph construction…"
+        ep_type = str(episode_type or "message").strip().lower()
+        if ep_type == "text":
+            # text episodes: raw text with no speaker/actor metadata.
+            # Wrap content as-is; previous_turns still use dialogue format
+            # (they may contain earlier messages).  No speaker extraction.
+            current_turn = {
+                "role": "text",
+                "content": str(current_turn.get("content") or ""),
+            }
+        elif ep_type == "json":
+            # json episodes: structured data.  Serialize as pretty-printed JSON
+            # so the LLM can reason about structured fields.
+            raw_content = current_turn.get("content")
+            if isinstance(raw_content, (dict, list)):
+                formatted = json.dumps(raw_content, ensure_ascii=False, indent=2)
+            else:
+                formatted = str(raw_content or "")
+            current_turn = {"role": "json", "content": formatted}
+        # else: 'message' — no transformation needed (existing dialogue format).
+
+        # 1) entity extraction + reflexion (paper §2.2.1) + resolution + upsert
         extracted_entities = self.extract_entities(
             previous_turns=previous_turns, current_turn=current_turn
+        )
+        # Paper §2.2.1: "we employ a reflection technique inspired by reflexion[12]
+        # to minimize hallucinations and enhance extraction coverage."
+        extracted_entities = self.reflect_entities(
+            previous_turns=previous_turns,
+            current_turn=current_turn,
+            preliminary_entities=extracted_entities,
         )
         resolved: list[ResolvedEntity] = []
         for ent in extracted_entities:
@@ -579,6 +680,28 @@ class GraphitiSemanticBuilder:
             self.store.link_episode_to_entity(episode_id=episode_id, entity_id=r.entity_id)
             resolved.append(r)
 
+        # 1.5) Ingestion-time community dynamic extension (paper §2.3)
+        # "When the system adds a new entity node to the graph, it surveys the
+        # communities of neighboring nodes. The system assigns the new node to the
+        # community held by the plurality of its neighbors."
+        if hasattr(self.store, "get_neighbor_communities") and hasattr(
+            self.store, "link_entity_to_community"
+        ):
+            for r in resolved:
+                try:
+                    neighbor_comms = self.store.get_neighbor_communities(entity_id=r.entity_id)
+                    if neighbor_comms:
+                        # Assign to the community with the highest neighbor count (plurality).
+                        best = neighbor_comms[0]
+                        best_community_id = str(best.get("community_id") or "").strip()
+                        if best_community_id:
+                            self.store.link_entity_to_community(
+                                entity_id=r.entity_id, community_id=best_community_id
+                            )
+                except Exception:
+                    # Best-effort; community assignment should not block entity ingestion.
+                    continue
+
         # 2) fact extraction + resolution + upsert
         extracted_facts = self.extract_facts(
             previous_turns=previous_turns, current_turn=current_turn, entities=resolved
@@ -597,11 +720,29 @@ class GraphitiSemanticBuilder:
 
             existing = []
             try:
-                existing = self.store.list_facts_between(
+                # Paper §2.2.2: "The hybrid search for relevant edges is
+                # constrained to edges existing between the same entity pairs
+                # as the proposed new edge."  — includes both directions.
+                forward = self.store.list_facts_between(
                     subject_entity_id=subj_id,
                     object_entity_id=obj_id,
                     limit=20,
                 )
+                reverse = (
+                    self.store.list_facts_between(
+                        subject_entity_id=obj_id,
+                        object_entity_id=subj_id,
+                        limit=20,
+                    )
+                    if subj_id != obj_id
+                    else []
+                )
+                seen_ids: set[str] = set()
+                for rec in forward + reverse:
+                    fid = str(rec.get("fact_id") or "").strip()
+                    if fid and fid not in seen_ids:
+                        existing.append(rec)
+                        seen_ids.add(fid)
             except Exception:
                 existing = []
 
@@ -623,11 +764,24 @@ class GraphitiSemanticBuilder:
             t_valid_to = temporal.get("t_valid_to")
 
             # Invalidation: expire older active facts that contradict this one.
+            # Paper §2.2.3: "The system employs an LLM to compare new edges against
+            # semantically related existing edges to identify potential contradictions."
             relation_type = str(resolved_fact.get("relation_type") or "").strip().upper()
+
+            # Compute fact embedding early — needed for both upsert and semantic invalidation.
+            fact_embedding = None
+            try:
+                fact_for_embed = (
+                    f"{subj_name or ''} --{relation_type}--> {obj_name or ''}: {resolved_fact.get('fact_text') or ''}"
+                ).strip()
+                fact_embedding = self.embedder.embed_query(fact_for_embed)
+            except Exception:
+                fact_embedding = None
+
             if hasattr(self.store, "list_active_facts_for_subject_relation") and hasattr(
                 self.store, "expire_fact"
             ):
-                # Candidate selection: prefer subject-wide active facts, then filter by relation-group.
+                # Phase 1: Same-subject active facts (original scope, relation-group filtered).
                 try:
                     if hasattr(self.store, "list_active_facts_for_subject"):
                         active = self.store.list_active_facts_for_subject(
@@ -646,6 +800,29 @@ class GraphitiSemanticBuilder:
                     for a in (active or [])
                     if self._relation_group(str(a.get("relation_type") or "")) == new_group
                 ]
+
+                # Phase 2 (paper §2.2.3): Semantic similarity search across ALL entity pairs.
+                # "The system employs an LLM to compare new edges against semantically
+                # related existing edges to identify potential contradictions."
+                if (
+                    fact_embedding is not None
+                    and hasattr(self.store, "search_active_facts_by_embedding")
+                ):
+                    try:
+                        semantic_candidates = self.store.search_active_facts_by_embedding(
+                            query_embedding=fact_embedding, limit=20
+                        )
+                        # Merge into active, dedup by fact_id.
+                        existing_fids = {
+                            str(a.get("fact_id") or "").strip() for a in active
+                        }
+                        for sc in semantic_candidates:
+                            sc_fid = str(sc.get("fact_id") or "").strip()
+                            if sc_fid and sc_fid not in existing_fids:
+                                active.append(sc)
+                                existing_fids.add(sc_fid)
+                    except Exception:
+                        pass
 
                 new_payload = {
                     "subject_entity_id": subj_id,
@@ -695,15 +872,6 @@ class GraphitiSemanticBuilder:
                         facts_expired += 1
                     except Exception:
                         continue
-
-            fact_embedding = None
-            try:
-                fact_for_embed = (
-                    f"{subj_name or ''} --{relation_type}--> {obj_name or ''}: {resolved_fact.get('fact_text') or ''}"
-                ).strip()
-                fact_embedding = self.embedder.embed_query(fact_for_embed)
-            except Exception:
-                fact_embedding = None
 
             self.store.upsert_fact(
                 fact_id=fact_id,

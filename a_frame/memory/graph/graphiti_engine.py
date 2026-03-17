@@ -37,18 +37,22 @@ class GraphitiEngine:
         *,
         strict: bool = False,
         community_llm: Any | None = None,
+        embedder: Any | None = None,
         gds_distance_max_depth: int = 4,
         cross_encoder: Any | None = None,
         cross_encoder_top_n: int = 20,
         cross_encoder_weight: float = 1.0,
+        mmr_lambda: float = 0.5,
     ):
         self.store = store
         self.strict = bool(strict)
         self.community_llm = community_llm
+        self.embedder = embedder
         self.gds_distance_max_depth = max(1, int(gds_distance_max_depth))
         self.cross_encoder = cross_encoder
         self.cross_encoder_top_n = max(1, int(cross_encoder_top_n))
         self.cross_encoder_weight = float(cross_encoder_weight)
+        self.mmr_lambda = max(0.0, min(1.0, float(mmr_lambda)))
 
     @staticmethod
     def _default_episode_id(*, session_id: str, turn_index: int, role: str, content: str) -> str:
@@ -64,10 +68,12 @@ class GraphitiEngine:
         content: str,
         t_ref: str | None = None,
         episode_id: str | None = None,
+        episode_type: str = "message",
     ) -> str:
         """写入一个 Episode（幂等）。
 
-        PR2 仅做“原始事件落盘 + 可追溯 id”，不触发实体/事实解析。
+        Paper §2.1: Episodes can be one of three core types: message, text, or JSON.
+        Each type requires specific handling during graph construction.
         """
 
         if t_ref is None:
@@ -87,6 +93,7 @@ class GraphitiEngine:
             content=content,
             turn_index=turn_index,
             t_ref=t_ref,
+            episode_type=str(episode_type or "message"),
         )
 
     def search(
@@ -642,7 +649,33 @@ class GraphitiEngine:
         ranked_fact_ids = sorted(
             final_scores.keys(), key=lambda fid: final_scores[fid], reverse=True
         )
-        ranked_fact_ids = ranked_fact_ids[:top_k]
+
+        # ──────────────────────────────────────
+        # MMR diversity rerank (paper §3.2)
+        # ──────────────────────────────────────
+        if query_embedding is not None and self.mmr_lambda < 1.0:
+            # Collect fact embeddings for MMR
+            fact_embedding_map: dict[str, list[float]] = {}
+            for fid in ranked_fact_ids:
+                row = fact_by_id.get(fid) or {}
+                emb = row.get("embedding")
+                if isinstance(emb, list) and emb:
+                    fact_embedding_map[fid] = emb
+
+            if fact_embedding_map:
+                # Apply MMR on the top candidate pool (2x top_k to allow diversity selection)
+                mmr_pool = ranked_fact_ids[: max(top_k * 2, 40)]
+                ranked_fact_ids = self._mmr_rerank(
+                    mmr_pool,
+                    query_embedding=query_embedding,
+                    embedding_map=fact_embedding_map,
+                    lam=self.mmr_lambda,
+                    top_k=top_k,
+                )
+            else:
+                ranked_fact_ids = ranked_fact_ids[:top_k]
+        else:
+            ranked_fact_ids = ranked_fact_ids[:top_k]
 
         # Ensure we have entity names for formatting
         needed_entity_ids: set[str] = set()
@@ -991,6 +1024,14 @@ class GraphitiEngine:
                         raise
 
             embedding = _avg_embedding(members)
+            # Paper §2.3: embed the community *name* text, not member-entity average.
+            if self.embedder is not None and name:
+                try:
+                    embedding = self.embedder.embed_query(name)
+                except Exception:
+                    if self.strict:
+                        raise
+                    # Fall back to avg member embedding if embed() fails
             try:
                 if hasattr(self.store, "upsert_community"):
                     self.store.upsert_community(
@@ -1021,6 +1062,69 @@ class GraphitiEngine:
         created.sort(key=lambda x: int(x.get("size") or 0), reverse=True)
         return created
 
+    def refresh_all_communities(
+        self,
+        *,
+        min_size: int = 2,
+        max_iter: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Paper §2.3: periodic full-graph community refresh.
+
+        Runs label propagation over all entities, rebuilds community
+        summaries via map-reduce, and re-embeds community names.
+        Should be called periodically (e.g. via a background cron job)
+        to ensure full graph coverage beyond the incremental
+        ingestion-time assignments.
+        """
+        # Gather the full entity set
+        if not hasattr(self.store, "list_all_entity_ids"):
+            if self.strict:
+                raise RuntimeError(
+                    "Graphiti strict periodic community refresh requires "
+                    "store.list_all_entity_ids()"
+                )
+            return []
+
+        try:
+            all_entity_ids = self.store.list_all_entity_ids()
+        except Exception as e:
+            if self.strict:
+                raise RuntimeError(
+                    f"Graphiti strict periodic community refresh failed: {e}"
+                ) from e
+            return []
+
+        if not all_entity_ids or len(all_entity_ids) < min_size:
+            return []
+
+        # Export the full semantic subgraph
+        try:
+            sub = self.store.export_semantic_subgraph(
+                entity_ids=all_entity_ids,
+                edge_limit=10000,
+            )
+        except Exception as e:
+            if self.strict:
+                raise RuntimeError(
+                    f"Graphiti strict periodic community refresh subgraph export failed: {e}"
+                ) from e
+            return []
+
+        entity_cache = {
+            str(n.get("id") or "").strip(): n
+            for n in (sub.get("nodes") or [])
+            if str(n.get("id") or "").strip()
+        }
+        edges = list(sub.get("edges") or [])
+
+        return self.build_or_refresh_communities_for_entities(
+            all_entity_ids,
+            entity_cache=entity_cache,
+            edges=edges,
+            min_size=min_size,
+            max_iter=max_iter,
+        )
+
     @staticmethod
     def _cosine_similarity(a: list[float], b: list[float]) -> float:
         if not a or not b:
@@ -1049,6 +1153,61 @@ class GraphitiEngine:
                 r = idx + 1
                 scores[key] = scores.get(key, 0.0) + 1.0 / float(k + r)
         return scores
+
+    @staticmethod
+    def _mmr_rerank(
+        candidates: list[str],
+        *,
+        query_embedding: list[float],
+        embedding_map: dict[str, list[float]],
+        lam: float = 0.5,
+        top_k: int = 10,
+        cosine_fn: Any = None,
+    ) -> list[str]:
+        """Maximal Marginal Relevance (paper \u00a73.2).
+
+        MMR(d) = \u03bb \u00b7 sim(d, q) - (1-\u03bb) \u00b7 max_{d_i \u2208 S} sim(d, d_i)
+
+        Selects results that are both relevant to the query and diverse.
+        """
+        if not candidates or not query_embedding:
+            return candidates[:top_k]
+
+        if cosine_fn is None:
+            cosine_fn = GraphitiEngine._cosine_similarity
+
+        # Precompute query similarities
+        q_sim: dict[str, float] = {}
+        for fid in candidates:
+            emb = embedding_map.get(fid)
+            q_sim[fid] = cosine_fn(query_embedding, emb) if emb else 0.0
+
+        selected: list[str] = []
+        remaining = set(candidates)
+
+        for _ in range(min(top_k, len(candidates))):
+            best_fid = None
+            best_score = float("-inf")
+            for fid in remaining:
+                relevance = q_sim.get(fid, 0.0)
+                redundancy = 0.0
+                emb = embedding_map.get(fid)
+                if emb and selected:
+                    redundancy = max(
+                        cosine_fn(emb, embedding_map[s])
+                        for s in selected
+                        if s in embedding_map
+                    ) if any(s in embedding_map for s in selected) else 0.0
+                score = lam * relevance - (1.0 - lam) * redundancy
+                if score > best_score:
+                    best_score = score
+                    best_fid = fid
+            if best_fid is None:
+                break
+            selected.append(best_fid)
+            remaining.discard(best_fid)
+
+        return selected
 
     def export_semantic_graph(self) -> dict[str, list[dict[str, Any]]]:
         """为 API/web-demo 提供兼容的语义图视图导出。"""

@@ -168,6 +168,7 @@ class GraphitiNeo4jStore:
             "    e.content = $content, "
             "    e.turn_index = $turn_index, "
             "    e.t_ref = $t_ref, "
+            "    e.episode_type = $episode_type, "
             "    e.t_created = coalesce(e.t_created, $t_created), "
             "    e.t_updated = $t_updated "
             "RETURN e.episode_id AS episode_id"
@@ -182,9 +183,12 @@ class GraphitiNeo4jStore:
         content: str,
         turn_index: int,
         t_ref: str,
+        episode_type: str = "message",
         t_created: str | None = None,
     ) -> str:
         """写入/更新一个 Episode（幂等）。
+
+        Paper §2.1: Episodes can be message, text, or JSON.
 
         Returns:
             episode_id
@@ -203,6 +207,7 @@ class GraphitiNeo4jStore:
                 content=content,
                 turn_index=turn_index,
                 t_ref=t_ref,
+                episode_type=str(episode_type or "message"),
                 t_created=t_created,
                 t_updated=t_updated,
             )
@@ -315,6 +320,15 @@ class GraphitiNeo4jStore:
                 k=int(limit),
             )
             return [dict(r) for r in rs]
+
+    @staticmethod
+    def list_all_entity_ids_cypher() -> str:
+        return "MATCH (e:Entity) RETURN e.entity_id AS entity_id"
+
+    def list_all_entity_ids(self) -> list[str]:
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(self.list_all_entity_ids_cypher())
+            return [str(r["entity_id"]) for r in rs if r.get("entity_id")]
 
     @staticmethod
     def scan_entities_with_embeddings_cypher() -> str:
@@ -1356,6 +1370,133 @@ class GraphitiNeo4jStore:
             edges = [dict(r) for r in edges_rs]
 
         return {"nodes": nodes, "edges": edges}
+
+    # ──────────────────────────────────────
+    # Neighbor community survey (paper §2.3: ingestion-time dynamic extension)
+    # ──────────────────────────────────────
+
+    @staticmethod
+    def neighbor_communities_cypher() -> str:
+        """Paper §2.3: 'surveys the communities of neighboring nodes'
+
+        For a given entity, find communities of its graph neighbors via Fact links.
+        Returns community_id and the count of neighbors belonging to each community.
+        """
+        return (
+            "MATCH (e:Entity {entity_id: $entity_id}) "
+            "OPTIONAL MATCH (e)<-[:OBJECT_OF]-(:Fact)-[:SUBJECT_OF]->(neighbor:Entity) "
+            "OPTIONAL MATCH (e)-[:SUBJECT_OF]->(:Fact)-[:OBJECT_OF]->(neighbor2:Entity) "
+            "WITH collect(DISTINCT neighbor) + collect(DISTINCT neighbor2) AS neighbors "
+            "UNWIND neighbors AS n "
+            "WITH DISTINCT n "
+            "MATCH (n)-[:IN_COMMUNITY]->(c:Community) "
+            "RETURN c.community_id AS community_id, "
+            "coalesce(c.name, c.community_id) AS name, "
+            "coalesce(c.summary, '') AS summary, "
+            "count(DISTINCT n) AS neighbor_count "
+            "ORDER BY neighbor_count DESC"
+        )
+
+    def get_neighbor_communities(
+        self, *, entity_id: str
+    ) -> list[dict[str, Any]]:
+        """Return communities of neighboring entities, sorted by neighbor count (plurality)."""
+        entity_id = str(entity_id or "").strip()
+        if not entity_id:
+            return []
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(self.neighbor_communities_cypher(), entity_id=entity_id)
+            return [dict(r) for r in rs]
+
+    # ──────────────────────────────────────
+    # Reverse Episode index (paper §2.1: bidirectional indices)
+    # ──────────────────────────────────────
+
+    @staticmethod
+    def source_episodes_for_fact_cypher() -> str:
+        """Paper §2.1: 'semantic artifacts can be traced to their sources for citation'"""
+        return (
+            "MATCH (ep:Episode)-[:EVIDENCE_FOR]->(f:Fact {fact_id: $fact_id}) "
+            "RETURN ep.episode_id AS episode_id, ep.session_id AS session_id, "
+            "ep.role AS role, ep.content AS content, ep.turn_index AS turn_index, "
+            "ep.t_ref AS t_ref, ep.episode_type AS episode_type "
+            "ORDER BY ep.turn_index ASC "
+            "LIMIT $limit"
+        )
+
+    def get_source_episodes_for_fact(
+        self, *, fact_id: str, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        fact_id = str(fact_id or "").strip()
+        if not fact_id:
+            return []
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(
+                self.source_episodes_for_fact_cypher(), fact_id=fact_id, limit=int(limit)
+            )
+            return [dict(r) for r in rs]
+
+    @staticmethod
+    def source_episodes_for_entity_cypher() -> str:
+        """Paper §2.1: 'episodes can quickly retrieve their relevant entities and facts'"""
+        return (
+            "MATCH (ep:Episode)-[:MENTIONS]->(en:Entity {entity_id: $entity_id}) "
+            "RETURN ep.episode_id AS episode_id, ep.session_id AS session_id, "
+            "ep.role AS role, ep.content AS content, ep.turn_index AS turn_index, "
+            "ep.t_ref AS t_ref, ep.episode_type AS episode_type "
+            "ORDER BY ep.turn_index ASC "
+            "LIMIT $limit"
+        )
+
+    def get_source_episodes_for_entity(
+        self, *, entity_id: str, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        entity_id = str(entity_id or "").strip()
+        if not entity_id:
+            return []
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(
+                self.source_episodes_for_entity_cypher(), entity_id=entity_id, limit=int(limit)
+            )
+            return [dict(r) for r in rs]
+
+    # ──────────────────────────────────────
+    # Semantic invalidation: search active facts by embedding similarity
+    # (paper §2.2.3: new edge invalidates semantically related existing edges)
+    # ──────────────────────────────────────
+
+    @staticmethod
+    def search_active_facts_by_embedding_cypher() -> str:
+        """Search active (non-expired) facts by vector similarity for invalidation candidates."""
+        return (
+            "CALL db.index.vector.queryNodes('fact_embedding', $k, $embedding) "
+            "YIELD node, score "
+            "WHERE (node.t_valid_to IS NULL OR node.t_valid_to = '') "
+            "RETURN node.fact_id AS fact_id, node.subject_entity_id AS subject_entity_id, "
+            "node.object_entity_id AS object_entity_id, node.relation_type AS relation_type, "
+            "node.fact_text AS fact_text, node.evidence_text AS evidence_text, "
+            "node.confidence AS confidence, "
+            "coalesce(node.t_valid_from, node.t_created, '') AS t_valid_from, "
+            "coalesce(node.t_valid_to, '') AS t_valid_to, "
+            "coalesce(node.t_tx_created, '') AS t_tx_created, "
+            "coalesce(node.t_tx_expired, '') AS t_tx_expired, "
+            "score AS score "
+            "ORDER BY score DESC "
+            "LIMIT $k"
+        )
+
+    def search_active_facts_by_embedding(
+        self, *, query_embedding: list[float], limit: int = 20
+    ) -> list[dict[str, Any]]:
+        if not query_embedding:
+            return []
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(
+                self.search_active_facts_by_embedding_cypher(),
+                embedding=list(query_embedding),
+                k=int(limit),
+            )
+            return [dict(r) for r in rs]
 
     def close(self) -> None:
         self._driver.close()
