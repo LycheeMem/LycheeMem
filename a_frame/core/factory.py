@@ -132,8 +132,28 @@ def create_pipeline(
 
     graphiti_engine = None
     if settings and getattr(settings, "graphiti_enabled", False):
+        if getattr(settings, "graph_backend", "memory") != "neo4j":
+            raise RuntimeError("Graphiti requires graph_backend=neo4j")
+
         from a_frame.memory.graph.graphiti_engine import GraphitiEngine
         from a_frame.memory.graph.graphiti_neo4j_store import GraphitiNeo4jStore
+
+        strict = bool(getattr(settings, "graphiti_strict", False))
+
+        # Infer vector dim for Neo4j vector indexes.
+        vector_dim = int(getattr(settings, "graphiti_vector_dim", 0) or 0)
+        if vector_dim <= 0:
+            # Prefer Gemini explicit dim when using Gemini embedder; else fall back to embedding_dim.
+            if getattr(settings, "embedding_backend", "").lower() == "gemini":
+                gem_dim = getattr(settings, "gemini_embedding_dim", None)
+                if gem_dim is not None:
+                    vector_dim = int(gem_dim)
+            if vector_dim <= 0:
+                vector_dim = int(embedding_dim)
+
+        vector_similarity = str(
+            getattr(settings, "graphiti_vector_similarity_function", "cosine") or "cosine"
+        )
 
         graphiti_store = GraphitiNeo4jStore(
             uri=settings.neo4j_uri,
@@ -141,8 +161,48 @@ def create_pipeline(
             password=settings.neo4j_password,
             database=getattr(settings, "graphiti_database", "neo4j"),
             init_schema=True,
+            vector_dim=vector_dim,
+            vector_similarity_function=vector_similarity,
         )
-        graphiti_engine = GraphitiEngine(store=graphiti_store)
+
+        if strict:
+            graphiti_store.preflight(
+                require_gds=bool(getattr(settings, "graphiti_require_gds", True)),
+                require_vector_index=bool(getattr(settings, "graphiti_require_vector_index", True)),
+                vector_dim=vector_dim,
+            )
+
+        # Optional: Gemini cross-encoder rerank (paper-parity)
+        cross_encoder = None
+        cross_encoder_enabled = bool(getattr(settings, "graphiti_cross_encoder_enabled", False))
+        if cross_encoder_enabled:
+            gemini_key = str(getattr(settings, "gemini_api_key", "") or "").strip()
+            if not gemini_key:
+                if strict:
+                    raise RuntimeError(
+                        "Graphiti strict cross-encoder enabled but gemini_api_key is empty"
+                    )
+            else:
+                from a_frame.memory.graph.gemini_cross_encoder import (  # noqa: PLC0415
+                    GeminiCrossEncoderReranker,
+                )
+
+                cross_encoder = GeminiCrossEncoderReranker(
+                    api_key=gemini_key,
+                    model=str(
+                        getattr(settings, "graphiti_cross_encoder_model", "")
+                        or "gemini-3.1-flash-lite-preview"
+                    ),
+                )
+
+        graphiti_engine = GraphitiEngine(
+            store=graphiti_store,
+            strict=strict,
+            gds_distance_max_depth=int(getattr(settings, "graphiti_gds_distance_max_depth", 4)),
+            cross_encoder=cross_encoder,
+            cross_encoder_top_n=int(getattr(settings, "graphiti_cross_encoder_top_n", 20)),
+            cross_encoder_weight=float(getattr(settings, "graphiti_cross_encoder_weight", 1.0)),
+        )
 
     # 5 个认知组件
     wm_manager = WMManager(session_store=session_store, compressor=compressor)

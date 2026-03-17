@@ -101,9 +101,7 @@ class AFramePipeline:
         )
 
         # 将 assistant 回复写回会话日志
-        self.wm_manager.append_assistant_turn(
-            state["session_id"], result["final_response"]
-        )
+        self.wm_manager.append_assistant_turn(state["session_id"], result["final_response"])
 
         # 标记固化待处理
         return {
@@ -196,6 +194,8 @@ class AFramePipeline:
 
     def _safe_consolidate(self, session_id: str) -> None:
         """安全执行固化，异常不影响主流程。"""
+        graphiti = getattr(self.consolidator, "graphiti_engine", None)
+        strict = bool(getattr(graphiti, "strict", False))
         try:
             result = self.consolidate(session_id)
             self._last_consolidation = {
@@ -203,13 +203,16 @@ class AFramePipeline:
                 "entities_added": result.get("entities_added", 0),
                 "skills_added": result.get("skills_added", 0),
             }
-        except Exception:
-            logger.warning("固化失败 session=%s", session_id, exc_info=True)
+        except Exception as exc:
+            logger.exception("固化失败 session=%s", session_id)
             self._last_consolidation = {
                 "session_id": session_id,
                 "entities_added": 0,
                 "skills_added": 0,
+                "error": str(exc),
             }
+            if strict:
+                raise
 
     async def _aconsolidate(self, session_id: str) -> None:
         """异步场景下的后台固化。"""

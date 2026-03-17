@@ -227,15 +227,22 @@ class ConsolidatorAgent(BaseAgent):
                         graphiti_facts_added = int(built.get("facts_added", 0))
                         self._graphiti_last_user_semantic[session_id] = latest_user_idx
 
-                        # PR5: best-effort 社区 refresh（不阻塞主流程；失败不影响固化）
-                        try:
-                            if hasattr(self.graphiti_engine, "refresh_communities_for_session"):
+                        strict = bool(getattr(self.graphiti_engine, "strict", False))
+                        if hasattr(self.graphiti_engine, "refresh_communities_for_session"):
+                            if strict:
                                 self.graphiti_engine.refresh_communities_for_session(
                                     session_id=session_id,
                                     limit=50,
                                 )
-                        except Exception:
-                            pass
+                            else:
+                                # PR5 legacy behavior: best-effort refresh (do not block)
+                                try:
+                                    self.graphiti_engine.refresh_communities_for_session(
+                                        session_id=session_id,
+                                        limit=50,
+                                    )
+                                except Exception:
+                                    pass
 
         # 格式化对话用于分析
         conversation_text = "\n".join(f"{t['role']}: {t['content']}" for t in turns)

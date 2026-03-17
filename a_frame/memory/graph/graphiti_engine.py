@@ -26,8 +26,22 @@ class GraphitiSearchResult:
 class GraphitiEngine:
     """Graphiti 引擎（面向论文的 f(α)=χ(ρ(φ(α)))）。"""
 
-    def __init__(self, store: GraphitiNeo4jStore):
+    def __init__(
+        self,
+        store: GraphitiNeo4jStore,
+        *,
+        strict: bool = False,
+        gds_distance_max_depth: int = 4,
+        cross_encoder: Any | None = None,
+        cross_encoder_top_n: int = 20,
+        cross_encoder_weight: float = 1.0,
+    ):
         self.store = store
+        self.strict = bool(strict)
+        self.gds_distance_max_depth = max(1, int(gds_distance_max_depth))
+        self.cross_encoder = cross_encoder
+        self.cross_encoder_top_n = max(1, int(cross_encoder_top_n))
+        self.cross_encoder_weight = float(cross_encoder_weight)
 
     @staticmethod
     def _default_episode_id(*, session_id: str, turn_index: int, role: str, content: str) -> str:
@@ -95,51 +109,79 @@ class GraphitiEngine:
         # ──────────────────────────────────────
         bm25_facts: list[dict[str, Any]] = []
         if hasattr(self.store, "fulltext_search_facts"):
-            try:
+            if self.strict:
                 bm25_facts = self.store.fulltext_search_facts(query=query, limit=max(30, top_k * 6))
-            except Exception:
-                bm25_facts = []
+            else:
+                try:
+                    bm25_facts = self.store.fulltext_search_facts(
+                        query=query, limit=max(30, top_k * 6)
+                    )
+                except Exception:
+                    bm25_facts = []
 
         # ──────────────────────────────────────
-        # Channel 2: cosine similarity over entities (best-effort scan)
+        # Channel 2: vector similarity over entities (Neo4j native vector index)
         # ──────────────────────────────────────
-        cosine_entities: list[dict[str, Any]] = []
+        vector_entities: list[dict[str, Any]] = []
         if query_embedding is not None:
-            try:
-                scanned = self.store.scan_entities_with_embeddings(limit=2000)
-            except Exception:
-                scanned = []
+            if hasattr(self.store, "vector_search_entities"):
+                if self.strict:
+                    vector_entities = self.store.vector_search_entities(
+                        query_embedding=query_embedding,
+                        limit=max(20, top_k * 4),
+                    )
+                else:
+                    try:
+                        vector_entities = self.store.vector_search_entities(
+                            query_embedding=query_embedding,
+                            limit=max(20, top_k * 4),
+                        )
+                    except Exception:
+                        vector_entities = []
+            else:
+                if self.strict:
+                    raise RuntimeError(
+                        "Graphiti strict search requires store.vector_search_entities()"
+                    )
+                # Non-strict fallback: keep legacy scan+cosine behavior if available.
+                try:
+                    scanned = self.store.scan_entities_with_embeddings(limit=2000)
+                except Exception:
+                    scanned = []
 
-            scored: list[dict[str, Any]] = []
-            for row in scanned:
-                emb = row.get("embedding")
-                if not emb:
-                    continue
-                sim = self._cosine_similarity(query_embedding, emb)
-                scored.append(
-                    {
-                        "entity_id": row.get("entity_id"),
-                        "name": row.get("name"),
-                        "summary": row.get("summary", ""),
-                        "type_label": row.get("type_label", ""),
-                        "score": sim,
-                    }
-                )
+                scored: list[dict[str, Any]] = []
+                for row in scanned:
+                    emb = row.get("embedding")
+                    if not emb:
+                        continue
+                    sim = self._cosine_similarity(query_embedding, emb)
+                    scored.append(
+                        {
+                            "entity_id": row.get("entity_id"),
+                            "name": row.get("name"),
+                            "summary": row.get("summary", ""),
+                            "type_label": row.get("type_label", ""),
+                            "score": sim,
+                        }
+                    )
 
-            scored.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
-            cosine_entities = scored[: max(20, top_k * 4)]
+                scored.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
+                vector_entities = scored[: max(20, top_k * 4)]
 
         # ──────────────────────────────────────
         # Anchor entities for BFS expansion (mentions + high-scoring)
         # ──────────────────────────────────────
         ft_entities: list[dict[str, Any]] = []
-        try:
+        if self.strict:
             ft_entities = self.store.fulltext_search_entities(query=query, limit=10)
-        except Exception:
-            ft_entities = []
+        else:
+            try:
+                ft_entities = self.store.fulltext_search_entities(query=query, limit=10)
+            except Exception:
+                ft_entities = []
 
         anchor_entity_ids: list[str] = []
-        for row in (ft_entities[:5] + cosine_entities[:5]):
+        for row in ft_entities[:5] + vector_entities[:5]:
             eid = (row.get("entity_id") or row.get("id") or "").strip()
             if eid and eid not in anchor_entity_ids:
                 anchor_entity_ids.append(eid)
@@ -158,10 +200,15 @@ class GraphitiEngine:
         for depth in range(max_depth):
             if not frontier:
                 break
-            try:
+            if self.strict:
                 subgraph = self.store.export_semantic_subgraph(entity_ids=frontier, edge_limit=600)
-            except Exception:
-                break
+            else:
+                try:
+                    subgraph = self.store.export_semantic_subgraph(
+                        entity_ids=frontier, edge_limit=600
+                    )
+                except Exception:
+                    break
 
             nodes = subgraph.get("nodes") or []
             edges = subgraph.get("edges") or []
@@ -173,7 +220,10 @@ class GraphitiEngine:
 
             next_frontier: list[str] = []
             for e in edges:
-                fact_id = (e.get("fact_id") or "").strip() or f"fact:{e.get('source','')}:{e.get('relation','')}:{e.get('target','')}:{e.get('timestamp','')}"
+                fact_id = (
+                    (e.get("fact_id") or "").strip()
+                    or f"fact:{e.get('source', '')}:{e.get('relation', '')}:{e.get('target', '')}:{e.get('timestamp', '')}"
+                )
                 if fact_id not in bfs_fact_candidates:
                     bfs_fact_candidates[fact_id] = {
                         "fact_id": fact_id,
@@ -200,52 +250,88 @@ class GraphitiEngine:
         bfs_ranked_fact_ids = [x["fact_id"] for x in bfs_ordered]
 
         # ──────────────────────────────────────
-        # Community retrieval (optional, best-effort)
+        # Community retrieval (optional)
         # ──────────────────────────────────────
         communities: list[dict[str, Any]] = []
         built_communities: list[dict[str, Any]] = []
         if include_communities:
             # 1) query-time retrieval
             if hasattr(self.store, "fulltext_search_communities"):
-                try:
+                if self.strict:
                     communities = self.store.fulltext_search_communities(query=query, limit=5)
-                except Exception:
-                    communities = []
+                else:
+                    try:
+                        communities = self.store.fulltext_search_communities(query=query, limit=5)
+                    except Exception:
+                        communities = []
 
-            if query_embedding is not None and hasattr(self.store, "scan_communities_with_embeddings"):
-                try:
-                    scanned = self.store.scan_communities_with_embeddings(limit=2000)
-                except Exception:
-                    scanned = []
+            if query_embedding is not None:
+                if hasattr(self.store, "vector_search_communities"):
+                    if self.strict:
+                        communities.extend(
+                            self.store.vector_search_communities(
+                                query_embedding=query_embedding,
+                                limit=5,
+                            )
+                        )
+                    else:
+                        try:
+                            communities.extend(
+                                self.store.vector_search_communities(
+                                    query_embedding=query_embedding,
+                                    limit=5,
+                                )
+                            )
+                        except Exception:
+                            pass
+                elif hasattr(self.store, "scan_communities_with_embeddings"):
+                    if self.strict:
+                        raise RuntimeError(
+                            "Graphiti strict search requires store.vector_search_communities()"
+                        )
+                    # Non-strict fallback: keep legacy scan+cosine behavior if available.
+                    try:
+                        scanned = self.store.scan_communities_with_embeddings(limit=2000)
+                    except Exception:
+                        scanned = []
 
-                scored = []
-                for row in scanned:
-                    emb = row.get("embedding")
-                    if not emb:
-                        continue
-                    sim = self._cosine_similarity(query_embedding, emb)
-                    scored.append(
-                        {
-                            "community_id": row.get("community_id"),
-                            "name": row.get("name") or row.get("community_id"),
-                            "summary": row.get("summary", ""),
-                            "score": sim,
-                        }
-                    )
-                scored.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
-                for c in scored[:5]:
-                    communities.append(c)
+                    scored = []
+                    for row in scanned:
+                        emb = row.get("embedding")
+                        if not emb:
+                            continue
+                        sim = self._cosine_similarity(query_embedding, emb)
+                        scored.append(
+                            {
+                                "community_id": row.get("community_id"),
+                                "name": row.get("name") or row.get("community_id"),
+                                "summary": row.get("summary", ""),
+                                "score": sim,
+                            }
+                        )
+                    scored.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
+                    for c in scored[:5]:
+                        communities.append(c)
 
             # 2) dynamic expansion + refresh (label propagation)
             if (not communities) and anchor_entity_ids:
-                try:
+                if self.strict:
                     built_communities = self.build_or_refresh_communities_for_entities(
                         anchor_entity_ids,
                         entity_cache=entity_cache,
                         edges=[(info.get("edge") or {}) for info in bfs_fact_candidates.values()],
                     )
-                except Exception:
-                    built_communities = []
+                else:
+                    try:
+                        built_communities = self.build_or_refresh_communities_for_entities(
+                            anchor_entity_ids,
+                            entity_cache=entity_cache,
+                            edges=[
+                                (info.get("edge") or {}) for info in bfs_fact_candidates.values()
+                            ],
+                        )
+                    except Exception:
+                        built_communities = []
 
             if not communities and built_communities:
                 communities = built_communities[:5]
@@ -259,7 +345,7 @@ class GraphitiEngine:
             if fid:
                 return fid
             # fallback stable-ish id
-            return f"fact:{row.get('source','')}:{row.get('relation','')}:{row.get('target','')}:{row.get('timestamp','')}"
+            return f"fact:{row.get('source', '')}:{row.get('relation', '')}:{row.get('target', '')}:{row.get('timestamp', '')}"
 
         fact_by_id: dict[str, dict[str, Any]] = {}
 
@@ -267,6 +353,32 @@ class GraphitiEngine:
         for row in bm25_facts:
             fid = _extract_fact_id(row)
             bm25_ranked_fact_ids.append(fid)
+            fact_by_id.setdefault(fid, {}).update(row)
+
+        # Optional vector recall over facts (Neo4j native vector index)
+        vector_facts: list[dict[str, Any]] = []
+        vector_ranked_fact_ids: list[str] = []
+        if query_embedding is not None:
+            if hasattr(self.store, "vector_search_facts"):
+                if self.strict:
+                    vector_facts = self.store.vector_search_facts(
+                        query_embedding=query_embedding,
+                        limit=max(30, top_k * 6),
+                    )
+                else:
+                    try:
+                        vector_facts = self.store.vector_search_facts(
+                            query_embedding=query_embedding,
+                            limit=max(30, top_k * 6),
+                        )
+                    except Exception:
+                        vector_facts = []
+            elif self.strict:
+                raise RuntimeError("Graphiti strict search requires store.vector_search_facts()")
+
+        for row in vector_facts:
+            fid = _extract_fact_id(row)
+            vector_ranked_fact_ids.append(fid)
             fact_by_id.setdefault(fid, {}).update(row)
 
         # Add BFS edges as fact candidates too
@@ -278,7 +390,7 @@ class GraphitiEngine:
         # Mention boost: entity name appears in query
         query_l = query.lower()
         mention_entity_ids: set[str] = set()
-        for ent in (ft_entities[:10] + cosine_entities[:10]):
+        for ent in ft_entities[:10] + vector_entities[:10]:
             eid = (ent.get("entity_id") or "").strip()
             name = str(ent.get("name") or "").strip()
             if eid and name and name.lower() in query_l:
@@ -289,6 +401,7 @@ class GraphitiEngine:
         rrf_scores = self._rrf_scores(
             {
                 "bm25": bm25_ranked_fact_ids,
+                "vector": vector_ranked_fact_ids,
                 "bfs": bfs_ranked_fact_ids,
             },
             k=60,
@@ -304,19 +417,58 @@ class GraphitiEngine:
         bm25_rank_index = _rank_index(bm25_ranked_fact_ids)
         bfs_rank_index = _rank_index(bfs_ranked_fact_ids)
 
+        gds_entity_distances: dict[str, int] = {}
+
+        # If strict, now that we have fact candidates, expand the entity set and recompute distances.
+        if self.strict and anchor_entity_ids:
+            if not hasattr(self.store, "gds_min_distances_from_anchors"):
+                raise RuntimeError(
+                    "Graphiti strict search requires store.gds_min_distances_from_anchors()"
+                )
+            candidate_entity_ids: set[str] = set(anchor_entity_ids)
+            for row in fact_by_id.values():
+                for endpoint in [row.get("source"), row.get("target")]:
+                    endpoint = (endpoint or "").strip()
+                    if endpoint:
+                        candidate_entity_ids.add(endpoint)
+
+            try:
+                gds_entity_distances = self.store.gds_min_distances_from_anchors(
+                    anchor_entity_ids=anchor_entity_ids,
+                    entity_ids=sorted(candidate_entity_ids),
+                    max_depth=self.gds_distance_max_depth,
+                )
+            except Exception as e:
+                raise RuntimeError(f"Graphiti strict GDS distance failed: {e}") from e
+
         for fid in fact_by_id.keys() | rrf_scores.keys():
             base = float(rrf_scores.get(fid, 0.0))
             info = fact_by_id.get(fid) or {}
             edge_distance = None
             if fid in bfs_fact_candidates:
                 edge_distance = int(bfs_fact_candidates[fid].get("distance") or 1)
+
+            # Graph distance boost
+            graph_distance = None
+            if self.strict and anchor_entity_ids:
+                src = str(info.get("source") or "").strip()
+                tgt = str(info.get("target") or "").strip()
+                ds = gds_entity_distances.get(src)
+                dt = gds_entity_distances.get(tgt)
+                candidates = [d for d in [ds, dt] if d is not None]
+                if candidates:
+                    graph_distance = int(min(candidates))
+            else:
+                graph_distance = edge_distance
+
             distance_boost = 0.0
-            if edge_distance is not None:
-                distance_boost = 1.0 / (1.0 + float(edge_distance))
+            if graph_distance is not None:
+                distance_boost = 1.0 / (1.0 + float(graph_distance))
 
             mention_boost = 0.0
             if mention_entity_ids and (
-                (info.get("source") in mention_entity_ids) or (info.get("target") in mention_entity_ids)
+                (info.get("source") in mention_entity_ids)
+                or (info.get("target") in mention_entity_ids)
             ):
                 mention_boost = 0.5
 
@@ -328,10 +480,51 @@ class GraphitiEngine:
                 "bm25_rank": bm25_rank_index.get(fid),
                 "bfs_rank": bfs_rank_index.get(fid),
                 "mentions": bool(mention_boost),
-                "distance": edge_distance,
+                "distance": graph_distance,
+                "bfs_distance": edge_distance,
+                "gds_distance": graph_distance if self.strict else None,
             }
 
-        ranked_fact_ids = sorted(final_scores.keys(), key=lambda fid: final_scores[fid], reverse=True)
+        # ──────────────────────────────────────
+        # Cross-encoder rerank (optional; paper-parity)
+        # ──────────────────────────────────────
+        if self.cross_encoder is not None and self.cross_encoder_weight != 0.0:
+            # Use current score order as the candidate pool.
+            pool = sorted(final_scores.keys(), key=lambda fid: final_scores[fid], reverse=True)
+            pool = pool[: min(len(pool), self.cross_encoder_top_n)]
+
+            passages: list[dict[str, str]] = []
+            for fid in pool:
+                row = fact_by_id.get(fid) or {}
+                src = str(row.get("source") or "").strip()
+                tgt = str(row.get("target") or "").strip()
+                rel = str(row.get("relation") or "").strip()
+                fact = str(row.get("fact") or "").strip()
+                evidence = str(row.get("evidence") or "").strip()
+                text = " ".join([p for p in [src, rel, tgt, fact, evidence] if p]).strip()
+                if text:
+                    passages.append({"id": fid, "text": text})
+
+            if passages:
+                if self.strict:
+                    cross_scores = self.cross_encoder.score(query=query, passages=passages)
+                else:
+                    try:
+                        cross_scores = self.cross_encoder.score(query=query, passages=passages)
+                    except Exception:
+                        cross_scores = {}
+
+                for fid in pool:
+                    s = float(cross_scores.get(fid, 0.0) or 0.0)
+                    final_scores[fid] = float(final_scores.get(fid, 0.0)) + (
+                        self.cross_encoder_weight * s
+                    )
+                    if fid in provenance_by_fact:
+                        provenance_by_fact[fid]["cross_encoder_score"] = s
+
+        ranked_fact_ids = sorted(
+            final_scores.keys(), key=lambda fid: final_scores[fid], reverse=True
+        )
         ranked_fact_ids = ranked_fact_ids[:top_k]
 
         # Ensure we have entity names for formatting
@@ -373,7 +566,7 @@ class GraphitiEngine:
             if t_from or t_to:
                 time_span = f" [{t_from or '?'} → {t_to or '?'}]"
             lines.append(
-                f"- { _entity_name(src) } --{rel}--> { _entity_name(tgt) }{time_span}: {fact}".strip()
+                f"- {_entity_name(src)} --{rel}--> {_entity_name(tgt)}{time_span}: {fact}".strip()
             )
             if evidence:
                 lines.append(f"  evidence: {evidence}")
@@ -394,7 +587,9 @@ class GraphitiEngine:
             for eid in anchor_entity_ids[:5]:
                 n = entity_cache.get(eid) or {}
                 name = str(n.get("name") or eid)
-                summary = str((n.get("properties") or {}).get("summary") or n.get("summary") or "").strip()
+                summary = str(
+                    (n.get("properties") or {}).get("summary") or n.get("summary") or ""
+                ).strip()
                 if summary:
                     lines.append(f"- {name}: {summary}")
                 else:
@@ -402,20 +597,26 @@ class GraphitiEngine:
 
         context = "\n".join(lines).strip() + "\n"
 
-        provenance = [provenance_by_fact[fid] for fid in ranked_fact_ids if fid in provenance_by_fact]
+        provenance = [
+            provenance_by_fact[fid] for fid in ranked_fact_ids if fid in provenance_by_fact
+        ]
         return GraphitiSearchResult(context=context, provenance=provenance)
 
     # ──────────────────────────────────────
     # Community build/refresh (PR5)
     # ──────────────────────────────────────
 
-    def refresh_communities_for_session(self, *, session_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    def refresh_communities_for_session(
+        self, *, session_id: str, limit: int = 50
+    ) -> list[dict[str, Any]]:
         if not str(session_id or "").strip():
             return []
         if not hasattr(self.store, "list_recent_entity_ids_for_session"):
             return []
         try:
-            entity_ids = self.store.list_recent_entity_ids_for_session(session_id=session_id, limit=limit)
+            entity_ids = self.store.list_recent_entity_ids_for_session(
+                session_id=session_id, limit=limit
+            )
         except Exception:
             return []
         if not entity_ids:
@@ -425,7 +626,11 @@ class GraphitiEngine:
             sub = self.store.export_semantic_subgraph(entity_ids=entity_ids[:10], edge_limit=800)
         except Exception:
             sub = {"nodes": [], "edges": []}
-        entity_cache = {str(n.get("id") or "").strip(): n for n in (sub.get("nodes") or []) if str(n.get("id") or "").strip()}
+        entity_cache = {
+            str(n.get("id") or "").strip(): n
+            for n in (sub.get("nodes") or [])
+            if str(n.get("id") or "").strip()
+        }
         edges = list(sub.get("edges") or [])
         return self.build_or_refresh_communities_for_entities(
             entity_ids[:10],
@@ -454,7 +659,11 @@ class GraphitiEngine:
 
         if entity_cache is None or edges is None:
             sub = self.store.export_semantic_subgraph(entity_ids=entity_ids[:10], edge_limit=800)
-            entity_cache = {str(n.get("id") or "").strip(): n for n in (sub.get("nodes") or []) if str(n.get("id") or "").strip()}
+            entity_cache = {
+                str(n.get("id") or "").strip(): n
+                for n in (sub.get("nodes") or [])
+                if str(n.get("id") or "").strip()
+            }
             edges = list(sub.get("edges") or [])
 
         # Build adjacency
@@ -476,29 +685,42 @@ class GraphitiEngine:
         if len(nodes) < min_size:
             return []
 
-        labels: dict[str, str] = {n: n for n in nodes}
-        ordered_nodes = sorted(nodes)
-        for _ in range(max_iter):
-            changed = 0
-            for n in ordered_nodes:
-                neigh = adjacency.get(n) or set()
-                if not neigh:
-                    continue
-                counts = Counter(labels[m] for m in neigh if m in labels)
-                if not counts:
-                    continue
-                max_freq = max(counts.values())
-                candidates = sorted([lab for lab, c in counts.items() if c == max_freq])
-                new_label = candidates[0]
-                if labels[n] != new_label:
-                    labels[n] = new_label
-                    changed += 1
-            if changed == 0:
-                break
-
         groups: dict[str, list[str]] = {}
-        for n, lab in labels.items():
-            groups.setdefault(lab, []).append(n)
+        if self.strict:
+            if not hasattr(self.store, "gds_label_propagation_groups"):
+                raise RuntimeError(
+                    "Graphiti strict community build requires store.gds_label_propagation_groups()"
+                )
+            try:
+                groups = self.store.gds_label_propagation_groups(
+                    entity_ids=sorted(nodes),
+                    max_iterations=max_iter,
+                )
+            except Exception as e:
+                raise RuntimeError(f"Graphiti strict GDS community detection failed: {e}") from e
+        else:
+            labels: dict[str, str] = {n: n for n in nodes}
+            ordered_nodes = sorted(nodes)
+            for _ in range(max_iter):
+                changed = 0
+                for n in ordered_nodes:
+                    neigh = adjacency.get(n) or set()
+                    if not neigh:
+                        continue
+                    counts = Counter(labels[m] for m in neigh if m in labels)
+                    if not counts:
+                        continue
+                    max_freq = max(counts.values())
+                    candidates = sorted([lab for lab, c in counts.items() if c == max_freq])
+                    new_label = candidates[0]
+                    if labels[n] != new_label:
+                        labels[n] = new_label
+                        changed += 1
+                if changed == 0:
+                    break
+
+            for n, lab in labels.items():
+                groups.setdefault(lab, []).append(n)
 
         # Prepare embeddings
         member_ids = sorted({m for members in groups.values() for m in members})
@@ -543,11 +765,7 @@ class GraphitiEngine:
 
             # Name: top degree entities
             deg_sorted = sorted(members, key=lambda x: len(adjacency.get(x) or set()), reverse=True)
-            top_names = [
-                _name_for_entity(eid)
-                for eid in deg_sorted[:3]
-                if _name_for_entity(eid)
-            ]
+            top_names = [_name_for_entity(eid) for eid in deg_sorted[:3] if _name_for_entity(eid)]
             name = " / ".join(top_names) if top_names else community_id
 
             # Summary: key facts inside the community
@@ -574,7 +792,9 @@ class GraphitiEngine:
                     )
                 if hasattr(self.store, "link_entity_to_community"):
                     for eid in members:
-                        self.store.link_entity_to_community(entity_id=eid, community_id=community_id)
+                        self.store.link_entity_to_community(
+                            entity_id=eid, community_id=community_id
+                        )
             except Exception:
                 # best-effort persistence
                 pass

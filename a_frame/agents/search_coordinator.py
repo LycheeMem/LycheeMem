@@ -154,7 +154,9 @@ class SearchCoordinator(BaseAgent):
             )
             parsed = self._parse_json(response)
             sub_queries = parsed.get("sub_queries", [])
-            result = {sq["source"]: sq["query"] for sq in sub_queries if "source" in sq and "query" in sq}
+            result = {
+                sq["source"]: sq["query"] for sq in sub_queries if "source" in sq and "query" in sq
+            }
             if result:
                 return result
         except Exception:
@@ -164,38 +166,40 @@ class SearchCoordinator(BaseAgent):
 
     def _search_graph(self, query: str) -> list[dict[str, Any]]:
         """在知识图谱中检索相关节点和邻居。"""
-        query_embedding = None
-        try:
-            query_embedding = self.embedder.embed_query(query)
-        except Exception:
-            query_embedding = None
+        strict = bool(getattr(self.graphiti_engine, "strict", False))
 
-        # PR5: Graphiti 优先（若注入），保留 legacy 回退。
-        if self.graphiti_engine is not None:
+        query_embedding = None
+        if strict:
+            query_embedding = self.embedder.embed_query(query)
+        else:
             try:
-                r = self.graphiti_engine.search(
-                    query=query,
-                    top_k=3,
-                    query_embedding=query_embedding,
-                    include_communities=True,
-                )
-                if r.context.strip():
-                    return [
-                        {
-                            "anchor": {
-                                "node_id": "graphiti_context",
-                                "name": "GraphitiContext",
-                                "label": "Context",
-                                "score": 1.0,
-                            },
-                            "subgraph": {"nodes": [], "edges": []},
-                            "constructed_context": r.context,
-                            "provenance": r.provenance,
-                        }
-                    ]
+                query_embedding = self.embedder.embed_query(query)
             except Exception:
-                # best-effort: do not break retrieval if Graphiti fails
-                pass
+                query_embedding = None
+
+        # Graphiti-only when injected: no fallback to legacy graph_store.
+        if self.graphiti_engine is not None:
+            r = self.graphiti_engine.search(
+                query=query,
+                top_k=3,
+                query_embedding=query_embedding,
+                include_communities=True,
+            )
+            if not r.context.strip():
+                return []
+            return [
+                {
+                    "anchor": {
+                        "node_id": "graphiti_context",
+                        "name": "GraphitiContext",
+                        "label": "Context",
+                        "score": 1.0,
+                    },
+                    "subgraph": {"nodes": [], "edges": []},
+                    "constructed_context": r.context,
+                    "provenance": r.provenance,
+                }
+            ]
 
         hits = self.graph_store.search(query, top_k=3, query_embedding=query_embedding)
         if not hits:
@@ -209,10 +213,12 @@ class SearchCoordinator(BaseAgent):
                 continue
             seen_ids.add(node_id)
             subgraph = self.graph_store.get_neighbors(node_id, depth=self.graph_search_depth)
-            results.append({
-                "anchor": hit,
-                "subgraph": subgraph,
-            })
+            results.append(
+                {
+                    "anchor": hit,
+                    "subgraph": subgraph,
+                }
+            )
         return results
 
     def _search_skills(self, query: str) -> list[dict[str, Any]]:

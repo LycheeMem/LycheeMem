@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     openai_api_base: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o-mini"
 
-    gemini_api_key: str = "AIzaSyAjQwxhESxBLa3gJ_6geCVutRYrmgePQEg"
+    gemini_api_key: str = ""
     gemini_model: str = "gemini-3.1-flash-lite-preview"
 
     ollama_base_url: str = "http://localhost:11434"
@@ -45,11 +45,32 @@ class Settings(BaseSettings):
     # ─── Neo4j (图谱持久化) ───
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
-    neo4j_password: str = "Lejda-EpJh266.k"
+    neo4j_password: str = ""
 
     # ─── Graphiti(论文) 图谱引擎 ───
     graphiti_enabled: bool = False
     graphiti_database: str = "neo4j"
+
+    # ─── Graphiti Strict Mode (Graphiti-only / Fail-fast) ───
+    # 当 graphiti_enabled=true 且 graphiti_strict=true 时：
+    # - 不允许任何 Graphiti→legacy 回退
+    # - 关键依赖缺失（Neo4j/GDS/vector index）应在启动时直接失败
+    graphiti_strict: bool = False
+    graphiti_require_gds: bool = True
+    graphiti_require_vector_index: bool = True
+
+    # Graphiti vector index 配置（默认与 embedding_dim 对齐；若为 0 则自动推断）
+    graphiti_vector_dim: int = 0
+    graphiti_vector_similarity_function: str = "cosine"
+
+    # ─── Graphiti GDS-based rerank/community ───
+    graphiti_gds_distance_max_depth: int = 4
+
+    # ─── Graphiti Cross-Encoder Rerank (Gemini) ───
+    graphiti_cross_encoder_enabled: bool = False
+    graphiti_cross_encoder_model: str = "gemini-3.1-flash-lite-preview"
+    graphiti_cross_encoder_top_n: int = 20
+    graphiti_cross_encoder_weight: float = 1.0
 
     # ─── Graph Semantic (向量检索 / 同义合并) ───
     graph_semantic_search: bool = True

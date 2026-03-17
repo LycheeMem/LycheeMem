@@ -35,23 +35,24 @@ def test_graphiti_engine_search_constructs_context_and_provenance():
                 }
             ]
 
-        def scan_entities_with_embeddings(self, *, limit: int = 2000):
+        def vector_search_entities(self, *, query_embedding, limit: int = 10):
+            assert query_embedding
             return [
                 {
                     "entity_id": "e_alice",
                     "name": "Alice",
                     "summary": "A person",
                     "type_label": "Person",
-                    "embedding": [1.0, 0.0],
+                    "score": 0.99,
                 },
                 {
                     "entity_id": "e_acme",
                     "name": "Acme",
                     "summary": "A company",
                     "type_label": "Organization",
-                    "embedding": [0.9, 0.1],
+                    "score": 0.95,
                 },
-            ]
+            ][:limit]
 
         def export_semantic_subgraph(self, *, entity_ids, edge_limit: int = 600):
             # BFS channel will find a second fact through graph expansion.

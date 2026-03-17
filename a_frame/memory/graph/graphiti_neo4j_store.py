@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import datetime
+import uuid
 from typing import Any
 
 from a_frame.memory.graph.graphiti_schema import CypherStatement, schema_statements
@@ -30,6 +31,8 @@ class GraphitiNeo4jStore:
         password: str,
         database: str = "neo4j",
         init_schema: bool = True,
+        vector_dim: int | None = None,
+        vector_similarity_function: str = "cosine",
     ):
         try:
             from neo4j import GraphDatabase  # type: ignore
@@ -40,6 +43,9 @@ class GraphitiNeo4jStore:
 
         self._driver = GraphDatabase.driver(uri, auth=(user, password))
         self._database = database
+
+        self._vector_dim = int(vector_dim) if vector_dim is not None else None
+        self._vector_similarity_function = str(vector_similarity_function or "cosine")
 
         if init_schema:
             self.init_schema()
@@ -55,8 +61,89 @@ class GraphitiNeo4jStore:
     def init_schema(self) -> None:
         """创建约束与索引（幂等）。"""
         with self._driver.session(database=self._database) as session:
-            for stmt in self.schema_statements():
+            for stmt in schema_statements(
+                vector_dim=self._vector_dim,
+                vector_similarity_function=self._vector_similarity_function,
+            ):
                 session.run(stmt.cypher)
+
+    # ──────────────────────────────────────
+    # Strict preflight (fail-fast)
+    # ──────────────────────────────────────
+
+    def preflight(
+        self,
+        *,
+        require_gds: bool = True,
+        require_vector_index: bool = True,
+        vector_dim: int | None = None,
+    ) -> None:
+        """启动前检查：Neo4j 连通性 / GDS / 向量索引。
+
+        严格模式下用于 fail-fast：任何缺失都直接抛异常，禁止静默降级。
+        """
+
+        # 1) Connectivity
+        with self._driver.session(database=self._database) as session:
+            session.run("RETURN 1 AS ok").single()
+
+        # 2) GDS availability
+        if require_gds:
+            with self._driver.session(database=self._database) as session:
+                # If GDS is not installed, this will raise a ClientError.
+                session.run("CALL gds.version() YIELD version RETURN version").single()
+
+        # 3) Vector index presence + dimensions
+        if require_vector_index:
+            expected_dim = int(vector_dim) if vector_dim is not None else self._vector_dim
+            if expected_dim is None or expected_dim <= 0:
+                raise RuntimeError("Graphiti preflight requires a positive vector_dim")
+
+            required = {
+                "entity_embedding": ("NODE", "Entity", "embedding"),
+                "fact_embedding": ("NODE", "Fact", "embedding"),
+                "community_embedding": ("NODE", "Community", "embedding"),
+            }
+
+            with self._driver.session(database=self._database) as session:
+                rs = session.run(
+                    "SHOW INDEXES YIELD name, type, entityType, labelsOrTypes, properties, options "
+                    "WHERE type = 'VECTOR' "
+                    "RETURN name, entityType, labelsOrTypes, properties, options"
+                )
+                indexes = [dict(r) for r in rs]
+
+            by_name = {str(i.get("name") or ""): i for i in indexes}
+            missing = [n for n in required if n not in by_name]
+            if missing:
+                raise RuntimeError(f"Missing required vector indexes: {missing}")
+
+            for name, (entity_type, label, prop) in required.items():
+                idx = by_name[name]
+
+                if str(idx.get("entityType") or "").upper() != str(entity_type).upper():
+                    raise RuntimeError(
+                        f"Vector index {name} has unexpected entityType={idx.get('entityType')!r}"
+                    )
+
+                labels = idx.get("labelsOrTypes")
+                props = idx.get("properties")
+                if isinstance(labels, list) and label not in labels:
+                    raise RuntimeError(
+                        f"Vector index {name} labelsOrTypes={labels!r} missing {label!r}"
+                    )
+                if isinstance(props, list) and prop not in props:
+                    raise RuntimeError(f"Vector index {name} properties={props!r} missing {prop!r}")
+
+                options = idx.get("options") or {}
+                index_config = options.get("indexConfig") if isinstance(options, dict) else None
+                dims = None
+                if isinstance(index_config, dict):
+                    dims = index_config.get("vector.dimensions")
+                if dims is not None and int(dims) != expected_dim:
+                    raise RuntimeError(
+                        f"Vector index {name} dimension mismatch: expected {expected_dim}, got {dims}"
+                    )
 
     # ──────────────────────────────────────
     # Episode ingestion (PR2)
@@ -198,9 +285,33 @@ class GraphitiNeo4jStore:
             "LIMIT $limit"
         )
 
+    @staticmethod
+    def vector_search_entities_cypher() -> str:
+        return (
+            "CALL db.index.vector.queryNodes('entity_embedding', $k, $embedding) "
+            "YIELD node, score "
+            "RETURN node.entity_id AS entity_id, node.name AS name, node.summary AS summary, "
+            "node.aliases AS aliases, node.type_label AS type_label, score AS score "
+            "ORDER BY score DESC "
+            "LIMIT $k"
+        )
+
     def fulltext_search_entities(self, *, query: str, limit: int = 10) -> list[dict[str, Any]]:
         with self._driver.session(database=self._database) as session:
             rs = session.run(self.fulltext_search_entities_cypher(), q=query, limit=limit)
+            return [dict(r) for r in rs]
+
+    def vector_search_entities(
+        self, *, query_embedding: list[float], limit: int = 10
+    ) -> list[dict[str, Any]]:
+        if not query_embedding:
+            return []
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(
+                self.vector_search_entities_cypher(),
+                embedding=list(query_embedding),
+                k=int(limit),
+            )
             return [dict(r) for r in rs]
 
     @staticmethod
@@ -250,7 +361,11 @@ class GraphitiNeo4jStore:
             rs = session.run(
                 self.recent_entity_ids_for_session_cypher(), session_id=session_id, limit=int(limit)
             )
-            return [str(r.get("entity_id") or "").strip() for r in rs if str(r.get("entity_id") or "").strip()]
+            return [
+                str(r.get("entity_id") or "").strip()
+                for r in rs
+                if str(r.get("entity_id") or "").strip()
+            ]
 
     # ──────────────────────────────────────
     # Subgraph export for search (PR3 closing)
@@ -356,6 +471,7 @@ class GraphitiNeo4jStore:
             "    f.relation_type = $relation_type, "
             "    f.fact_text = $fact_text, "
             "    f.evidence_text = $evidence_text, "
+            "    f.embedding = CASE WHEN $embedding IS NULL THEN f.embedding ELSE $embedding END, "
             "    f.confidence = $confidence, "
             "    f.source_session = $source_session, "
             "    f.t_created = coalesce(f.t_created, $t_created), "
@@ -380,6 +496,7 @@ class GraphitiNeo4jStore:
         relation_type: str,
         fact_text: str,
         evidence_text: str = "",
+        embedding: list[float] | None = None,
         confidence: float = 1.0,
         source_session: str = "",
         t_created: str | None = None,
@@ -404,6 +521,7 @@ class GraphitiNeo4jStore:
                 relation_type=relation_type,
                 fact_text=fact_text,
                 evidence_text=evidence_text,
+                embedding=embedding,
                 confidence=float(confidence),
                 source_session=source_session,
                 t_created=t_created,
@@ -456,7 +574,9 @@ class GraphitiNeo4jStore:
             "RETURN f.fact_id AS fact_id"
         )
 
-    def expire_fact(self, *, fact_id: str, t_valid_to: str, t_tx_expired: str | None = None) -> None:
+    def expire_fact(
+        self, *, fact_id: str, t_valid_to: str, t_tx_expired: str | None = None
+    ) -> None:
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         if t_tx_expired is None:
             t_tx_expired = now_iso
@@ -678,9 +798,38 @@ class GraphitiNeo4jStore:
             "LIMIT $limit"
         )
 
+    @staticmethod
+    def vector_search_facts_cypher() -> str:
+        return (
+            "CALL db.index.vector.queryNodes('fact_embedding', $k, $embedding) "
+            "YIELD node, score "
+            "RETURN node.fact_id AS fact_id, node.subject_entity_id AS source, node.object_entity_id AS target, "
+            "coalesce(node.relation_type, '') AS relation, coalesce(node.fact_text, '') AS fact, "
+            "coalesce(node.evidence_text, '') AS evidence, coalesce(node.confidence, 1.0) AS confidence, "
+            "coalesce(node.source_session, '') AS source_session, "
+            "coalesce(node.t_valid_from, node.t_created, '') AS timestamp, "
+            "coalesce(node.t_valid_from, '') AS t_valid_from, coalesce(node.t_valid_to, '') AS t_valid_to, "
+            "score AS score "
+            "ORDER BY score DESC "
+            "LIMIT $k"
+        )
+
     def fulltext_search_facts(self, *, query: str, limit: int = 10) -> list[dict[str, Any]]:
         with self._driver.session(database=self._database) as session:
             rs = session.run(self.fulltext_search_facts_cypher(), q=query, limit=limit)
+            return [dict(r) for r in rs]
+
+    def vector_search_facts(
+        self, *, query_embedding: list[float], limit: int = 10
+    ) -> list[dict[str, Any]]:
+        if not query_embedding:
+            return []
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(
+                self.vector_search_facts_cypher(),
+                embedding=list(query_embedding),
+                k=int(limit),
+            )
             return [dict(r) for r in rs]
 
     @staticmethod
@@ -748,10 +897,206 @@ class GraphitiNeo4jStore:
             "LIMIT $limit"
         )
 
+    @staticmethod
+    def vector_search_communities_cypher() -> str:
+        return (
+            "CALL db.index.vector.queryNodes('community_embedding', $k, $embedding) "
+            "YIELD node, score "
+            "RETURN node.community_id AS community_id, coalesce(node.name, node.community_id) AS name, "
+            "coalesce(node.summary, '') AS summary, score AS score "
+            "ORDER BY score DESC "
+            "LIMIT $k"
+        )
+
     def fulltext_search_communities(self, *, query: str, limit: int = 10) -> list[dict[str, Any]]:
         with self._driver.session(database=self._database) as session:
             rs = session.run(self.fulltext_search_communities_cypher(), q=query, limit=limit)
             return [dict(r) for r in rs]
+
+    def vector_search_communities(
+        self, *, query_embedding: list[float], limit: int = 10
+    ) -> list[dict[str, Any]]:
+        if not query_embedding:
+            return []
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(
+                self.vector_search_communities_cypher(),
+                embedding=list(query_embedding),
+                k=int(limit),
+            )
+            return [dict(r) for r in rs]
+
+    # ──────────────────────────────────────
+    # GDS helpers (strict parity)
+    # ──────────────────────────────────────
+
+    @staticmethod
+    def _gds_project_entity_graph_cypher() -> str:
+        return (
+            "CALL gds.graph.project.cypher(\n"
+            "  $graph_name,\n"
+            "  $node_query,\n"
+            "  $rel_query,\n"
+            "  {parameters: {entity_ids: $entity_ids}}\n"
+            ")\n"
+            "YIELD graphName\n"
+            "RETURN graphName"
+        )
+
+    @staticmethod
+    def _gds_drop_graph_cypher() -> str:
+        return "CALL gds.graph.drop($graph_name, false) YIELD graphName RETURN graphName"
+
+    @staticmethod
+    def _entity_neo_ids_by_entity_ids_cypher() -> str:
+        return (
+            "MATCH (e:Entity) "
+            "WHERE e.entity_id IN $entity_ids "
+            "RETURN e.entity_id AS entity_id, id(e) AS neo_id"
+        )
+
+    def gds_min_distances_from_anchors(
+        self,
+        *,
+        anchor_entity_ids: list[str],
+        entity_ids: list[str],
+        max_depth: int = 4,
+    ) -> dict[str, int]:
+        """用 GDS BFS 计算 anchor→entity 的最短 hop 距离（取多个 anchor 的最小值）。
+
+        - 图投影：Entity 作为节点，若存在 Fact 连接两实体则连边（无向）。
+        - 仅在给定的 entity_ids 子集上投影（减少开销）。
+        """
+
+        anchor_entity_ids = [str(e).strip() for e in (anchor_entity_ids or []) if str(e).strip()]
+        entity_ids = [str(e).strip() for e in (entity_ids or []) if str(e).strip()]
+        if not anchor_entity_ids or not entity_ids:
+            return {}
+
+        all_ids = sorted(set(anchor_entity_ids) | set(entity_ids))
+        max_depth = max(1, int(max_depth))
+
+        node_query = (
+            "MATCH (e:Entity) "
+            "WHERE e.entity_id IN $entity_ids "
+            "RETURN id(e) AS id"
+        )
+        rel_query = (
+            "MATCH (s:Entity)-[:SUBJECT_OF]->(:Fact)-[:OBJECT_OF]->(o:Entity) "
+            "WHERE s.entity_id IN $entity_ids AND o.entity_id IN $entity_ids "
+            "RETURN id(s) AS source, id(o) AS target, 'RELATED' AS type "
+            "UNION ALL "
+            "MATCH (s:Entity)-[:SUBJECT_OF]->(:Fact)-[:OBJECT_OF]->(o:Entity) "
+            "WHERE s.entity_id IN $entity_ids AND o.entity_id IN $entity_ids "
+            "RETURN id(o) AS source, id(s) AS target, 'RELATED' AS type"
+        )
+
+        graph_name = f"graphiti_entity_tmp_{uuid.uuid4().hex}"
+        with self._driver.session(database=self._database) as session:
+            # Project
+            session.run(
+                self._gds_project_entity_graph_cypher(),
+                graph_name=graph_name,
+                node_query=node_query,
+                rel_query=rel_query,
+                entity_ids=all_ids,
+            ).single()
+
+            try:
+                # Map anchors to neo ids
+                rs = session.run(
+                    self._entity_neo_ids_by_entity_ids_cypher(), entity_ids=anchor_entity_ids
+                )
+                anchor_map = {str(r.get("entity_id") or ""): int(r.get("neo_id")) for r in rs}
+                anchor_neo_ids = [anchor_map[e] for e in anchor_entity_ids if e in anchor_map]
+                if not anchor_neo_ids:
+                    return {}
+
+                # Run BFS for each anchor and keep min depth
+                depths: dict[str, int] = {}
+                for src in anchor_neo_ids:
+                    bfs_rs = session.run(
+                        "CALL gds.bfs.stream($graph_name, {sourceNode: $source, maxDepth: $max_depth}) "
+                        "YIELD nodeId, depth "
+                        "RETURN gds.util.asNode(nodeId).entity_id AS entity_id, depth",
+                        graph_name=graph_name,
+                        source=int(src),
+                        max_depth=max_depth,
+                    )
+                    for r in bfs_rs:
+                        entity_id = str(r.get("entity_id") or "").strip()
+                        if not entity_id:
+                            continue
+                        depth = int(r.get("depth"))
+                        if entity_id not in depths or depth < depths[entity_id]:
+                            depths[entity_id] = depth
+
+                return depths
+            finally:
+                # Drop projected graph
+                session.run(self._gds_drop_graph_cypher(), graph_name=graph_name).single()
+
+    def gds_label_propagation_groups(
+        self,
+        *,
+        entity_ids: list[str],
+        max_iterations: int = 10,
+    ) -> dict[str, list[str]]:
+        """用 GDS label propagation 在 entity 子图上做社区发现。
+
+        返回：community_id(str) -> [entity_id,...]
+        """
+
+        entity_ids = [str(e).strip() for e in (entity_ids or []) if str(e).strip()]
+        if not entity_ids:
+            return {}
+        max_iterations = max(1, int(max_iterations))
+
+        node_query = (
+            "MATCH (e:Entity) "
+            "WHERE e.entity_id IN $entity_ids "
+            "RETURN id(e) AS id"
+        )
+        rel_query = (
+            "MATCH (s:Entity)-[:SUBJECT_OF]->(:Fact)-[:OBJECT_OF]->(o:Entity) "
+            "WHERE s.entity_id IN $entity_ids AND o.entity_id IN $entity_ids "
+            "RETURN id(s) AS source, id(o) AS target, 'RELATED' AS type "
+            "UNION ALL "
+            "MATCH (s:Entity)-[:SUBJECT_OF]->(:Fact)-[:OBJECT_OF]->(o:Entity) "
+            "WHERE s.entity_id IN $entity_ids AND o.entity_id IN $entity_ids "
+            "RETURN id(o) AS source, id(s) AS target, 'RELATED' AS type"
+        )
+
+        graph_name = f"graphiti_comm_tmp_{uuid.uuid4().hex}"
+        with self._driver.session(database=self._database) as session:
+            session.run(
+                self._gds_project_entity_graph_cypher(),
+                graph_name=graph_name,
+                node_query=node_query,
+                rel_query=rel_query,
+                entity_ids=sorted(set(entity_ids)),
+            ).single()
+
+            try:
+                lp_rs = session.run(
+                    "CALL gds.labelPropagation.stream($graph_name, {maxIterations: $max_iter}) "
+                    "YIELD nodeId, communityId "
+                    "RETURN gds.util.asNode(nodeId).entity_id AS entity_id, communityId",
+                    graph_name=graph_name,
+                    max_iter=max_iterations,
+                )
+                groups: dict[str, list[str]] = {}
+                for r in lp_rs:
+                    eid = str(r.get("entity_id") or "").strip()
+                    cid = str(r.get("communityId") or "").strip()
+                    if eid and cid:
+                        groups.setdefault(cid, []).append(eid)
+
+                for cid in list(groups.keys()):
+                    groups[cid] = sorted(set(groups[cid]))
+                return groups
+            finally:
+                session.run(self._gds_drop_graph_cypher(), graph_name=graph_name).single()
 
     @staticmethod
     def scan_communities_with_embeddings_cypher() -> str:

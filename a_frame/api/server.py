@@ -221,15 +221,14 @@ def create_app(pipeline=None) -> FastAPI:
     async def get_graph():
         pipeline = _get_pipeline(app)
         graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
-        if graphiti is not None and hasattr(graphiti, "export_semantic_graph"):
+        store = getattr(graphiti, "store", None) if graphiti is not None else None
+        if store is not None and hasattr(store, "export_semantic_graph"):
             try:
-                data = graphiti.export_semantic_graph()
+                data = store.export_semantic_graph()
                 return GraphResponse(nodes=data.get("nodes", []), edges=data.get("edges", []))
-            except Exception:
-                logger.warning(
-                    "Graphiti export_semantic_graph failed; falling back to legacy graph_store",
-                    exc_info=True,
-                )
+            except Exception as exc:
+                logger.exception("Graphiti export_semantic_graph failed")
+                raise HTTPException(status_code=500, detail=f"Graphiti export failed: {exc}")
 
         graph_store = pipeline.search_coordinator.graph_store
         nodes = graph_store.get_all()
@@ -246,31 +245,15 @@ def create_app(pipeline=None) -> FastAPI:
         q: str = Query(..., min_length=1, description="搜索关键词"),
         top_k: int = Query(default=10, ge=1, le=100),
     ):
-        """按关键词搜索图谱节点，返回处国子图。"""
+        """按关键词搜索图谱节点，返回子图。"""
         pipeline = _get_pipeline(app)
 
         graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
 
-        def _cosine(a: list[float], b: list[float]) -> float:
-            if not a or not b or len(a) != len(b):
-                return 0.0
-            dot = 0.0
-            na = 0.0
-            nb = 0.0
-            for x, y in zip(a, b):
-                dot += float(x) * float(y)
-                na += float(x) * float(x)
-                nb += float(y) * float(y)
-            if na <= 0.0 or nb <= 0.0:
-                return 0.0
-            return dot / ((na**0.5) * (nb**0.5))
-
         store = getattr(graphiti, "store", None) if graphiti is not None else None
         if store is not None and hasattr(store, "export_semantic_subgraph"):
             try:
-                sc = pipeline.search_coordinator
-
-                # 1) candidate entity ids (hybrid: fulltext first, then embedding scan best-effort)
+                # 1) candidate entity ids (strict: fulltext only; no embedding scan fallback)
                 candidate_ids: list[str] = []
                 seen: set[str] = set()
 
@@ -284,26 +267,6 @@ def create_app(pipeline=None) -> FastAPI:
                     if eid and eid not in seen:
                         candidate_ids.append(eid)
                         seen.add(eid)
-
-                try:
-                    q_emb = sc.embedder.embed_query(q)
-                    scanned = store.scan_entities_with_embeddings(limit=2000)
-                    scored: list[tuple[float, str]] = []
-                    for r in scanned:
-                        eid = str(r.get("entity_id") or "").strip()
-                        emb = r.get("embedding")
-                        if not eid or not isinstance(emb, list):
-                            continue
-                        scored.append((_cosine(q_emb, emb), eid))
-                    scored.sort(key=lambda x: x[0], reverse=True)
-                    for score, eid in scored:
-                        if score < 0.75:
-                            break
-                        if eid not in seen:
-                            candidate_ids.append(eid)
-                            seen.add(eid)
-                except Exception:
-                    pass
 
                 anchor_ids = candidate_ids[:top_k]
                 data = store.export_semantic_subgraph(
@@ -329,43 +292,8 @@ def create_app(pipeline=None) -> FastAPI:
 
                 return GraphResponse(nodes=nodes, edges=edges)
             except Exception:
-                logger.warning(
-                    "Graphiti native graph search failed; falling back to export_semantic_graph",
-                    exc_info=True,
-                )
-
-        if graphiti is not None and hasattr(graphiti, "export_semantic_graph"):
-            try:
-                data = graphiti.export_semantic_graph()
-                nodes_all = data.get("nodes", [])
-                edges_all = data.get("edges", [])
-                q_lower = q.lower()
-
-                matched = [
-                    n
-                    for n in nodes_all
-                    if q_lower in str(n.get("name") or "").lower()
-                    or q_lower in str(n.get("id") or n.get("node_id") or "").lower()
-                ]
-                matched = matched[:top_k]
-
-                node_ids = {
-                    str(n.get("id") or n.get("node_id") or "")
-                    for n in matched
-                    if (n.get("id") or n.get("node_id"))
-                }
-                edges = [
-                    e
-                    for e in edges_all
-                    if str(e.get("source") or "") in node_ids
-                    or str(e.get("target") or "") in node_ids
-                ]
-                return GraphResponse(nodes=matched, edges=edges)
-            except Exception:
-                logger.warning(
-                    "Graphiti graph search failed; falling back to legacy graph_store",
-                    exc_info=True,
-                )
+                logger.exception("Graphiti native graph search failed")
+                raise HTTPException(status_code=500, detail="Graphiti graph search failed")
 
         sc = pipeline.search_coordinator
         graph_store = sc.graph_store
@@ -493,11 +421,9 @@ def create_app(pipeline=None) -> FastAPI:
             try:
                 edges = store.search_facts_by_relation(relation=relation, limit=top_k)
                 return {"edges": edges, "total": len(edges)}
-            except Exception:
-                logger.warning(
-                    "Graphiti search_facts_by_relation failed; falling back to legacy graph_store",
-                    exc_info=True,
-                )
+            except Exception as exc:
+                logger.exception("Graphiti search_facts_by_relation failed")
+                raise HTTPException(status_code=500, detail=f"Graphiti by-relation failed: {exc}")
 
         graph_store = pipeline.search_coordinator.graph_store
         if hasattr(graph_store, "search_by_relation"):
@@ -521,11 +447,9 @@ def create_app(pipeline=None) -> FastAPI:
             try:
                 edges = store.search_facts_by_time(since=since, until=until, limit=top_k)
                 return {"edges": edges, "total": len(edges)}
-            except Exception:
-                logger.warning(
-                    "Graphiti search_facts_by_time failed; falling back to legacy graph_store",
-                    exc_info=True,
-                )
+            except Exception as exc:
+                logger.exception("Graphiti search_facts_by_time failed")
+                raise HTTPException(status_code=500, detail=f"Graphiti by-time failed: {exc}")
 
         graph_store = pipeline.search_coordinator.graph_store
         if hasattr(graph_store, "search_by_time"):
@@ -582,17 +506,17 @@ def create_app(pipeline=None) -> FastAPI:
                         limit=top_k,
                     )
                 elif hasattr(store, "list_active_facts_for_subject"):
-                    rows = store.list_active_facts_for_subject(subject_entity_id=subject, limit=top_k)
+                    rows = store.list_active_facts_for_subject(
+                        subject_entity_id=subject, limit=top_k
+                    )
                 else:
                     rows = []
 
                 edges = [_fact_row_to_edge(dict(r)) for r in (rows or [])]
                 return {"edges": edges, "total": len(edges)}
-            except Exception:
-                logger.warning(
-                    "Graphiti list_active_facts failed; falling back to legacy graph_store",
-                    exc_info=True,
-                )
+            except Exception as exc:
+                logger.exception("Graphiti list_active_facts failed")
+                raise HTTPException(status_code=500, detail=f"Graphiti facts/active failed: {exc}")
 
         # Legacy fallback: best-effort filter from current graph edges (no versioning).
         graph_store = pipeline.search_coordinator.graph_store
@@ -647,11 +571,9 @@ def create_app(pipeline=None) -> FastAPI:
 
                 edges = [_fact_row_to_edge(dict(r)) for r in (rows or [])]
                 return {"edges": edges, "total": len(edges)}
-            except Exception:
-                logger.warning(
-                    "Graphiti list_fact_history failed; falling back to legacy graph_store",
-                    exc_info=True,
-                )
+            except Exception as exc:
+                logger.exception("Graphiti list_fact_history failed")
+                raise HTTPException(status_code=500, detail=f"Graphiti facts/history failed: {exc}")
 
         return {"edges": [], "total": 0}
 

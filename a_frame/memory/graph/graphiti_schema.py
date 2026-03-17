@@ -16,7 +16,11 @@ class CypherStatement:
     cypher: str
 
 
-def schema_statements() -> list[CypherStatement]:
+def schema_statements(
+    *,
+    vector_dim: int | None = None,
+    vector_similarity_function: str = "cosine",
+) -> list[CypherStatement]:
     """返回 Graphiti 所需的约束与索引创建语句。
 
     约定：
@@ -29,7 +33,7 @@ def schema_statements() -> list[CypherStatement]:
       增加降级路径。
     """
 
-    return [
+    stmts: list[CypherStatement] = [
         # ── Uniqueness constraints ──
         CypherStatement(
             name="constraint_episode_id",
@@ -84,29 +88,23 @@ def schema_statements() -> list[CypherStatement]:
         CypherStatement(
             name="index_fact_t_valid_from",
             cypher=(
-                "CREATE INDEX fact_t_valid_from IF NOT EXISTS "
-                "FOR (f:Fact) ON (f.t_valid_from)"
+                "CREATE INDEX fact_t_valid_from IF NOT EXISTS FOR (f:Fact) ON (f.t_valid_from)"
             ),
         ),
         CypherStatement(
             name="index_fact_t_valid_to",
-            cypher=(
-                "CREATE INDEX fact_t_valid_to IF NOT EXISTS "
-                "FOR (f:Fact) ON (f.t_valid_to)"
-            ),
+            cypher=("CREATE INDEX fact_t_valid_to IF NOT EXISTS FOR (f:Fact) ON (f.t_valid_to)"),
         ),
         CypherStatement(
             name="index_fact_t_tx_created",
             cypher=(
-                "CREATE INDEX fact_t_tx_created IF NOT EXISTS "
-                "FOR (f:Fact) ON (f.t_tx_created)"
+                "CREATE INDEX fact_t_tx_created IF NOT EXISTS FOR (f:Fact) ON (f.t_tx_created)"
             ),
         ),
         CypherStatement(
             name="index_fact_t_tx_expired",
             cypher=(
-                "CREATE INDEX fact_t_tx_expired IF NOT EXISTS "
-                "FOR (f:Fact) ON (f.t_tx_expired)"
+                "CREATE INDEX fact_t_tx_expired IF NOT EXISTS FOR (f:Fact) ON (f.t_tx_expired)"
             ),
         ),
         # ── Fulltext indexes (BM25 / keyword) ──
@@ -132,3 +130,45 @@ def schema_statements() -> list[CypherStatement]:
             ),
         ),
     ]
+
+    # ── Native vector indexes (Neo4j 5+) ──
+    # 说明：这里仅负责 DDL 生成；维度必须与 embedder 输出一致。
+    if vector_dim is not None:
+        dim = int(vector_dim)
+        if dim <= 0:
+            raise ValueError("vector_dim must be a positive int")
+        sim = str(vector_similarity_function or "cosine")
+
+        stmts.extend(
+            [
+                CypherStatement(
+                    name="vector_entity_embedding",
+                    cypher=(
+                        "CREATE VECTOR INDEX entity_embedding IF NOT EXISTS "
+                        "FOR (e:Entity) ON (e.embedding) "
+                        "OPTIONS {indexConfig: {`vector.dimensions`: %d, `vector.similarity_function`: '%s'}}"
+                        % (dim, sim)
+                    ),
+                ),
+                CypherStatement(
+                    name="vector_fact_embedding",
+                    cypher=(
+                        "CREATE VECTOR INDEX fact_embedding IF NOT EXISTS "
+                        "FOR (f:Fact) ON (f.embedding) "
+                        "OPTIONS {indexConfig: {`vector.dimensions`: %d, `vector.similarity_function`: '%s'}}"
+                        % (dim, sim)
+                    ),
+                ),
+                CypherStatement(
+                    name="vector_community_embedding",
+                    cypher=(
+                        "CREATE VECTOR INDEX community_embedding IF NOT EXISTS "
+                        "FOR (c:Community) ON (c.embedding) "
+                        "OPTIONS {indexConfig: {`vector.dimensions`: %d, `vector.similarity_function`: '%s'}}"
+                        % (dim, sim)
+                    ),
+                ),
+            ]
+        )
+
+    return stmts

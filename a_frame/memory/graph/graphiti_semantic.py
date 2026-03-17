@@ -173,7 +173,7 @@ class GraphitiSemanticBuilder:
         if not name:
             return ResolvedEntity(entity_id=self._entity_id_from_name(""), name="")
 
-        # Candidate search (hybrid): fulltext + embedding scan (best-effort)
+        # Candidate search (hybrid): fulltext + vector index (Neo4j native) (best-effort)
         candidates: list[dict[str, Any]] = []
         try:
             candidates.extend(
@@ -184,19 +184,33 @@ class GraphitiSemanticBuilder:
 
         try:
             q_emb = self.embedder.embed_query(name)
-            emb_candidates = self.store.scan_entities_with_embeddings(
-                limit=self.entity_embedding_scan_limit
-            )
-            scored = []
-            for c in emb_candidates:
-                emb = c.get("embedding")
-                if isinstance(emb, list):
-                    score = _cosine(q_emb, emb)
-                    if score >= self.entity_embedding_threshold:
-                        scored.append((score, c))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            for _, c in scored[: self.entity_candidate_top_k]:
-                candidates.append(c)
+            if hasattr(self.store, "vector_search_entities"):
+                rows = self.store.vector_search_entities(
+                    query_embedding=q_emb,
+                    limit=max(self.entity_candidate_top_k * 3, 20),
+                )
+                for r in rows:
+                    try:
+                        score = float(r.get("score") or 0.0)
+                    except Exception:
+                        score = 0.0
+                    if score >= float(self.entity_embedding_threshold):
+                        candidates.append(r)
+            elif hasattr(self.store, "scan_entities_with_embeddings"):
+                # Legacy fallback when vector index is unavailable.
+                emb_candidates = self.store.scan_entities_with_embeddings(
+                    limit=self.entity_embedding_scan_limit
+                )
+                scored = []
+                for c in emb_candidates:
+                    emb = c.get("embedding")
+                    if isinstance(emb, list):
+                        score = _cosine(q_emb, emb)
+                        if score >= self.entity_embedding_threshold:
+                            scored.append((score, c))
+                scored.sort(key=lambda x: x[0], reverse=True)
+                for _, c in scored[: self.entity_candidate_top_k]:
+                    candidates.append(c)
         except Exception:
             pass
 
@@ -635,6 +649,15 @@ class GraphitiSemanticBuilder:
                     except Exception:
                         continue
 
+            fact_embedding = None
+            try:
+                fact_for_embed = (
+                    f"{subj_name or ''} --{relation_type}--> {obj_name or ''}: {resolved_fact.get('fact_text') or ''}"
+                ).strip()
+                fact_embedding = self.embedder.embed_query(fact_for_embed)
+            except Exception:
+                fact_embedding = None
+
             self.store.upsert_fact(
                 fact_id=fact_id,
                 subject_entity_id=subj_id,
@@ -642,6 +665,7 @@ class GraphitiSemanticBuilder:
                 relation_type=relation_type,
                 fact_text=resolved_fact.get("fact_text") or "",
                 evidence_text=resolved_fact.get("evidence_text") or "",
+                embedding=fact_embedding,
                 confidence=float(resolved_fact.get("confidence") or 1.0),
                 source_session=session_id,
                 t_created=reference_timestamp,

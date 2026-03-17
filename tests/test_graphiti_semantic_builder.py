@@ -107,6 +107,10 @@ class FakeGraphitiStore:
                 out.append(e)
         return out[:limit]
 
+    def vector_search_entities(self, *, query_embedding, limit: int = 10):
+        # Keep deterministic + simple for tests.
+        return []
+
     def scan_entities_with_embeddings(self, limit: int = 2000):
         return list(self.entities.values())[:limit]
 
@@ -153,6 +157,7 @@ class FakeGraphitiStore:
         relation_type: str,
         fact_text: str,
         evidence_text: str,
+        embedding: list[float] | None = None,
         confidence: float,
         source_session: str,
         t_created: str,
@@ -168,6 +173,7 @@ class FakeGraphitiStore:
             "relation_type": relation_type,
             "fact_text": fact_text,
             "evidence_text": evidence_text,
+            "embedding": embedding,
             "confidence": confidence,
             "source_session": source_session,
             "t_created": t_created,

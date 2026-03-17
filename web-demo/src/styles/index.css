@@ -521,9 +521,7 @@ html, body {
   transition: all var(--transition);
 }
 
-.trace-step.running { border-left: 3px solid var(--cyan); }
-.trace-step.pending { border-left: 3px solid var(--amber, #f59e0b); }
-.trace-step.idle { border-left: 3px solid var(--border); }
+.trace-step.idle { border-left: solid var(--border); }
 
 .trace-step-header {
   display: flex;
