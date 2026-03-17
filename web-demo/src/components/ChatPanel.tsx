@@ -1,6 +1,6 @@
 import { AppstoreOutlined, BarChartOutlined, MessageOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useRef } from "react";
-import { fetchGraphData, fetchGraphEdges, fetchPipelineStatus, fetchSessions, fetchSkills, sendChatMessage } from "../api";
+import { fetchGraphData, fetchGraphEdges, fetchPipelineStatus, fetchSessions, fetchSkills, streamChatMessage } from "../api";
 import { useStore } from "../state";
 import { formatContent } from "../utils";
 
@@ -20,6 +20,9 @@ export default function ChatPanel() {
   const setPipelineStatus = useStore((s) => s.setPipelineStatus);
   const setSessions = useStore((s) => s.setSessions);
   const setCurrentTrace = useStore((s) => s.setCurrentTrace);
+  const setPartialTrace = useStore((s) => s.setPartialTrace);
+  const mergePartialTrace = useStore((s) => s.mergePartialTrace);
+  const setCompletedSteps = useStore((s) => s.setCompletedSteps);
 
   const messagesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -46,27 +49,43 @@ export default function ChatPanel() {
       setIsTyping(true);
       setIsStreaming(true);
       setCurrentTrace(null);
+      setPartialTrace(null);
+      setCompletedSteps([]);
+
+      // Track accumulated state across SSE callbacks
+      let responseText = "";
+      const doneSteps: string[] = [];
 
       try {
-        const data = await sendChatMessage(sessionId, text);
-
-        setIsTyping(false);
-
-        setWmTokenUsage(data.wm_token_usage || 0);
-
-        addMessage({
-          role: "assistant",
-          content: data.response || "",
-          meta: {
-            memories_retrieved: data.memories_retrieved || 0,
-            wm_token_usage: data.wm_token_usage || 0,
-            trace: data.trace || null,
+        await streamChatMessage(sessionId, text, {
+          onStep(step, data) {
+            doneSteps.push(step);
+            setCompletedSteps([...doneSteps]);
+            const fragment = data.trace_fragment;
+            if (fragment && typeof fragment === "object") {
+              mergePartialTrace(fragment as Record<string, unknown>);
+            }
+          },
+          onAnswer(answer) {
+            responseText = answer;
+            setIsTyping(false);
+          },
+          onDone(data) {
+            setWmTokenUsage(data.wm_token_usage || 0);
+            addMessage({
+              role: "assistant",
+              content: responseText,
+              meta: {
+                memories_retrieved: data.memories_retrieved || 0,
+                wm_token_usage: data.wm_token_usage || 0,
+                trace: data.trace || null,
+              },
+            });
+            if (data.trace) {
+              setCurrentTrace(data.trace);
+            }
           },
         });
-
-        if (data.trace) {
-          setCurrentTrace(data.trace);
-        }
       } catch (err) {
         setIsTyping(false);
         addMessage({
@@ -97,6 +116,9 @@ export default function ChatPanel() {
       setIsStreaming,
       setWmTokenUsage,
       setCurrentTrace,
+      setPartialTrace,
+      mergePartialTrace,
+      setCompletedSteps,
       setGraphData,
       setGraphEdges,
       setSkills,

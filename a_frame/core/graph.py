@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from typing import Any
+from typing import Any, AsyncIterator
 
 from langgraph.graph import StateGraph, START, END
 
@@ -172,6 +172,44 @@ class AFramePipeline:
             asyncio.create_task(self._aconsolidate(session_id))
 
         return result
+
+    async def astream_steps(
+        self, user_query: str, session_id: str
+    ) -> AsyncIterator[dict[str, Any]]:
+        """逐节点执行 Pipeline，每步完成后 yield 进度事件。
+
+        事件格式：
+          {"type": "step", "step": <node_name>, "status": "done", ...extra}
+          {"type": "done", "result": <full_state>}
+        """
+        state: dict[str, Any] = {"user_query": user_query, "session_id": session_id}
+
+        patch = await asyncio.to_thread(self._wm_manager_node, state)
+        state.update(patch)
+        yield {
+            "type": "step",
+            "step": "wm_manager",
+            "status": "done",
+            "wm_token_usage": patch.get("wm_token_usage", 0),
+            "patch": patch,
+        }
+
+        patch = await asyncio.to_thread(self._search_node, state)
+        state.update(patch)
+        yield {"type": "step", "step": "search", "status": "done", "patch": patch}
+
+        patch = await asyncio.to_thread(self._synthesize_node, state)
+        state.update(patch)
+        yield {"type": "step", "step": "synthesize", "status": "done", "patch": patch}
+
+        patch = await asyncio.to_thread(self._reason_node, state)
+        state.update(patch)
+        yield {"type": "step", "step": "reason", "status": "done", "patch": patch}
+
+        if state.get("consolidation_pending"):
+            asyncio.create_task(self._aconsolidate(session_id))
+
+        yield {"type": "done", "result": dict(state)}
 
     def consolidate(self, session_id: str) -> dict[str, Any]:
         """手动触发固化（公共方法，可由 API BackgroundTasks 调用）。

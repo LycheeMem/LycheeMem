@@ -1,15 +1,15 @@
 import { create } from "zustand";
 import type {
-  AgentName,
-  AgentStatusValue,
-  GraphData,
-  GraphEdge,
-  Message,
-  PipelineStatus,
-  PipelineTrace,
-  SessionInfo,
-  SkillItem,
-  Turn,
+    AgentName,
+    AgentStatusValue,
+    GraphData,
+    GraphEdge,
+    Message,
+    PipelineStatus,
+    PipelineTrace,
+    SessionInfo,
+    SkillItem,
+    Turn,
 } from "./types";
 import { AGENT_NAMES } from "./types";
 
@@ -52,6 +52,12 @@ export interface AppState {
   // Pipeline trace
   currentTrace: PipelineTrace | null;
 
+  // Partial trace fragments accumulated during streaming (step name → trace piece)
+  partialTrace: Partial<PipelineTrace> | null;
+
+  // Streaming step progress ("wm_manager" | "search" | "synthesize" | "reason")
+  completedSteps: string[];
+
   // Actions
   setSessionId: (id: string) => void;
   setSessions: (sessions: SessionInfo[]) => void;
@@ -72,6 +78,9 @@ export interface AppState {
   setHoveredEdge: (edge: GraphEdge | null) => void;
   setSelectedEdge: (edge: GraphEdge | null) => void;
   setCurrentTrace: (trace: PipelineTrace | null) => void;
+  setPartialTrace: (trace: Partial<PipelineTrace> | null) => void;
+  mergePartialTrace: (fragment: Record<string, unknown>) => void;
+  setCompletedSteps: (steps: string[]) => void;
   newSession: () => void;
 }
 
@@ -110,6 +119,8 @@ export const useStore = create<AppState>((set) => ({
   hoveredEdge: null,
   selectedEdge: null,
   currentTrace: null,
+  partialTrace: null,
+  completedSteps: [],
 
   setSessionId: (id) => set({ sessionId: id }),
   setSessions: (sessions) => set({ sessions }),
@@ -131,6 +142,12 @@ export const useStore = create<AppState>((set) => ({
   setHoveredEdge: (edge) => set({ hoveredEdge: edge }),
   setSelectedEdge: (edge) => set({ selectedEdge: edge }),
   setCurrentTrace: (trace) => set({ currentTrace: trace }),
+  setPartialTrace: (trace) => set({ partialTrace: trace }),
+  mergePartialTrace: (fragment) =>
+    set((s) => ({
+      partialTrace: { ...(s.partialTrace ?? {}), ...fragment } as Partial<PipelineTrace>,
+    })),
+  setCompletedSteps: (steps) => set({ completedSteps: steps }),
   newSession: () =>
     set({
       sessionId: generateSessionId(),
@@ -141,5 +158,7 @@ export const useStore = create<AppState>((set) => ({
       hoveredEdge: null,
       selectedEdge: null,
       currentTrace: null,
+      partialTrace: null,
+      completedSteps: [],
     }),
 }));

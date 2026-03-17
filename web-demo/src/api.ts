@@ -1,13 +1,13 @@
 import type {
-    ConsolidatorTrace,
-    GraphData,
-    GraphEdge,
-    GraphNode,
-    PipelineStatus,
-    PipelineTrace,
-    SessionInfo,
-    SkillItem,
-    Turn,
+  ConsolidatorTrace,
+  GraphData,
+  GraphEdge,
+  GraphNode,
+  PipelineStatus,
+  PipelineTrace,
+  SessionInfo,
+  SkillItem,
+  Turn,
 } from "./types";
 
 const API = "";
@@ -51,6 +51,94 @@ export async function sendChatMessage(
     throw new Error(detail);
   }
   return data;
+}
+
+export interface StreamStepEvent {
+  type: "step";
+  step: string;
+  status: "done";
+  wm_token_usage?: number;
+}
+
+export interface StreamAnswerEvent {
+  type: "answer";
+  content: string;
+}
+
+export interface StreamDoneEvent {
+  type: "done";
+  session_id: string;
+  memories_retrieved: number;
+  wm_token_usage: number;
+  trace: PipelineTrace;
+}
+
+export type StreamEvent = StreamStepEvent | StreamAnswerEvent | StreamDoneEvent;
+
+/**
+ * SSE 流式对话。通过回调实时接收每个 pipeline 步骤的进度。
+ * 后端依次发送 step 事件（wm_manager / search / synthesize / reason），
+ * 最后发送 answer 和 done 事件。
+ */
+export async function streamChatMessage(
+  sessionId: string,
+  message: string,
+  callbacks: {
+    onStep?: (step: string, data: Record<string, unknown>) => void;
+    onAnswer?: (answer: string) => void;
+    onDone?: (data: StreamDoneEvent) => void;
+  }
+): Promise<void> {
+  const r = await fetch(`${API}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, message }),
+  });
+
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    const detail =
+      (data as Record<string, string>)?.detail ||
+      (data as Record<string, string>)?.message ||
+      `HTTP ${r.status}`;
+    throw new Error(detail);
+  }
+
+  const reader = r.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    // SSE messages are separated by double newlines
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() ?? "";
+
+    for (const part of parts) {
+      const line = part.trim();
+      if (!line.startsWith("data: ")) continue;
+      const jsonStr = line.slice(6).trim();
+      if (!jsonStr) continue;
+
+      let evt: Record<string, unknown>;
+      try {
+        evt = JSON.parse(jsonStr);
+      } catch {
+        continue;
+      }
+
+      if (evt.type === "step" && callbacks.onStep) {
+        callbacks.onStep(evt.step as string, evt);
+      } else if (evt.type === "answer" && callbacks.onAnswer) {
+        callbacks.onAnswer(evt.content as string);
+      } else if (evt.type === "done" && callbacks.onDone) {
+        callbacks.onDone(evt as unknown as StreamDoneEvent);
+      }
+    }
+  }
 }
 
 function getNodeDisplayText(n: Record<string, unknown>): string {
