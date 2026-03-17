@@ -178,5 +178,7 @@ class FileSkillStore(BaseMemoryStore):
             if skill_id not in self._skills:
                 return
             self._skills[skill_id].success_count += 1
-            self._skills[skill_id].last_used = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            self._skills[skill_id].last_used = datetime.datetime.now(
+                datetime.timezone.utc
+            ).isoformat()
             self._save()

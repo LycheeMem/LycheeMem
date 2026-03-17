@@ -75,10 +75,13 @@ class TestHealth:
 class TestChatComplete:
     def test_basic_chat(self):
         client = _make_client()
-        resp = client.post("/chat/complete", json={
-            "session_id": "test-1",
-            "message": "你好",
-        })
+        resp = client.post(
+            "/chat/complete",
+            json={
+                "session_id": "test-1",
+                "message": "你好",
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["session_id"] == "test-1"
@@ -98,10 +101,13 @@ class TestChatComplete:
 
     def test_validation_empty_message(self):
         client = _make_client()
-        resp = client.post("/chat/complete", json={
-            "session_id": "test-1",
-            "message": "",
-        })
+        resp = client.post(
+            "/chat/complete",
+            json={
+                "session_id": "test-1",
+                "message": "",
+            },
+        )
         assert resp.status_code == 422  # pydantic validation
 
     def test_validation_missing_session(self):
@@ -130,10 +136,13 @@ class TestChatComplete:
 class TestChatSSE:
     def test_sse_stream(self):
         client = _make_client()
-        resp = client.post("/chat", json={
-            "session_id": "sse-1",
-            "message": "你好",
-        })
+        resp = client.post(
+            "/chat",
+            json={
+                "session_id": "sse-1",
+                "message": "你好",
+            },
+        )
         assert resp.status_code == 200
         assert "text/event-stream" in resp.headers["content-type"]
 
@@ -163,11 +172,15 @@ class TestMemoryGraph:
 
     def test_graph_after_data(self):
         pipeline = create_pipeline(llm=FakeLLM(), embedder=FakeEmbedder())
-        pipeline.search_coordinator.graph_store.add([{
-            "subject": {"name": "Alice", "label": "Person"},
-            "predicate": "knows",
-            "object": {"name": "Bob", "label": "Person"},
-        }])
+        pipeline.search_coordinator.graph_store.add(
+            [
+                {
+                    "subject": {"name": "Alice", "label": "Person"},
+                    "predicate": "knows",
+                    "object": {"name": "Bob", "label": "Person"},
+                }
+            ]
+        )
         app = create_app(pipeline)
         client = TestClient(app)
 
@@ -227,10 +240,13 @@ class TestNoopPipeline:
     def test_503_when_no_pipeline(self):
         app = create_app(pipeline=None)
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.post("/chat/complete", json={
-            "session_id": "x",
-            "message": "hi",
-        })
+        resp = client.post(
+            "/chat/complete",
+            json={
+                "session_id": "x",
+                "message": "hi",
+            },
+        )
         assert resp.status_code == 503
 
 
@@ -285,11 +301,15 @@ class TestMemorySearch:
 
     def test_search_returns_graph_results(self):
         pipeline = create_pipeline(llm=FakeLLM(), embedder=FakeEmbedder())
-        pipeline.search_coordinator.graph_store.add([{
-            "subject": {"name": "Alice", "label": "Person"},
-            "predicate": "knows",
-            "object": {"name": "Bob", "label": "Person"},
-        }])
+        pipeline.search_coordinator.graph_store.add(
+            [
+                {
+                    "subject": {"name": "Alice", "label": "Person"},
+                    "predicate": "knows",
+                    "object": {"name": "Bob", "label": "Person"},
+                }
+            ]
+        )
         app = create_app(pipeline)
         client = TestClient(app)
 
@@ -299,11 +319,14 @@ class TestMemorySearch:
 
     def test_search_graph_only(self):
         client = _make_client()
-        resp = client.post("/memory/search", json={
-            "query": "test",
-            "include_graph": True,
-            "include_skills": False,
-        })
+        resp = client.post(
+            "/memory/search",
+            json={
+                "query": "test",
+                "include_graph": True,
+                "include_skills": False,
+            },
+        )
         assert resp.status_code == 200
 
 
@@ -320,11 +343,15 @@ class TestGraphSearch:
 
     def test_graph_search_finds_node(self):
         pipeline = create_pipeline(llm=FakeLLM(), embedder=FakeEmbedder())
-        pipeline.search_coordinator.graph_store.add([{
-            "subject": {"name": "Alice", "label": "Person"},
-            "predicate": "knows",
-            "object": {"name": "Bob", "label": "Person"},
-        }])
+        pipeline.search_coordinator.graph_store.add(
+            [
+                {
+                    "subject": {"name": "Alice", "label": "Person"},
+                    "predicate": "knows",
+                    "object": {"name": "Bob", "label": "Person"},
+                }
+            ]
+        )
         app = create_app(pipeline)
         client = TestClient(app)
 
@@ -339,11 +366,14 @@ class TestGraphSearch:
 class TestGraphCRUD:
     def test_add_node(self):
         client = _make_client()
-        resp = client.post("/memory/graph/nodes", json={
-            "id": "Charlie",
-            "label": "Person",
-            "properties": {"age": 30},
-        })
+        resp = client.post(
+            "/memory/graph/nodes",
+            json={
+                "id": "Charlie",
+                "label": "Person",
+                "properties": {"age": 30},
+            },
+        )
         assert resp.status_code == 200
         assert "Charlie" in resp.json()["message"]
 
@@ -351,11 +381,14 @@ class TestGraphCRUD:
         client = _make_client()
         client.post("/memory/graph/nodes", json={"id": "X", "label": "Entity"})
         client.post("/memory/graph/nodes", json={"id": "Y", "label": "Entity"})
-        resp = client.post("/memory/graph/edges", json={
-            "source": "X",
-            "target": "Y",
-            "relation": "related_to",
-        })
+        resp = client.post(
+            "/memory/graph/edges",
+            json={
+                "source": "X",
+                "target": "Y",
+                "relation": "related_to",
+            },
+        )
         assert resp.status_code == 200
 
     def test_delete_node(self):
@@ -387,6 +420,7 @@ class TestSkillsDelete:
 def _parse_sse(text: str) -> list[dict]:
     """从 SSE 文本中解析事件列表。"""
     import json
+
     events = []
     for line in text.strip().split("\n"):
         line = line.strip()

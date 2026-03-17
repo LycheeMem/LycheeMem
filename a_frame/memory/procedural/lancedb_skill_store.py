@@ -33,13 +33,15 @@ class LanceDBSkillStore(BaseMemoryStore):
     def _ensure_table(self) -> None:
         """确保表存在，不存在则创建。"""
         if self.TABLE_NAME not in self._db.table_names():
-            schema = pa.schema([
-                pa.field("id", pa.utf8()),
-                pa.field("intent", pa.utf8()),
-                pa.field("doc_markdown", pa.utf8()),     # Markdown 文档
-                pa.field("metadata", pa.utf8()),          # JSON 序列化
-                pa.field("vector", pa.list_(pa.float32(), self._embedding_dim)),
-            ])
+            schema = pa.schema(
+                [
+                    pa.field("id", pa.utf8()),
+                    pa.field("intent", pa.utf8()),
+                    pa.field("doc_markdown", pa.utf8()),  # Markdown 文档
+                    pa.field("metadata", pa.utf8()),  # JSON 序列化
+                    pa.field("vector", pa.list_(pa.float32(), self._embedding_dim)),
+                ]
+            )
             self._db.create_table(self.TABLE_NAME, schema=schema)
 
     def _get_table(self):
@@ -48,15 +50,18 @@ class LanceDBSkillStore(BaseMemoryStore):
     def add(self, items: list[dict[str, Any]]) -> None:
         """添加技能条目。每个 item 需包含 intent, embedding, doc_markdown。"""
         import json
+
         rows = []
         for item in items:
-            rows.append({
-                "id": item.get("id", str(uuid.uuid4())),
-                "intent": item["intent"],
-                "doc_markdown": item["doc_markdown"],
-                "metadata": json.dumps(item.get("metadata", {}), ensure_ascii=False),
-                "vector": item["embedding"],
-            })
+            rows.append(
+                {
+                    "id": item.get("id", str(uuid.uuid4())),
+                    "intent": item["intent"],
+                    "doc_markdown": item["doc_markdown"],
+                    "metadata": json.dumps(item.get("metadata", {}), ensure_ascii=False),
+                    "vector": item["embedding"],
+                }
+            )
         if rows:
             table = self._get_table()
             table.add(rows)
@@ -66,16 +71,13 @@ class LanceDBSkillStore(BaseMemoryStore):
     ) -> list[dict[str, Any]]:
         """向量相似度检索。需传入 query_embedding。"""
         import json
+
         if query_embedding is None:
             return []
 
         table = self._get_table()
         try:
-            results = (
-                table.search(query_embedding)
-                .limit(top_k)
-                .to_list()
-            )
+            results = table.search(query_embedding).limit(top_k).to_list()
         except Exception:
             return []
 
@@ -100,6 +102,7 @@ class LanceDBSkillStore(BaseMemoryStore):
 
     def get_all(self) -> list[dict[str, Any]]:
         import json
+
         table = self._get_table()
         rows = table.to_pandas()
         return [

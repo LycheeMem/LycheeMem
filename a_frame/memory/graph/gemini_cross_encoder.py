@@ -8,7 +8,7 @@ Strict mode should fail-fast at wiring time if enabled but missing API key.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import re
 from typing import Any
@@ -36,6 +36,9 @@ def _extract_json_array(text: str) -> list[dict[str, Any]]:
 class GeminiCrossEncoderReranker:
     api_key: str
     model: str = "gemini-3.1-flash-lite-preview"
+
+    _genai: Any = field(init=False, repr=False)
+    _client: Any = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not str(self.api_key or "").strip():

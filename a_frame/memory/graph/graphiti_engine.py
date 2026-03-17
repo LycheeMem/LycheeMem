@@ -11,10 +11,15 @@ from typing import Any
 
 import datetime
 import hashlib
+import json
 
 from collections import Counter
 
 from a_frame.memory.graph.graphiti_neo4j_store import GraphitiNeo4jStore
+from a_frame.memory.graph.graphiti_prompts import (
+    COMMUNITY_SUMMARY_MAP_SYSTEM_PROMPT,
+    COMMUNITY_SUMMARY_REDUCE_SYSTEM_PROMPT,
+)
 
 
 @dataclass(slots=True)
@@ -31,6 +36,7 @@ class GraphitiEngine:
         store: GraphitiNeo4jStore,
         *,
         strict: bool = False,
+        community_llm: Any | None = None,
         gds_distance_max_depth: int = 4,
         cross_encoder: Any | None = None,
         cross_encoder_top_n: int = 20,
@@ -38,6 +44,7 @@ class GraphitiEngine:
     ):
         self.store = store
         self.strict = bool(strict)
+        self.community_llm = community_llm
         self.gds_distance_max_depth = max(1, int(gds_distance_max_depth))
         self.cross_encoder = cross_encoder
         self.cross_encoder_top_n = max(1, int(cross_encoder_top_n))
@@ -171,6 +178,27 @@ class GraphitiEngine:
         # ──────────────────────────────────────
         # Anchor entities for BFS expansion (mentions + high-scoring)
         # ──────────────────────────────────────
+        recent_episode_entity_ids: list[str] = []
+        if session_id is not None and str(session_id).strip():
+            if not hasattr(self.store, "list_recent_entity_ids_from_episodes"):
+                if self.strict:
+                    raise RuntimeError(
+                        "Graphiti strict search requires store.list_recent_entity_ids_from_episodes()"
+                    )
+            else:
+                try:
+                    recent_episode_entity_ids = self.store.list_recent_entity_ids_from_episodes(
+                        session_id=str(session_id),
+                        episode_limit=4,
+                        entity_limit=20,
+                    )
+                except Exception as e:
+                    if self.strict:
+                        raise RuntimeError(
+                            f"Graphiti strict recent-episode seeds failed: {e}"
+                        ) from e
+                    recent_episode_entity_ids = []
+
         ft_entities: list[dict[str, Any]] = []
         if self.strict:
             ft_entities = self.store.fulltext_search_entities(query=query, limit=10)
@@ -194,7 +222,13 @@ class GraphitiEngine:
         bfs_ranked_fact_ids: list[str] = []
         entity_cache: dict[str, dict[str, Any]] = {}
 
-        frontier = list(anchor_entity_ids)
+        bfs_seed_entity_ids: list[str] = []
+        for eid in (recent_episode_entity_ids or []) + (anchor_entity_ids or []):
+            eid = str(eid or "").strip()
+            if eid and eid not in bfs_seed_entity_ids:
+                bfs_seed_entity_ids.append(eid)
+
+        frontier = list(bfs_seed_entity_ids)
         visited_entities = set(frontier)
         max_depth = 2
         for depth in range(max_depth):
@@ -313,8 +347,50 @@ class GraphitiEngine:
                     for c in scored[:5]:
                         communities.append(c)
 
-            # 2) dynamic expansion + refresh (label propagation)
-            if (not communities) and anchor_entity_ids:
+            # 1.5) dynamic extension: expand via shared entities to fill the pool
+            if communities and hasattr(self.store, "expand_communities_via_entities"):
+                existing_ids = [str(c.get("community_id") or "").strip() for c in communities]
+                existing_ids = [cid for cid in existing_ids if cid]
+                unique_existing = list(dict.fromkeys(existing_ids))
+                need = max(0, 5 - len(unique_existing))
+                if need > 0 and unique_existing:
+                    if self.strict:
+                        extra = self.store.expand_communities_via_entities(
+                            community_ids=unique_existing,
+                            limit=need,
+                        )
+                    else:
+                        try:
+                            extra = self.store.expand_communities_via_entities(
+                                community_ids=unique_existing,
+                                limit=need,
+                            )
+                        except Exception:
+                            extra = []
+                    if extra:
+                        communities.extend(list(extra))
+
+            # 2) dynamic refresh/build (label propagation)
+            if (
+                (not communities)
+                and session_id
+                and hasattr(self, "refresh_communities_for_session")
+            ):
+                if self.strict:
+                    built_communities = self.refresh_communities_for_session(
+                        session_id=session_id,
+                        limit=50,
+                    )
+                else:
+                    try:
+                        built_communities = self.refresh_communities_for_session(
+                            session_id=session_id,
+                            limit=50,
+                        )
+                    except Exception:
+                        built_communities = []
+
+            if (not communities) and (not built_communities) and anchor_entity_ids:
                 if self.strict:
                     built_communities = self.build_or_refresh_communities_for_entities(
                         anchor_entity_ids,
@@ -387,14 +463,42 @@ class GraphitiEngine:
             fact_by_id.setdefault(fid, {}).update(edge)
             fact_by_id[fid].setdefault("fact_id", fid)
 
-        # Mention boost: entity name appears in query
-        query_l = query.lower()
-        mention_entity_ids: set[str] = set()
-        for ent in ft_entities[:10] + vector_entities[:10]:
-            eid = (ent.get("entity_id") or "").strip()
-            name = str(ent.get("name") or "").strip()
-            if eid and name and name.lower() in query_l:
-                mention_entity_ids.add(eid)
+        # Mention boost: mention frequency across the entire session
+        session_id = str(session_id).strip() if session_id is not None else None
+        entity_mentions: dict[str, int] = {}
+        fact_mentions: dict[str, int] = {}
+        if session_id:
+            if not hasattr(self.store, "count_mentions_in_session"):
+                if self.strict:
+                    raise RuntimeError(
+                        "Graphiti strict mentions rerank requires store.count_mentions_in_session()"
+                    )
+            else:
+                candidate_entity_ids: set[str] = set(anchor_entity_ids)
+                for row in fact_by_id.values():
+                    for endpoint in [row.get("source"), row.get("target")]:
+                        endpoint = (endpoint or "").strip()
+                        if endpoint:
+                            candidate_entity_ids.add(endpoint)
+
+                try:
+                    counts = self.store.count_mentions_in_session(
+                        session_id=session_id,
+                        entity_ids=sorted(candidate_entity_ids),
+                        fact_ids=sorted(fact_by_id.keys()),
+                    )
+                except Exception as e:
+                    if self.strict:
+                        raise RuntimeError(f"Graphiti strict mentions count failed: {e}") from e
+                    counts = {}
+
+                if isinstance(counts, dict):
+                    ent = counts.get("entities")
+                    fac = counts.get("facts")
+                    if isinstance(ent, dict):
+                        entity_mentions = {str(k): int(v or 0) for k, v in ent.items()}
+                    if isinstance(fac, dict):
+                        fact_mentions = {str(k): int(v or 0) for k, v in fac.items()}
 
         # RRF scores
         rrf_scores: dict[str, float] = {}
@@ -441,6 +545,20 @@ class GraphitiEngine:
             except Exception as e:
                 raise RuntimeError(f"Graphiti strict GDS distance failed: {e}") from e
 
+        # Precompute per-fact mention counts for normalization.
+        mention_count_by_fact: dict[str, int] = {}
+        for fid in fact_by_id.keys() | rrf_scores.keys():
+            info = fact_by_id.get(fid) or {}
+            src = str(info.get("source") or "").strip()
+            tgt = str(info.get("target") or "").strip()
+            mention_count_by_fact[fid] = max(
+                int(fact_mentions.get(fid, 0) or 0),
+                int(entity_mentions.get(src, 0) or 0),
+                int(entity_mentions.get(tgt, 0) or 0),
+            )
+
+        max_mention = max(mention_count_by_fact.values(), default=0)
+
         for fid in fact_by_id.keys() | rrf_scores.keys():
             base = float(rrf_scores.get(fid, 0.0))
             info = fact_by_id.get(fid) or {}
@@ -465,12 +583,11 @@ class GraphitiEngine:
             if graph_distance is not None:
                 distance_boost = 1.0 / (1.0 + float(graph_distance))
 
+            mention_count = int(mention_count_by_fact.get(fid, 0) or 0)
             mention_boost = 0.0
-            if mention_entity_ids and (
-                (info.get("source") in mention_entity_ids)
-                or (info.get("target") in mention_entity_ids)
-            ):
-                mention_boost = 0.5
+            if max_mention > 0 and mention_count > 0:
+                # Normalize to [0, 0.5] so it remains a boost term.
+                mention_boost = 0.5 * (float(mention_count) / float(max_mention))
 
             final = base + distance_boost + mention_boost
             final_scores[fid] = final
@@ -479,7 +596,7 @@ class GraphitiEngine:
                 "rrf": base,
                 "bm25_rank": bm25_rank_index.get(fid),
                 "bfs_rank": bfs_rank_index.get(fid),
-                "mentions": bool(mention_boost),
+                "mentions": mention_count,
                 "distance": graph_distance,
                 "bfs_distance": edge_distance,
                 "gds_distance": graph_distance if self.strict else None,
@@ -550,29 +667,67 @@ class GraphitiEngine:
             n = entity_cache.get(eid) or {}
             return str(n.get("name") or eid)
 
-        # Constructor context
+        # Constructor context (paper template)
         lines: list[str] = []
-        lines.append("[GraphitiRetrievedFacts]")
+        lines.append("FACTS and ENTITIES represent relevant context to the current conversation.")
+        lines.append(
+            "These are the most relevant facts and their valid date ranges. If the fact is about an event, the event takes place during this time."
+        )
+        lines.append("format: FACT (Date range: from - to)")
+        lines.append("<FACTS>")
         for fid in ranked_fact_ids:
             row = fact_by_id.get(fid) or {}
-            src = str(row.get("source") or "").strip()
-            tgt = str(row.get("target") or "").strip()
-            rel = str(row.get("relation") or "").strip()
-            fact = str(row.get("fact") or "").strip()
-            evidence = str(row.get("evidence") or "").strip()
-            t_from = str(row.get("t_valid_from") or "").strip()
-            t_to = str(row.get("t_valid_to") or "").strip()
-            time_span = ""
-            if t_from or t_to:
-                time_span = f" [{t_from or '?'} → {t_to or '?'}]"
-            lines.append(
-                f"- {_entity_name(src)} --{rel}--> {_entity_name(tgt)}{time_span}: {fact}".strip()
-            )
+            fact_text = str(row.get("fact") or row.get("fact_text") or "").strip()
+            if not fact_text:
+                src = str(row.get("source") or "").strip()
+                tgt = str(row.get("target") or "").strip()
+                rel = str(row.get("relation") or "").strip()
+                fact_text = f"{_entity_name(src)} --{rel}--> {_entity_name(tgt)}".strip()
+
+            evidence = str(row.get("evidence") or row.get("evidence_text") or "").strip()
+            t_from = str(row.get("t_valid_from") or "").strip() or "null"
+            t_to = str(row.get("t_valid_to") or "").strip() or "null"
+            lines.append(f"- {fact_text} (Date range: {t_from} - {t_to})")
             if evidence:
                 lines.append(f"  evidence: {evidence}")
+        lines.append("</FACTS>")
 
+        # Entities: include anchors + endpoints + top retrieved entities
+        relevant_entity_ids: list[str] = []
+        for eid in anchor_entity_ids:
+            if eid and eid not in relevant_entity_ids:
+                relevant_entity_ids.append(eid)
+
+        for fid in ranked_fact_ids:
+            row = fact_by_id.get(fid) or {}
+            for endpoint in [row.get("source"), row.get("target")]:
+                endpoint = (endpoint or "").strip()
+                if endpoint and endpoint not in relevant_entity_ids:
+                    relevant_entity_ids.append(endpoint)
+
+        for ent in ft_entities[:10] + vector_entities[:10]:
+            eid = (ent.get("entity_id") or ent.get("id") or "").strip()
+            if eid and eid not in relevant_entity_ids:
+                relevant_entity_ids.append(eid)
+
+        lines.append("These are the most relevant entities")
+        lines.append("ENTITY_NAME: entity summary")
+        lines.append("<ENTITIES>")
+        for eid in relevant_entity_ids[:15]:
+            n = entity_cache.get(eid) or {}
+            name = str(n.get("name") or eid).strip() or eid
+            summary = str(
+                (n.get("properties") or {}).get("summary") or n.get("summary") or ""
+            ).strip()
+            if summary:
+                lines.append(f"- {name}: {summary}")
+            else:
+                lines.append(f"- {name}")
+        lines.append("</ENTITIES>")
+
+        # Communities (constructor definition in paper includes community summaries)
         if communities:
-            lines.append("\n[GraphitiCommunities]")
+            lines.append("<COMMUNITIES>")
             for c in communities[:5]:
                 name = str(c.get("name") or c.get("community_id") or "").strip()
                 summary = str(c.get("summary") or "").strip()
@@ -580,20 +735,7 @@ class GraphitiEngine:
                     lines.append(f"- {name}: {summary}")
                 else:
                     lines.append(f"- {name}")
-
-        # Light entity summary section (anchors only)
-        if anchor_entity_ids:
-            lines.append("\n[GraphitiAnchorEntities]")
-            for eid in anchor_entity_ids[:5]:
-                n = entity_cache.get(eid) or {}
-                name = str(n.get("name") or eid)
-                summary = str(
-                    (n.get("properties") or {}).get("summary") or n.get("summary") or ""
-                ).strip()
-                if summary:
-                    lines.append(f"- {name}: {summary}")
-                else:
-                    lines.append(f"- {name}")
+            lines.append("</COMMUNITIES>")
 
         context = "\n".join(lines).strip() + "\n"
 
@@ -601,6 +743,58 @@ class GraphitiEngine:
             provenance_by_fact[fid] for fid in ranked_fact_ids if fid in provenance_by_fact
         ]
         return GraphitiSearchResult(context=context, provenance=provenance)
+
+    @staticmethod
+    def _safe_json_loads(text: str) -> Any:
+        try:
+            return json.loads(text)
+        except Exception:
+            return None
+
+    def _community_map_reduce(self, *, facts: list[str]) -> dict[str, str]:
+        if self.community_llm is None:
+            if self.strict:
+                raise RuntimeError("Graphiti strict community build requires community_llm")
+            return {"name": "", "summary": ""}
+
+        facts = [str(f).strip() for f in (facts or []) if str(f).strip()]
+        if not facts:
+            return {"name": "", "summary": ""}
+
+        chunk_size = 10
+        partials: list[str] = []
+        for i in range(0, len(facts), chunk_size):
+            chunk = facts[i : i + chunk_size]
+            prompt = COMMUNITY_SUMMARY_MAP_SYSTEM_PROMPT.format(
+                facts="\n".join(f"- {x}" for x in chunk)
+            )
+            raw = self.community_llm.generate(
+                [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": "Return JSON only."},
+                ],
+                temperature=0.0,
+            )
+            data = self._safe_json_loads(raw)
+            if isinstance(data, dict) and str(data.get("summary") or "").strip():
+                partials.append(str(data.get("summary") or "").strip())
+
+        reduce_prompt = COMMUNITY_SUMMARY_REDUCE_SYSTEM_PROMPT.format(
+            partial_summaries="\n".join(f"- {s}" for s in partials) if partials else ""
+        )
+        raw = self.community_llm.generate(
+            [
+                {"role": "system", "content": reduce_prompt},
+                {"role": "user", "content": "Return JSON only."},
+            ],
+            temperature=0.0,
+        )
+        data = self._safe_json_loads(raw)
+        if not isinstance(data, dict):
+            return {"name": "", "summary": ""}
+        name = str(data.get("name") or "").strip()
+        summary = str(data.get("summary") or "").strip()
+        return {"name": name, "summary": summary}
 
     # ──────────────────────────────────────
     # Community build/refresh (PR5)
@@ -656,6 +850,9 @@ class GraphitiEngine:
         entity_ids = [str(e).strip() for e in (entity_ids or []) if str(e).strip()]
         if not entity_ids:
             return []
+
+        if self.strict and self.community_llm is None:
+            raise RuntimeError("Graphiti strict community build requires community_llm")
 
         if entity_cache is None or edges is None:
             sub = self.store.export_semantic_subgraph(entity_ids=entity_ids[:10], edge_limit=800)
@@ -768,8 +965,8 @@ class GraphitiEngine:
             top_names = [_name_for_entity(eid) for eid in deg_sorted[:3] if _name_for_entity(eid)]
             name = " / ".join(top_names) if top_names else community_id
 
-            # Summary: key facts inside the community
-            facts_in = []
+            # Summary: facts inside the community (map-reduce)
+            facts_in: list[str] = []
             member_set = set(members)
             for e in edges or []:
                 s = str(e.get("source") or "").strip()
@@ -778,8 +975,20 @@ class GraphitiEngine:
                     ft = str(e.get("fact") or "").strip()
                     if ft:
                         facts_in.append(ft)
-            facts_in = facts_in[:5]
-            summary = "；".join(facts_in)
+
+            summary = "；".join(facts_in[:5])
+            if facts_in:
+                try:
+                    mr = self._community_map_reduce(facts=facts_in[:50])
+                    mr_name = str(mr.get("name") or "").strip()
+                    mr_summary = str(mr.get("summary") or "").strip()
+                    if mr_summary:
+                        summary = mr_summary
+                    if mr_name:
+                        name = mr_name
+                except Exception:
+                    if self.strict:
+                        raise
 
             embedding = _avg_embedding(members)
             try:

@@ -67,7 +67,7 @@ def test_search_builds_communities_when_none_exist():
     engine = GraphitiEngine(store=FakeStore())
     r = engine.search(query="E1", top_k=1, query_embedding=None, include_communities=True)
 
-    assert "[GraphitiCommunities]" in r.context
+    assert "<COMMUNITIES>" in r.context
     assert len(calls["upsert"]) >= 1
     # Must link both e1/e2
     linked_entities = {e for e, _ in calls["link"]}

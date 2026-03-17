@@ -55,7 +55,21 @@ def _safe_json_loads(text: str) -> Any:
 
 
 def _format_turns(turns: list[dict[str, Any]]) -> str:
-    return "\n".join(f"{t.get('role', '')}: {t.get('content', '')}" for t in turns if t)
+    role_map = {
+        "user": "User",
+        "assistant": "Assistant",
+        "system": "System",
+    }
+
+    lines: list[str] = []
+    for t in turns or []:
+        if not t:
+            continue
+        role = str(t.get("role") or "")
+        content = str(t.get("content") or "")
+        actor = role_map.get(role, role or "User")
+        lines.append(f"{actor}: {content}")
+    return "\n".join(lines)
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -135,7 +149,9 @@ class GraphitiSemanticBuilder:
         current_turn: dict[str, Any],
     ) -> list[dict[str, Any]]:
         previous_messages = _format_turns(previous_turns)
-        current_message = f"{current_turn.get('role', '')}: {current_turn.get('content', '')}"
+        role = str(current_turn.get("role") or "")
+        actor = {"user": "User", "assistant": "Assistant", "system": "System"}.get(role, role)
+        current_message = f"{actor}: {current_turn.get('content', '')}"
 
         prompt = ENTITY_EXTRACTION_SYSTEM_PROMPT.format(
             previous_messages=previous_messages,
@@ -233,7 +249,9 @@ class GraphitiSemanticBuilder:
             )
 
         previous_messages = _format_turns(previous_turns)
-        current_message = f"{current_turn.get('role', '')}: {current_turn.get('content', '')}"
+        role = str(current_turn.get("role") or "")
+        actor = {"user": "User", "assistant": "Assistant", "system": "System"}.get(role, role)
+        current_message = f"{actor}: {current_turn.get('content', '')}"
 
         prompt = ENTITY_RESOLUTION_SYSTEM_PROMPT.format(
             previous_messages=previous_messages,
@@ -288,7 +306,9 @@ class GraphitiSemanticBuilder:
             return []
 
         previous_messages = _format_turns(previous_turns)
-        current_message = f"{current_turn.get('role', '')}: {current_turn.get('content', '')}"
+        role = str(current_turn.get("role") or "")
+        actor = {"user": "User", "assistant": "Assistant", "system": "System"}.get(role, role)
+        current_message = f"{actor}: {current_turn.get('content', '')}"
         entity_payload = [
             {
                 "entity_id": e.entity_id,
@@ -369,19 +389,30 @@ class GraphitiSemanticBuilder:
     def extract_fact_temporal(
         self,
         *,
+        previous_turns: list[dict[str, Any]],
+        current_turn: dict[str, Any],
         reference_timestamp: str,
         fact: dict[str, Any],
     ) -> dict[str, str | None]:
+        previous_messages = _format_turns(previous_turns)
+        role = str(current_turn.get("role") or "")
+        actor = {"user": "User", "assistant": "Assistant", "system": "System"}.get(role, role)
+        current_message = f"{actor}: {current_turn.get('content', '')}"
+
         prompt = FACT_TEMPORAL_SYSTEM_PROMPT.format(
+            previous_messages=previous_messages,
+            current_message=current_message,
             reference_timestamp=reference_timestamp,
             fact=json.dumps(fact, ensure_ascii=False),
         )
         raw = self._call_llm(system_prompt=prompt, user_content="Return JSON only.")
         data = _safe_json_loads(raw)
         if not isinstance(data, dict):
-            return {"t_valid_from": reference_timestamp, "t_valid_to": None}
+            return {"t_valid_from": None, "t_valid_to": None}
 
-        t_from = str(data.get("t_valid_from") or "").strip() or reference_timestamp
+        t_from = data.get("t_valid_from")
+        if t_from is not None:
+            t_from = str(t_from).strip() or None
         t_to = data.get("t_valid_to")
         if t_to is not None:
             t_to = str(t_to).strip() or None
@@ -438,9 +469,9 @@ class GraphitiSemanticBuilder:
         old_rel = (old_relation_type or "").strip().upper()
         if new_rel not in exclusive or old_rel not in exclusive:
             return False
-        if GraphitiSemanticBuilder._relation_group(new_rel) != GraphitiSemanticBuilder._relation_group(
-            old_rel
-        ):
+        if GraphitiSemanticBuilder._relation_group(
+            new_rel
+        ) != GraphitiSemanticBuilder._relation_group(old_rel):
             return False
         return bool(old_object and new_object and old_object != new_object)
 
@@ -474,6 +505,7 @@ class GraphitiSemanticBuilder:
         """Validity interval overlap check.
 
         Treat missing *_to as open interval.
+        If either *_from is missing, we cannot determine overlap and return False.
         If parsing fails, fall back to string compare (ISO-8601 lexical order).
         """
 
@@ -481,6 +513,9 @@ class GraphitiSemanticBuilder:
         a_to_s = (a_to or "").strip()
         b_from_s = (b_from or "").strip()
         b_to_s = (b_to or "").strip()
+
+        if not a_from_s or not b_from_s:
+            return False
 
         # Fast path: attempt datetime comparison
         a_from_dt = cls._parse_iso(a_from_s)
@@ -495,9 +530,6 @@ class GraphitiSemanticBuilder:
         # Fallback: lexical compare for ISO strings
         a_to_cmp = a_to_s or "9999-12-31T23:59:59+00:00"
         b_to_cmp = b_to_s or "9999-12-31T23:59:59+00:00"
-        if not a_from_s or not b_from_s:
-            # if we can't even order, be conservative and assume overlap
-            return True
         return a_from_s <= b_to_cmp and b_from_s <= a_to_cmp
 
     def ingest_user_turn(
@@ -510,6 +542,11 @@ class GraphitiSemanticBuilder:
         reference_timestamp: str,
     ) -> dict[str, int]:
         """从单个 user turn 里抽取 Entity/Fact 并写入 store。"""
+
+        if not hasattr(self.store, "link_episode_to_entity"):
+            raise RuntimeError(
+                "Graphiti semantic build requires store.link_episode_to_entity() (Episode→Entity episodic edges)"
+            )
 
         # 1) entity extraction + resolution + upsert
         extracted_entities = self.extract_entities(
@@ -537,6 +574,9 @@ class GraphitiSemanticBuilder:
                 source_session=session_id,
                 t_created=reference_timestamp,
             )
+
+            # Paper: episodic edges linking Episode → referenced semantic entities.
+            self.store.link_episode_to_entity(episode_id=episode_id, entity_id=r.entity_id)
             resolved.append(r)
 
         # 2) fact extraction + resolution + upsert
@@ -573,8 +613,13 @@ class GraphitiSemanticBuilder:
                     f"{subj_id}|{resolved_fact.get('relation_type', '')}|{obj_id}|{resolved_fact.get('fact_text', '')}".lower()
                 )
 
-            temporal = self.extract_fact_temporal(reference_timestamp=reference_timestamp, fact=resolved_fact)
-            t_valid_from = str(temporal.get("t_valid_from") or reference_timestamp)
+            temporal = self.extract_fact_temporal(
+                previous_turns=previous_turns,
+                current_turn=current_turn,
+                reference_timestamp=reference_timestamp,
+                fact=resolved_fact,
+            )
+            t_valid_from = temporal.get("t_valid_from")
             t_valid_to = temporal.get("t_valid_to")
 
             # Invalidation: expire older active facts that contradict this one.
@@ -619,14 +664,16 @@ class GraphitiSemanticBuilder:
                         if not old_fact_id or old_fact_id == fact_id:
                             continue
 
-                        # Only invalidate if validity intervals overlap.
+                        # Only invalidate if validity intervals overlap and overlap is determinable.
                         old_from = str(old.get("t_valid_from") or "").strip() or None
                         old_to = str(old.get("t_valid_to") or "").strip() or None
+                        new_from = str(t_valid_from).strip() if t_valid_from else None
+                        new_to = str(t_valid_to).strip() if t_valid_to else None
                         if not self._intervals_overlap(
                             a_from=old_from,
                             a_to=old_to,
-                            b_from=t_valid_from,
-                            b_to=str(t_valid_to).strip() if t_valid_to else None,
+                            b_from=new_from,
+                            b_to=new_to,
                         ):
                             continue
 

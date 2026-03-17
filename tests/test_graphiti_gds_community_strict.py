@@ -69,10 +69,20 @@ def test_graphiti_engine_strict_community_build_uses_gds() -> None:
         ) -> dict[str, int]:
             return {"e1": 0, "e2": 1}
 
-    engine = GraphitiEngine(store=FakeStore(), strict=True)
+    class FakeLLM:
+        def generate(self, messages, **kwargs):
+            system_msg = (messages or [{}])[0].get("content", "")
+            if "<FACTS>" in system_msg:
+                return '{"summary": "E1 与 E2 的关系"}'
+            return '{"name": "E1-E2", "summary": "E1 与 E2 的关系（聚合）"}'
+
+        async def agenerate(self, messages, **kwargs):
+            return self.generate(messages, **kwargs)
+
+    engine = GraphitiEngine(store=FakeStore(), strict=True, community_llm=FakeLLM())
     r = engine.search(query="E1", top_k=1, query_embedding=None, include_communities=True)
 
-    assert "[GraphitiCommunities]" in r.context
+    assert "<COMMUNITIES>" in r.context
     assert calls["gds_called"] is True
     assert len(calls["upsert"]) >= 1
     linked_entities = {e for e, _ in calls["link"]}

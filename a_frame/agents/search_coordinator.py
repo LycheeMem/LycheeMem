@@ -134,8 +134,12 @@ class SearchCoordinator(BaseAgent):
         graph_query = sub_queries.get("graph", user_query)
         skill_query = sub_queries.get("skill", user_query)
 
+        session_id = kwargs.get("session_id")
+        if session_id is not None:
+            session_id = str(session_id)
+
         return {
-            "retrieved_graph_memories": self._search_graph(graph_query),
+            "retrieved_graph_memories": self._search_graph(graph_query, session_id=session_id),
             "retrieved_skills": self._search_skills(skill_query),
         }
 
@@ -164,7 +168,7 @@ class SearchCoordinator(BaseAgent):
 
         return {}
 
-    def _search_graph(self, query: str) -> list[dict[str, Any]]:
+    def _search_graph(self, query: str, *, session_id: str | None = None) -> list[dict[str, Any]]:
         """在知识图谱中检索相关节点和邻居。"""
         strict = bool(getattr(self.graphiti_engine, "strict", False))
 
@@ -181,6 +185,7 @@ class SearchCoordinator(BaseAgent):
         if self.graphiti_engine is not None:
             r = self.graphiti_engine.search(
                 query=query,
+                session_id=session_id,
                 top_k=3,
                 query_embedding=query_embedding,
                 include_communities=True,

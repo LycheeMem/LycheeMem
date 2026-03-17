@@ -48,14 +48,14 @@ class Settings(BaseSettings):
     neo4j_password: str = ""
 
     # ─── Graphiti(论文) 图谱引擎 ───
-    graphiti_enabled: bool = False
+    graphiti_enabled: bool = True
     graphiti_database: str = "neo4j"
 
     # ─── Graphiti Strict Mode (Graphiti-only / Fail-fast) ───
     # 当 graphiti_enabled=true 且 graphiti_strict=true 时：
     # - 不允许任何 Graphiti→legacy 回退
     # - 关键依赖缺失（Neo4j/GDS/vector index）应在启动时直接失败
-    graphiti_strict: bool = False
+    graphiti_strict: bool = True
     graphiti_require_gds: bool = True
     graphiti_require_vector_index: bool = True
 
@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     graphiti_gds_distance_max_depth: int = 4
 
     # ─── Graphiti Cross-Encoder Rerank (Gemini) ───
-    graphiti_cross_encoder_enabled: bool = False
+    graphiti_cross_encoder_enabled: bool = True
     graphiti_cross_encoder_model: str = "gemini-3.1-flash-lite-preview"
     graphiti_cross_encoder_top_n: int = 20
     graphiti_cross_encoder_weight: float = 1.0

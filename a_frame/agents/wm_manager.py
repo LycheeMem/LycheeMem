@@ -43,7 +43,8 @@ class WMManager:
         self._pending: dict[str, concurrent.futures.Future] = {}
         self._lock = threading.Lock()
         self._executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="wm_compress",
+            max_workers=2,
+            thread_name_prefix="wm_compress",
         )
 
     def run(
@@ -113,10 +114,14 @@ class WMManager:
                     summary_text, boundary = future.result()
                     if summary_text and boundary > 0:
                         self.session_store.add_summary(session_id, boundary, summary_text)
-                        logger.info("session=%s 复用后台预压缩摘要 (boundary=%d)", session_id, boundary)
+                        logger.info(
+                            "session=%s 复用后台预压缩摘要 (boundary=%d)", session_id, boundary
+                        )
                         return
                 except Exception:
-                    logger.warning("session=%s 后台预压缩结果异常，回退同步压缩", session_id, exc_info=True)
+                    logger.warning(
+                        "session=%s 后台预压缩结果异常，回退同步压缩", session_id, exc_info=True
+                    )
             else:
                 future.cancel()
 
@@ -140,14 +145,18 @@ class WMManager:
         # 快照对话列表，避免线程安全问题
         turns_snapshot = list(turns)
         future = self._executor.submit(
-            self._do_background_compress, turns_snapshot, boundary,
+            self._do_background_compress,
+            turns_snapshot,
+            boundary,
         )
         with self._lock:
             self._pending[session_id] = future
         logger.info("session=%s 启动后台预压缩 (boundary=%d)", session_id, boundary)
 
     def _do_background_compress(
-        self, turns: list[dict], boundary: int,
+        self,
+        turns: list[dict],
+        boundary: int,
     ) -> tuple[str, int]:
         """在后台线程中执行压缩。"""
         summary_text = self.compressor.compress(turns, boundary)

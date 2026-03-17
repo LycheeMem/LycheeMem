@@ -169,7 +169,9 @@ class EntityExtractor:
                 result.append(t)
         return result
 
-    def extract_from_turns(self, turns: list[dict[str, str]], source_session: str = "") -> list[dict[str, Any]]:
+    def extract_from_turns(
+        self, turns: list[dict[str, str]], source_session: str = ""
+    ) -> list[dict[str, Any]]:
         """从对话轮次中提取三元组。"""
         text = "\n".join(f"{t['role']}: {t['content']}" for t in turns)
         return self.extract(text, source_session=source_session)
@@ -196,7 +198,7 @@ class EntityExtractor:
             end = text.rfind("]")
             if start != -1 and end != -1:
                 try:
-                    return json.loads(text[start:end + 1])
+                    return json.loads(text[start : end + 1])
                 except json.JSONDecodeError:
                     return []
             return []

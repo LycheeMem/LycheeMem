@@ -91,7 +91,9 @@ class GraphitiNeo4jStore:
         if require_gds:
             with self._driver.session(database=self._database) as session:
                 # If GDS is not installed, this will raise a ClientError.
-                session.run("CALL gds.version() YIELD version RETURN version").single()
+                # NOTE: Different GDS versions expose different return column names
+                # (e.g. `gdsVersion` vs `version`). Use `YIELD *` for compatibility.
+                session.run("RETURN gds.version() AS version").single()
 
         # 3) Vector index presence + dimensions
         if require_vector_index:
@@ -368,6 +370,70 @@ class GraphitiNeo4jStore:
             ]
 
     # ──────────────────────────────────────
+    # Mentions frequency (session-wide; PR6)
+    # ──────────────────────────────────────
+
+    @staticmethod
+    def fact_mentions_in_session_cypher() -> str:
+        return (
+            "UNWIND $fact_ids AS fid "
+            "MATCH (f:Fact {fact_id: fid}) "
+            "OPTIONAL MATCH (e:Episode {session_id: $session_id})-[:EVIDENCE_FOR]->(f) "
+            "RETURN fid AS fact_id, count(DISTINCT e) AS mentions"
+        )
+
+    @staticmethod
+    def entity_mentions_in_session_cypher() -> str:
+        return (
+            "UNWIND $entity_ids AS eid "
+            "OPTIONAL MATCH (e:Episode {session_id: $session_id})-[:EVIDENCE_FOR]->(f:Fact) "
+            "WHERE f.subject_entity_id = eid OR f.object_entity_id = eid "
+            "RETURN eid AS entity_id, count(DISTINCT e) AS mentions"
+        )
+
+    def count_mentions_in_session(
+        self,
+        *,
+        session_id: str,
+        entity_ids: list[str] | None = None,
+        fact_ids: list[str] | None = None,
+    ) -> dict[str, dict[str, int]]:
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            return {"entities": {}, "facts": {}}
+
+        entity_ids = [str(e).strip() for e in (entity_ids or []) if str(e).strip()]
+        fact_ids = [str(f).strip() for f in (fact_ids or []) if str(f).strip()]
+
+        entity_counts: dict[str, int] = {}
+        fact_counts: dict[str, int] = {}
+
+        with self._driver.session(database=self._database) as session:
+            if entity_ids:
+                rs = session.run(
+                    self.entity_mentions_in_session_cypher(),
+                    session_id=session_id,
+                    entity_ids=entity_ids,
+                )
+                for r in rs:
+                    eid = str(r.get("entity_id") or "").strip()
+                    if eid:
+                        entity_counts[eid] = int(r.get("mentions") or 0)
+
+            if fact_ids:
+                rs = session.run(
+                    self.fact_mentions_in_session_cypher(),
+                    session_id=session_id,
+                    fact_ids=fact_ids,
+                )
+                for r in rs:
+                    fid = str(r.get("fact_id") or "").strip()
+                    if fid:
+                        fact_counts[fid] = int(r.get("mentions") or 0)
+
+        return {"entities": entity_counts, "facts": fact_counts}
+
+    # ──────────────────────────────────────
     # Subgraph export for search (PR3 closing)
     # ──────────────────────────────────────
 
@@ -392,7 +458,7 @@ class GraphitiNeo4jStore:
     def fact_edges_incident_to_entities_cypher() -> str:
         return (
             "MATCH (f:Fact) "
-            "WHERE exists(f.subject_entity_id) AND exists(f.object_entity_id) "
+            "WHERE f.subject_entity_id IS NOT NULL AND f.object_entity_id IS NOT NULL "
             "  AND (f.subject_entity_id IN $entity_ids OR f.object_entity_id IN $entity_ids) "
             "OPTIONAL MATCH (e:Episode)-[:EVIDENCE_FOR]->(f) "
             "WITH f, collect(e.episode_id) AS episode_ids "
@@ -457,6 +523,37 @@ class GraphitiNeo4jStore:
             nodes = [dict(r) for r in nodes_rs]
 
         return {"nodes": nodes, "edges": edges}
+
+    # ──────────────────────────────────────
+    # Community dynamic extension (PR6)
+    # ──────────────────────────────────────
+
+    @staticmethod
+    def expand_communities_via_entities_cypher() -> str:
+        return (
+            "MATCH (c:Community) "
+            "WHERE c.community_id IN $community_ids "
+            "MATCH (c)<-[:IN_COMMUNITY]-(e:Entity)-[:IN_COMMUNITY]->(c2:Community) "
+            "WHERE NOT c2.community_id IN $community_ids "
+            "RETURN DISTINCT c2.community_id AS community_id, "
+            "coalesce(c2.name, c2.community_id) AS name, "
+            "coalesce(c2.summary, '') AS summary, 1.0 AS score "
+            "LIMIT $limit"
+        )
+
+    def expand_communities_via_entities(
+        self, *, community_ids: list[str], limit: int = 5
+    ) -> list[dict[str, Any]]:
+        community_ids = [str(c).strip() for c in (community_ids or []) if str(c).strip()]
+        if not community_ids:
+            return []
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(
+                self.expand_communities_via_entities_cypher(),
+                community_ids=community_ids,
+                limit=int(limit),
+            )
+            return [dict(r) for r in rs]
 
     # ──────────────────────────────────────
     # Fact (PR3)
@@ -595,7 +692,7 @@ class GraphitiNeo4jStore:
             "MATCH (f:Fact) "
             "WHERE f.subject_entity_id = $subject_entity_id "
             "  AND f.relation_type = $relation_type "
-            "  AND (NOT exists(f.t_valid_to) OR f.t_valid_to IS NULL OR f.t_valid_to = '') "
+            "  AND (f.t_valid_to IS NULL OR f.t_valid_to = '') "
             "RETURN f.fact_id AS fact_id, f.subject_entity_id AS subject_entity_id, "
             "f.object_entity_id AS object_entity_id, f.relation_type AS relation_type, "
             "f.fact_text AS fact_text, f.evidence_text AS evidence_text, f.confidence AS confidence, "
@@ -628,7 +725,7 @@ class GraphitiNeo4jStore:
         return (
             "MATCH (f:Fact) "
             "WHERE f.subject_entity_id = $subject_entity_id "
-            "  AND (NOT exists(f.t_valid_to) OR f.t_valid_to IS NULL OR f.t_valid_to = '') "
+            "  AND (f.t_valid_to IS NULL OR f.t_valid_to = '') "
             "RETURN f.fact_id AS fact_id, f.subject_entity_id AS subject_entity_id, "
             "f.object_entity_id AS object_entity_id, f.relation_type AS relation_type, "
             "f.fact_text AS fact_text, f.evidence_text AS evidence_text, f.confidence AS confidence, "
@@ -976,11 +1073,7 @@ class GraphitiNeo4jStore:
         all_ids = sorted(set(anchor_entity_ids) | set(entity_ids))
         max_depth = max(1, int(max_depth))
 
-        node_query = (
-            "MATCH (e:Entity) "
-            "WHERE e.entity_id IN $entity_ids "
-            "RETURN id(e) AS id"
-        )
+        node_query = "MATCH (e:Entity) WHERE e.entity_id IN $entity_ids RETURN id(e) AS id"
         rel_query = (
             "MATCH (s:Entity)-[:SUBJECT_OF]->(:Fact)-[:OBJECT_OF]->(o:Entity) "
             "WHERE s.entity_id IN $entity_ids AND o.entity_id IN $entity_ids "
@@ -1016,9 +1109,10 @@ class GraphitiNeo4jStore:
                 depths: dict[str, int] = {}
                 for src in anchor_neo_ids:
                     bfs_rs = session.run(
-                        "CALL gds.bfs.stream($graph_name, {sourceNode: $source, maxDepth: $max_depth}) "
-                        "YIELD nodeId, depth "
-                        "RETURN gds.util.asNode(nodeId).entity_id AS entity_id, depth",
+                        "CALL gds.allShortestPaths.dijkstra.stream($graph_name, {sourceNode: $source}) "
+                        "YIELD targetNode AS nodeId, totalCost AS depth "
+                        "WHERE depth <= $max_depth "
+                        "RETURN gds.util.asNode(nodeId).entity_id AS entity_id, toInteger(depth) AS depth",
                         graph_name=graph_name,
                         source=int(src),
                         max_depth=max_depth,
@@ -1052,11 +1146,7 @@ class GraphitiNeo4jStore:
             return {}
         max_iterations = max(1, int(max_iterations))
 
-        node_query = (
-            "MATCH (e:Entity) "
-            "WHERE e.entity_id IN $entity_ids "
-            "RETURN id(e) AS id"
-        )
+        node_query = "MATCH (e:Entity) WHERE e.entity_id IN $entity_ids RETURN id(e) AS id"
         rel_query = (
             "MATCH (s:Entity)-[:SUBJECT_OF]->(:Fact)-[:OBJECT_OF]->(o:Entity) "
             "WHERE s.entity_id IN $entity_ids AND o.entity_id IN $entity_ids "
@@ -1144,6 +1234,67 @@ class GraphitiNeo4jStore:
             session.run(self.link_episode_to_fact_cypher(), episode_id=episode_id, fact_id=fact_id)
 
     # ──────────────────────────────────────
+    # Episode ↔ Entity linking (paper: episodic edges)
+    # ──────────────────────────────────────
+
+    @staticmethod
+    def link_episode_to_entity_cypher() -> str:
+        return (
+            "MATCH (ep:Episode {episode_id: $episode_id}) "
+            "MATCH (en:Entity {entity_id: $entity_id}) "
+            "MERGE (ep)-[:MENTIONS]->(en)"
+        )
+
+    def link_episode_to_entity(self, *, episode_id: str, entity_id: str) -> None:
+        with self._driver.session(database=self._database) as session:
+            session.run(
+                self.link_episode_to_entity_cypher(),
+                episode_id=str(episode_id),
+                entity_id=str(entity_id),
+            )
+
+    # ──────────────────────────────────────
+    # Recent-episode entity seeds (paper: BFS seeded by recent episodes)
+    # ──────────────────────────────────────
+
+    @staticmethod
+    def recent_entity_ids_from_episodes_cypher() -> str:
+        return (
+            "MATCH (ep:Episode {session_id: $session_id}) "
+            "WITH ep ORDER BY ep.turn_index DESC "
+            "LIMIT $episode_limit "
+            "OPTIONAL MATCH (ep)-[:MENTIONS]->(en:Entity) "
+            "WITH en, max(ep.turn_index) AS last_turn "
+            "WHERE en IS NOT NULL "
+            "RETURN en.entity_id AS entity_id "
+            "ORDER BY last_turn DESC "
+            "LIMIT $entity_limit"
+        )
+
+    def list_recent_entity_ids_from_episodes(
+        self,
+        *,
+        session_id: str,
+        episode_limit: int = 4,
+        entity_limit: int = 20,
+    ) -> list[str]:
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            return []
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(
+                self.recent_entity_ids_from_episodes_cypher(),
+                session_id=session_id,
+                episode_limit=max(1, int(episode_limit)),
+                entity_limit=max(1, int(entity_limit)),
+            )
+            return [
+                str(r.get("entity_id") or "").strip()
+                for r in rs
+                if str(r.get("entity_id") or "").strip()
+            ]
+
+    # ──────────────────────────────────────
     # Compatibility export
     # ──────────────────────────────────────
 
@@ -1171,7 +1322,7 @@ class GraphitiNeo4jStore:
 
         edges_cypher = (
             "MATCH (f:Fact) "
-            "WHERE exists(f.subject_entity_id) AND exists(f.object_entity_id) "
+            "WHERE f.subject_entity_id IS NOT NULL AND f.object_entity_id IS NOT NULL "
             "RETURN "
             "f.subject_entity_id AS source, "
             "f.object_entity_id AS target, "

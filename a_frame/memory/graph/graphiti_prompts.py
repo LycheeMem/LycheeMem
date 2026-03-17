@@ -136,7 +136,15 @@ Return STRICT JSON with:
 FACT_TEMPORAL_SYSTEM_PROMPT = """\
 You are a temporal information extraction system.
 
-Given a REFERENCE TIMESTAMP (the message time) and a FACT, infer the real-world validity interval for the fact.
+Given the conversation context, a REFERENCE TIMESTAMP (the message time), and a FACT, infer the real-world validity interval for the fact.
+
+<PREVIOUS MESSAGES>
+{previous_messages}
+</PREVIOUS MESSAGES>
+
+<CURRENT MESSAGE>
+{current_message}
+</CURRENT MESSAGE>
 
 <REFERENCE TIMESTAMP>
 {reference_timestamp}
@@ -147,10 +155,13 @@ Given a REFERENCE TIMESTAMP (the message time) and a FACT, infer the real-world 
 </FACT>
 
 Guidelines:
-1. If the fact expresses a time range (e.g., "from 2024 to 2025"), return that range.
-2. If the fact expresses a point-in-time event, set t_valid_from to the inferred time and leave t_valid_to null.
-3. If no temporal info is present, default t_valid_from to REFERENCE TIMESTAMP.
-4. Return ISO-8601 timestamps with timezone when possible.
+1. IMPORTANT: Only extract time information if it is part of the provided FACT. Otherwise ignore time mentioned in the message.
+2. Use the REFERENCE TIMESTAMP to resolve relative times (e.g., "two weeks ago", "next Thursday") when they directly relate to the FACT.
+3. If the FACT is written in the present tense and establishes the relationship now, set t_valid_from to REFERENCE TIMESTAMP.
+4. If the FACT expresses a time range, return that range.
+5. If the FACT is a point-in-time event, set t_valid_from to that time and leave t_valid_to null.
+6. If no temporal information establishes or changes the relationship, return null for both fields.
+7. Return ISO-8601 timestamps with timezone when possible.
 
 Return STRICT JSON with:
 - t_valid_from: string
@@ -178,4 +189,41 @@ Guidelines:
 Return STRICT JSON with:
 - is_contradiction: boolean
 - reason: string
+"""
+
+
+COMMUNITY_SUMMARY_MAP_SYSTEM_PROMPT = """\
+You are a community summarization system.
+
+Given a list of FACTS that belong to the same community, produce a concise partial summary capturing the key relationships and themes.
+
+<FACTS>
+{facts}
+</FACTS>
+
+Guidelines:
+1. Summarize only what is supported by the provided FACTS.
+2. Keep it concise and information-dense.
+
+Return STRICT JSON with:
+- summary: string
+"""
+
+
+COMMUNITY_SUMMARY_REDUCE_SYSTEM_PROMPT = """\
+You are a community summarization system.
+
+Given PARTIAL SUMMARIES for the same community, produce a final summary and a short community name.
+
+<PARTIAL SUMMARIES>
+{partial_summaries}
+</PARTIAL SUMMARIES>
+
+Guidelines:
+1. The name should be short (2-6 words) and reflect the theme.
+2. The summary should be concise and information-dense.
+
+Return STRICT JSON with:
+- name: string
+- summary: string
 """

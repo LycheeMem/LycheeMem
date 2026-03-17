@@ -41,11 +41,15 @@ class TestSearchCoordinator:
         assert result["retrieved_skills"] == []
 
     def test_graph_retrieval(self):
-        self.graph_store.add([{
-            "subject": {"name": "张三", "label": "Person"},
-            "predicate": "works_at",
-            "object": {"name": "Google", "label": "Organization"},
-        }])
+        self.graph_store.add(
+            [
+                {
+                    "subject": {"name": "张三", "label": "Person"},
+                    "predicate": "works_at",
+                    "object": {"name": "Google", "label": "Organization"},
+                }
+            ]
+        )
 
         result = self.coordinator.run(user_query="张三")
         assert len(result["retrieved_graph_memories"]) >= 1
@@ -55,21 +59,29 @@ class TestSearchCoordinator:
         assert result["retrieved_graph_memories"] == []
 
     def test_skill_retrieval(self):
-        self.skill_store.add([{
-            "intent": "写一个爬虫",
-            "embedding": [0.1] * 8,
-            "doc_markdown": "# 写一个爬虫\n\n1. requests.get\n",
-        }])
+        self.skill_store.add(
+            [
+                {
+                    "intent": "写一个爬虫",
+                    "embedding": [0.1] * 8,
+                    "doc_markdown": "# 写一个爬虫\n\n1. requests.get\n",
+                }
+            ]
+        )
 
         result = self.coordinator.run(user_query="帮我写爬虫")
         assert len(result["retrieved_skills"]) >= 1
 
     def test_multi_source_retrieval(self):
-        self.graph_store.add([{
-            "subject": {"name": "测试", "label": "Concept"},
-            "predicate": "is_a",
-            "object": {"name": "实验", "label": "Concept"},
-        }])
+        self.graph_store.add(
+            [
+                {
+                    "subject": {"name": "测试", "label": "Concept"},
+                    "predicate": "is_a",
+                    "object": {"name": "实验", "label": "Concept"},
+                }
+            ]
+        )
 
         result = self.coordinator.run(user_query="测试")
         assert len(result["retrieved_graph_memories"]) >= 1
@@ -79,7 +91,7 @@ class TestSearchCoordinator:
         class FakeGraphitiEngine:
             def search(self, **kwargs):
                 return GraphitiSearchResult(
-                    context="[GraphitiRetrievedFacts]\n- Alice --EMPLOYED_BY--> Acme: ...\n",
+                    context="<FACTS>\n- Alice works at Acme (Date range: null - null)\n</FACTS>\n<ENTITIES>\n- Alice\n- Acme\n</ENTITIES>\n",
                     provenance=[{"fact_id": "f1"}],
                 )
 
@@ -95,4 +107,4 @@ class TestSearchCoordinator:
         graph_memories = result["retrieved_graph_memories"]
         assert len(graph_memories) == 1
         assert "constructed_context" in graph_memories[0]
-        assert "GraphitiRetrievedFacts" in graph_memories[0]["constructed_context"]
+        assert "<FACTS>" in graph_memories[0]["constructed_context"]

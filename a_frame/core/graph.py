@@ -72,6 +72,7 @@ class AFramePipeline:
         """检索协调节点：从图谱和技能库检索相关记忆。"""
         result = self.search_coordinator.run(
             user_query=state["user_query"],
+            session_id=state.get("session_id"),
         )
         return {
             "retrieved_graph_memories": result["retrieved_graph_memories"],

@@ -94,10 +94,12 @@ class FakeGraphitiStore:
         self.entities: dict[str, dict[str, Any]] = {}
         self.facts: dict[str, dict[str, Any]] = {}
         self.episode_fact_links: list[tuple[str, str]] = []
+        self.episode_entity_links: list[tuple[str, str]] = []
 
         self.upsert_entity_calls = 0
         self.upsert_fact_calls = 0
-        self.link_calls = 0
+        self.link_fact_calls = 0
+        self.link_entity_calls = 0
 
     def fulltext_search_entities(self, query: str, limit: int = 10):
         q = (query or "").lower()
@@ -183,8 +185,12 @@ class FakeGraphitiStore:
         }
 
     def link_episode_to_fact(self, *, episode_id: str, fact_id: str):
-        self.link_calls += 1
+        self.link_fact_calls += 1
         self.episode_fact_links.append((episode_id, fact_id))
+
+    def link_episode_to_entity(self, *, episode_id: str, entity_id: str):
+        self.link_entity_calls += 1
+        self.episode_entity_links.append((episode_id, entity_id))
 
 
 def test_graphiti_semantic_builder_ingest_user_turn():
@@ -204,8 +210,10 @@ def test_graphiti_semantic_builder_ingest_user_turn():
 
     assert store.upsert_entity_calls == 2
     assert store.upsert_fact_calls == 1
-    assert store.link_calls == 1
+    assert store.link_fact_calls == 1
+    assert store.link_entity_calls == 2
 
     assert len(store.entities) == 2
     assert len(store.facts) == 1
     assert store.episode_fact_links == [("ep1", next(iter(store.facts.keys())))]
+    assert store.episode_entity_links == [("ep1", e) for e in store.entities.keys()]

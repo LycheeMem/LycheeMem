@@ -92,7 +92,7 @@ class SynthesizerAgent(BaseAgent):
 
         # 收集检索阶段 provenance（Graphiti constructor/rerank 信号等），用于 pipeline 端到端溯源。
         retrieval_provenance: list[dict[str, Any]] = []
-        for mem in (retrieved_graph_memories or []):
+        for mem in retrieved_graph_memories or []:
             p = mem.get("provenance")
             if isinstance(p, list):
                 for item in p:
@@ -156,13 +156,15 @@ class SynthesizerAgent(BaseAgent):
         plan = []
         for skill in skills:
             if skill.get("reusable"):
-                plan.append({
-                    "skill_id": skill.get("id", ""),
-                    "intent": skill.get("intent", ""),
-                    "doc_markdown": skill.get("doc_markdown", ""),
-                    "score": skill.get("score", 0),
-                    "conditions": skill.get("conditions", ""),
-                })
+                plan.append(
+                    {
+                        "skill_id": skill.get("id", ""),
+                        "intent": skill.get("intent", ""),
+                        "doc_markdown": skill.get("doc_markdown", ""),
+                        "score": skill.get("score", 0),
+                        "conditions": skill.get("conditions", ""),
+                    }
+                )
         return plan
 
     @staticmethod
@@ -208,10 +210,7 @@ class SynthesizerAgent(BaseAgent):
             for i, skill in enumerate(skills, 1):
                 doc = str(skill.get("doc_markdown", ""))
                 doc_preview = doc.replace("\n", " ").strip()[:200]
-                lines.append(
-                    f"  技能{i}: 意图={skill.get('intent', '?')}, "
-                    f"文档={doc_preview}"
-                )
+                lines.append(f"  技能{i}: 意图={skill.get('intent', '?')}, 文档={doc_preview}")
             sections.append("\n".join(lines))
 
         return "\n\n".join(sections)

@@ -18,15 +18,18 @@ def _make_llm(settings):
     """根据配置创建 LLM 实例。"""
     if settings.gemini_api_key:
         from a_frame.llm.gemini_llm import GeminiLLM
+
         return GeminiLLM(api_key=settings.gemini_api_key, model=settings.gemini_model)
     if settings.openai_api_key:
         from a_frame.llm.openai_llm import OpenAILLM
+
         return OpenAILLM(
             api_key=settings.openai_api_key,
             model=settings.openai_model,
             base_url=settings.openai_api_base,
         )
     from a_frame.llm.ollama_llm import OllamaLLM
+
     return OllamaLLM(base_url=settings.ollama_base_url, model=settings.ollama_model)
 
 
@@ -34,11 +37,13 @@ def _make_embedder(settings):
     """根据配置创建 Embedder 实例。"""
     if settings.embedding_backend == "gemini" and settings.gemini_api_key:
         from a_frame.embedder.gemini_embedder import GeminiEmbedder
+
         return GeminiEmbedder(
             api_key=settings.gemini_api_key,
             model=settings.gemini_embedding_model,
         )
     from a_frame.embedder.openai_embedder import OpenAIEmbedder
+
     return OpenAIEmbedder(
         api_key=settings.openai_api_key,
         model=settings.embedding_model,

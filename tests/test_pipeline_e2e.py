@@ -134,11 +134,15 @@ class TestPipelineWithGraphData:
         llm = FakeLLMForPipeline()
         pipeline = create_pipeline(llm=llm, embedder=FakeEmbedder())
 
-        pipeline.search_coordinator.graph_store.add([{
-            "subject": {"name": "张三", "label": "Person"},
-            "predicate": "works_at",
-            "object": {"name": "Google", "label": "Organization"},
-        }])
+        pipeline.search_coordinator.graph_store.add(
+            [
+                {
+                    "subject": {"name": "张三", "label": "Person"},
+                    "predicate": "works_at",
+                    "object": {"name": "Google", "label": "Organization"},
+                }
+            ]
+        )
 
         result = pipeline.run(user_query="张三在哪里工作？", session_id="s-retrieval")
 
@@ -159,7 +163,7 @@ class TestPipelineWithGraphitiSearch:
         class FakeGraphitiEngine:
             def search(self, **kwargs):
                 return GraphitiSearchResult(
-                    context="[GraphitiRetrievedFacts]\n- 张三 --works_at--> Google: 张三在 Google 工作\n",
+                    context="<FACTS>\n- 张三在 Google 工作 (Date range: null - null)\n</FACTS>\n<ENTITIES>\n- 张三\n- Google\n</ENTITIES>\n",
                     provenance=[{"fact_id": "f1", "mentions": True, "distance": 1}],
                 )
 

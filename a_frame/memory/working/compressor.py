@@ -88,9 +88,7 @@ class WorkingMemoryCompressor:
         if not history_to_compress:
             return ""
 
-        history_text = "\n".join(
-            f"{msg['role']}: {msg['content']}" for msg in history_to_compress
-        )
+        history_text = "\n".join(f"{msg['role']}: {msg['content']}" for msg in history_to_compress)
         prompt = self.compression_prompt.format(history=history_text)
 
         summary = self.llm.generate([{"role": "user", "content": prompt}])

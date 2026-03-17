@@ -25,13 +25,15 @@ class FakeEmbedder:
 
 def test_semantic_search_recalls_synonym_node():
     store = NetworkXGraphStore(embedder=FakeEmbedder(), enable_semantic_search=True)
-    store.add([
-        {
-            "subject": {"name": "开会", "label": "Event"},
-            "predicate": "at",
-            "object": {"name": "周一", "label": "Time"},
-        }
-    ])
+    store.add(
+        [
+            {
+                "subject": {"name": "开会", "label": "Event"},
+                "predicate": "at",
+                "object": {"name": "周一", "label": "Time"},
+            }
+        ]
+    )
 
     q_emb = FakeEmbedder().embed_query("会议")
     hits = store.search("会议", top_k=5, query_embedding=q_emb)
@@ -47,21 +49,25 @@ def test_semantic_merge_unifies_synonym_nodes_on_add():
         semantic_merge_threshold=0.95,
     )
 
-    store.add([
-        {
-            "subject": {"name": "开会", "label": "Event"},
-            "predicate": "with",
-            "object": {"name": "张三", "label": "Person"},
-        }
-    ])
+    store.add(
+        [
+            {
+                "subject": {"name": "开会", "label": "Event"},
+                "predicate": "with",
+                "object": {"name": "张三", "label": "Person"},
+            }
+        ]
+    )
     # 第二次写入使用“会议”，应被归一到 canonical 节点“开会”
-    store.add([
-        {
-            "subject": {"name": "会议", "label": "Event"},
-            "predicate": "with",
-            "object": {"name": "李四", "label": "Person"},
-        }
-    ])
+    store.add(
+        [
+            {
+                "subject": {"name": "会议", "label": "Event"},
+                "predicate": "with",
+                "object": {"name": "李四", "label": "Person"},
+            }
+        ]
+    )
 
     # 节点应只有一个 canonical（开会），并记录 alias
     node_ids = {n for n, _ in store.graph.nodes(data=True)}

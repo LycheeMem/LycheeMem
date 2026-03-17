@@ -198,6 +198,7 @@ def create_pipeline(
         graphiti_engine = GraphitiEngine(
             store=graphiti_store,
             strict=strict,
+            community_llm=llm,
             gds_distance_max_depth=int(getattr(settings, "graphiti_gds_distance_max_depth", 4)),
             cross_encoder=cross_encoder,
             cross_encoder_top_n=int(getattr(settings, "graphiti_cross_encoder_top_n", 20)),

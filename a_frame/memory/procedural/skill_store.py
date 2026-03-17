@@ -21,14 +21,15 @@ from a_frame.memory.base import BaseMemoryStore
 @dataclass
 class SkillEntry:
     """技能条目。"""
+
     id: str
-    intent: str                    # 任务意图描述
-    embedding: list[float]         # 意图的向量表示
-    doc_markdown: str              # 技能说明（Markdown）
+    intent: str  # 任务意图描述
+    embedding: list[float]  # 意图的向量表示
+    doc_markdown: str  # 技能说明（Markdown）
     metadata: dict[str, Any] = field(default_factory=dict)
-    success_count: int = 0         # 成功使用次数
-    last_used: str | None = None   # 最后使用时间 (ISO 格式)
-    conditions: str = ""           # 适用条件描述
+    success_count: int = 0  # 成功使用次数
+    last_used: str | None = None  # 最后使用时间 (ISO 格式)
+    conditions: str = ""  # 适用条件描述
 
 
 class InMemorySkillStore(BaseMemoryStore):
@@ -54,11 +55,16 @@ class InMemorySkillStore(BaseMemoryStore):
     def record_usage(self, skill_id: str) -> None:
         """记录技能被成功使用一次。"""
         import datetime
+
         if skill_id in self._skills:
             self._skills[skill_id].success_count += 1
-            self._skills[skill_id].last_used = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            self._skills[skill_id].last_used = datetime.datetime.now(
+                datetime.timezone.utc
+            ).isoformat()
 
-    def search(self, query: str, top_k: int = 5, query_embedding: list[float] | None = None) -> list[dict[str, Any]]:
+    def search(
+        self, query: str, top_k: int = 5, query_embedding: list[float] | None = None
+    ) -> list[dict[str, Any]]:
         """向量相似度检索。需要传入 query_embedding。"""
         if query_embedding is None or not self._skills:
             return []
@@ -68,7 +74,9 @@ class InMemorySkillStore(BaseMemoryStore):
         for skill in self._skills.values():
             s_vec = np.array(skill.embedding, dtype=np.float32)
             # cosine similarity
-            cos_sim = float(np.dot(q_vec, s_vec) / (np.linalg.norm(q_vec) * np.linalg.norm(s_vec) + 1e-9))
+            cos_sim = float(
+                np.dot(q_vec, s_vec) / (np.linalg.norm(q_vec) * np.linalg.norm(s_vec) + 1e-9)
+            )
             scored.append((cos_sim, skill))
 
         scored.sort(key=lambda x: x[0], reverse=True)
@@ -92,9 +100,13 @@ class InMemorySkillStore(BaseMemoryStore):
     def get_all(self) -> list[dict[str, Any]]:
         return [
             {
-                "id": s.id, "intent": s.intent, "doc_markdown": s.doc_markdown,
-                "metadata": s.metadata, "success_count": s.success_count,
-                "last_used": s.last_used, "conditions": s.conditions,
+                "id": s.id,
+                "intent": s.intent,
+                "doc_markdown": s.doc_markdown,
+                "metadata": s.metadata,
+                "success_count": s.success_count,
+                "last_used": s.last_used,
+                "conditions": s.conditions,
             }
             for s in self._skills.values()
         ]

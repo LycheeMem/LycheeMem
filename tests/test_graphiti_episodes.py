@@ -46,7 +46,9 @@ def test_graphiti_engine_ingest_episode_delegates_to_store():
             return kwargs["episode_id"]
 
     engine = GraphitiEngine(store=FakeStore())
-    eid = engine.ingest_episode(session_id="s1", turn_index=0, role="user", content="hi", t_ref="t0")
+    eid = engine.ingest_episode(
+        session_id="s1", turn_index=0, role="user", content="hi", t_ref="t0"
+    )
     assert eid
     assert len(calls) == 1
     assert calls[0]["session_id"] == "s1"

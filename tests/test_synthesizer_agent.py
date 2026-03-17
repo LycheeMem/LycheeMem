@@ -18,13 +18,15 @@ class TestSynthesizerAgent:
         synth = SynthesizerAgent(llm=FakeLLMSynthesizer())
         result = synth.run(
             user_query="张三的信息",
-            retrieved_graph_memories=[{
-                "anchor": {"node_id": "张三", "label": "Person"},
-                "subgraph": {
-                    "nodes": [{"id": "张三"}, {"id": "Google"}],
-                    "edges": [{"source": "张三", "target": "Google", "relation": "works_at"}],
-                },
-            }],
+            retrieved_graph_memories=[
+                {
+                    "anchor": {"node_id": "张三", "label": "Person"},
+                    "subgraph": {
+                        "nodes": [{"id": "张三"}, {"id": "Google"}],
+                        "edges": [{"source": "张三", "target": "Google", "relation": "works_at"}],
+                    },
+                }
+            ],
         )
         assert "background_context" in result
         assert "张三" in result["background_context"]
@@ -38,7 +40,9 @@ class TestSynthesizerAgent:
         synth = SynthesizerAgent(llm=FakeLLMBroken())
         result = synth.run(
             user_query="测试",
-            retrieved_skills=[{"intent": "测试技能", "doc_markdown": "# 测试\n", "reusable": False}],
+            retrieved_skills=[
+                {"intent": "测试技能", "doc_markdown": "# 测试\n", "reusable": False}
+            ],
         )
         # 应该 fallback 到原始 LLM 输出
         assert "background_context" in result
@@ -54,10 +58,15 @@ class TestSynthesizerAgent:
 
     def test_format_fragments_mixed(self):
         fragments = SynthesizerAgent._format_fragments(
-            graph_memories=[{
-                "anchor": {"node_id": "A"},
-                "subgraph": {"nodes": [], "edges": [{"source": "A", "target": "B", "relation": "r"}]},
-            }],
+            graph_memories=[
+                {
+                    "anchor": {"node_id": "A"},
+                    "subgraph": {
+                        "nodes": [],
+                        "edges": [{"source": "A", "target": "B", "relation": "r"}],
+                    },
+                }
+            ],
             skills=[{"intent": "t", "doc_markdown": "# t\n"}],
         )
         assert "[知识图谱]" in fragments
@@ -65,19 +74,23 @@ class TestSynthesizerAgent:
 
     def test_format_graph_edges_include_fact(self):
         fragments = SynthesizerAgent._format_fragments(
-            graph_memories=[{
-                "anchor": {"node_id": "张三"},
-                "subgraph": {
-                    "nodes": [],
-                    "edges": [{
-                        "source": "张三",
-                        "target": "Google",
-                        "relation": "works_at",
-                        "fact": "张三在 Google 工作",
-                        "evidence": "user: 张三在哪工作？ assistant: 张三在 Google 工作",
-                    }],
-                },
-            }],
+            graph_memories=[
+                {
+                    "anchor": {"node_id": "张三"},
+                    "subgraph": {
+                        "nodes": [],
+                        "edges": [
+                            {
+                                "source": "张三",
+                                "target": "Google",
+                                "relation": "works_at",
+                                "fact": "张三在 Google 工作",
+                                "evidence": "user: 张三在哪工作？ assistant: 张三在 Google 工作",
+                            }
+                        ],
+                    },
+                }
+            ],
             skills=[],
         )
         assert "事实: 张三在 Google 工作" in fragments
@@ -88,10 +101,10 @@ class TestSynthesizerAgent:
                 {
                     "anchor": {"node_id": "graphiti_context"},
                     "subgraph": {"nodes": [], "edges": []},
-                    "constructed_context": "[GraphitiRetrievedFacts]\n- A --r--> B: something\n",
+                    "constructed_context": "<FACTS>\n- A r B (Date range: null - null)\n</FACTS>\n<ENTITIES>\n- A\n- B\n</ENTITIES>\n",
                 }
             ],
             skills=[],
         )
         assert "构造上下文:" in fragments
-        assert "GraphitiRetrievedFacts" in fragments
+        assert "<FACTS>" in fragments

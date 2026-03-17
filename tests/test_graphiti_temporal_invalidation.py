@@ -148,6 +148,7 @@ class FakeGraphitiStore:
         self.entities: dict[str, dict[str, Any]] = {}
         self.facts: dict[str, dict[str, Any]] = {}
         self.episode_fact_links: list[tuple[str, str]] = []
+        self.episode_entity_links: list[tuple[str, str]] = []
 
         self.expired: list[dict[str, Any]] = []
 
@@ -210,7 +211,9 @@ class FakeGraphitiStore:
             return
         f["t_valid_to"] = t_valid_to
         f["t_tx_expired"] = t_tx_expired
-        self.expired.append({"fact_id": fact_id, "t_valid_to": t_valid_to, "t_tx_expired": t_tx_expired})
+        self.expired.append(
+            {"fact_id": fact_id, "t_valid_to": t_valid_to, "t_tx_expired": t_tx_expired}
+        )
 
     def upsert_fact(
         self,
@@ -247,6 +250,9 @@ class FakeGraphitiStore:
 
     def link_episode_to_fact(self, *, episode_id: str, fact_id: str):
         self.episode_fact_links.append((episode_id, fact_id))
+
+    def link_episode_to_entity(self, *, episode_id: str, entity_id: str):
+        self.episode_entity_links.append((episode_id, entity_id))
 
 
 def test_temporal_invalidation_expires_old_fact():

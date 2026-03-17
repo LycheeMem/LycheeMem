@@ -72,7 +72,7 @@ class Neo4jGraphStore(BaseMemoryStore):
             result = session.run(
                 """
                 MATCH (n:Entity)
-                WHERE exists(n.embedding)
+                WHERE n.embedding IS NOT NULL
                 RETURN n.node_id AS node_id, n.embedding AS embedding, coalesce(n.name, '') AS name
                 LIMIT $limit
                 """,
@@ -99,13 +99,17 @@ class Neo4jGraphStore(BaseMemoryStore):
         sims: list[tuple[float, str]] = []
         for node_id, emb, _ in candidates:
             try:
-                sims.append((self._cosine_similarity(q_vec, np.array(emb, dtype=np.float32)), node_id))
+                sims.append(
+                    (self._cosine_similarity(q_vec, np.array(emb, dtype=np.float32)), node_id)
+                )
             except Exception:
                 continue
 
         if len(sims) >= 3:
             sim_values = [s for s, _ in sims]
-            if (max(sim_values) - min(sim_values)) < getattr(self, "semantic_degeneracy_epsilon", 1e-3):
+            if (max(sim_values) - min(sim_values)) < getattr(
+                self, "semantic_degeneracy_epsilon", 1e-3
+            ):
                 # embedding 缺少区分度（例如固定向量测试），避免误合并
                 return raw_id
 
@@ -147,7 +151,9 @@ class Neo4jGraphStore(BaseMemoryStore):
                 )
         return canonical
 
-    def _upsert_node(self, node_id: str, label: str, properties: dict[str, Any] | None = None) -> str:
+    def _upsert_node(
+        self, node_id: str, label: str, properties: dict[str, Any] | None = None
+    ) -> str:
         raw_id = str(node_id)
         raw_id = self._resolve_canonical_id(raw_id)
         props = dict(properties or {})
@@ -177,14 +183,13 @@ class Neo4jGraphStore(BaseMemoryStore):
         """创建全文索引以支持搜索。"""
         with self._driver.session(database=self._database) as session:
             # 为所有节点的 name 属性创建索引
-            session.run(
-                "CREATE INDEX node_name_index IF NOT EXISTS FOR (n:Entity) ON (n.name)"
-            )
+            session.run("CREATE INDEX node_name_index IF NOT EXISTS FOR (n:Entity) ON (n.name)")
 
     def add_node(self, node_id: str, label: str, properties: dict[str, Any] | None = None) -> None:
         props = dict(properties or {})
         props["node_id"] = node_id
         props["label"] = label
+
         # 清理不可序列化的值（Neo4j 支持 list 基本类型）
         def _is_neo4j_value(v: Any) -> bool:
             if isinstance(v, (str, int, float, bool)):
@@ -210,7 +215,9 @@ class Neo4jGraphStore(BaseMemoryStore):
     ) -> None:
         clean_props = {}
         if properties:
-            clean_props = {k: v for k, v in properties.items() if isinstance(v, (str, int, float, bool))}
+            clean_props = {
+                k: v for k, v in properties.items() if isinstance(v, (str, int, float, bool))
+            }
         with self._driver.session(database=self._database) as session:
             session.run(
                 """
@@ -236,13 +243,15 @@ class Neo4jGraphStore(BaseMemoryStore):
             subj_id = self._upsert_node(subj_id, label=subj.get("label", "Entity"), properties=subj)
             obj_id = self._upsert_node(obj_id, label=obj.get("label", "Entity"), properties=obj)
             edge_props = dict(item.get("properties", {}) or {})
-            edge_props.setdefault("timestamp", item.get("timestamp") or datetime.datetime.now(datetime.timezone.utc).isoformat())
+            edge_props.setdefault(
+                "timestamp",
+                item.get("timestamp") or datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            )
             edge_props.setdefault("confidence", item.get("confidence", 1.0))
             edge_props.setdefault("source_session", item.get("source_session", ""))
             edge_props.setdefault(
                 "fact",
-                item.get("fact")
-                or f"{subj.get('name', subj_id)} {pred} {obj.get('name', obj_id)}",
+                item.get("fact") or f"{subj.get('name', subj_id)} {pred} {obj.get('name', obj_id)}",
             )
             edge_props.setdefault("evidence", item.get("evidence", ""))
             self.add_edge(subj_id, obj_id, relation=pred, properties=edge_props)
@@ -262,7 +271,13 @@ class Neo4jGraphStore(BaseMemoryStore):
                 sims: list[tuple[float, str, str]] = []
                 for node_id, emb, name in candidates:
                     try:
-                        sims.append((self._cosine_similarity(q_vec, np.array(emb, dtype=np.float32)), node_id, name))
+                        sims.append(
+                            (
+                                self._cosine_similarity(q_vec, np.array(emb, dtype=np.float32)),
+                                node_id,
+                                name,
+                            )
+                        )
                     except Exception:
                         continue
 
@@ -289,12 +304,20 @@ class Neo4jGraphStore(BaseMemoryStore):
                                 "MATCH (n:Entity) WHERE n.node_id IN $ids RETURN n",
                                 ids=ids,
                             )
-                            by_id = {record["n"].get("node_id", ""): dict(record["n"]) for record in rs}
+                            by_id = {
+                                record["n"].get("node_id", ""): dict(record["n"]) for record in rs
+                            }
 
                         merged: list[dict[str, Any]] = []
                         for r in results:
                             node_id = r["node_id"]
-                            merged.append({"node_id": node_id, **by_id.get(node_id, {}), "_score": r.get("_score")})
+                            merged.append(
+                                {
+                                    "node_id": node_id,
+                                    **by_id.get(node_id, {}),
+                                    "_score": r.get("_score"),
+                                }
+                            )
                         return merged
 
         with self._driver.session(database=self._database) as session:
@@ -321,9 +344,13 @@ class Neo4jGraphStore(BaseMemoryStore):
             result = session.run(
                 """
                 MATCH (start:Entity {node_id: $node_id})
-                OPTIONAL MATCH path = (start)-[*1..""" + str(depth) + """]->(neighbor)
+                OPTIONAL MATCH path = (start)-[*1.."""
+                + str(depth)
+                + """]->(neighbor)
                 WITH start, collect(DISTINCT neighbor) AS out_neighbors
-                OPTIONAL MATCH path2 = (ancestor)-[*1..""" + str(depth) + """]->(start)
+                OPTIONAL MATCH path2 = (ancestor)-[*1.."""
+                + str(depth)
+                + """]->(start)
                 WITH start, out_neighbors, collect(DISTINCT ancestor) AS in_neighbors
                 WITH start, out_neighbors + in_neighbors + [start] AS all_nodes
                 UNWIND all_nodes AS n
@@ -365,8 +392,7 @@ class Neo4jGraphStore(BaseMemoryStore):
         with self._driver.session(database=self._database) as session:
             result = session.run("MATCH (n:Entity) RETURN n")
             return [
-                {"id": record["n"].get("node_id", ""), **dict(record["n"])}
-                for record in result
+                {"id": record["n"].get("node_id", ""), **dict(record["n"])} for record in result
             ]
 
     def get_all_edges(self) -> list[dict[str, Any]]:

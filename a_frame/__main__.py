@@ -15,8 +15,12 @@ def main():
     parser = argparse.ArgumentParser(description="A-Frame Cognitive Memory Server")
     parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
-    parser.add_argument("--llm", default="gemini", choices=["openai", "gemini", "ollama"],
-                        help="LLM backend (default: openai)")
+    parser.add_argument(
+        "--llm",
+        default="gemini",
+        choices=["openai", "gemini", "ollama"],
+        help="LLM backend (default: openai)",
+    )
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload for development")
     args = parser.parse_args()
 
@@ -36,7 +40,9 @@ def main():
 
     print(f"🚀 A-Frame server starting on http://{args.host}:{args.port}")
     print(f"   LLM backend: {args.llm}")
-    print(f"   Storage: session={settings.session_backend}, graph={settings.graph_backend}, skill={settings.skill_backend}")
+    print(
+        f"   Storage: session={settings.session_backend}, graph={settings.graph_backend}, skill={settings.skill_backend}"
+    )
     print(f"   Docs: http://{args.host}:{args.port}/docs")
 
     uvicorn.run(app, host=args.host, port=args.port)
@@ -45,6 +51,7 @@ def main():
 def _create_llm(backend: str, settings):
     if backend == "openai":
         from a_frame.llm.openai_llm import OpenAILLM
+
         return OpenAILLM(
             api_key=settings.openai_api_key,
             model=settings.openai_model,
@@ -52,12 +59,14 @@ def _create_llm(backend: str, settings):
         )
     elif backend == "gemini":
         from a_frame.llm.gemini_llm import GeminiLLM
+
         return GeminiLLM(
             api_key=settings.gemini_api_key,
             model=settings.gemini_model,
         )
     elif backend == "ollama":
         from a_frame.llm.ollama_llm import OllamaLLM
+
         return OllamaLLM(
             base_url=settings.ollama_base_url,
             model=settings.ollama_model,
@@ -70,6 +79,7 @@ def _create_embedder(settings):
     backend = settings.embedding_backend
     if backend == "gemini":
         from a_frame.embedder.gemini_embedder import GeminiEmbedder
+
         return GeminiEmbedder(
             api_key=settings.gemini_api_key,
             model=settings.gemini_embedding_model,
@@ -77,6 +87,7 @@ def _create_embedder(settings):
         )
     else:
         from a_frame.embedder.openai_embedder import OpenAIEmbedder
+
         return OpenAIEmbedder(
             api_key=settings.openai_api_key,
             model=settings.embedding_model,

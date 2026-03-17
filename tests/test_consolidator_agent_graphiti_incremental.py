@@ -101,6 +101,7 @@ class FakeGraphitiStore:
         self.entities: dict[str, dict[str, Any]] = {}
         self.facts: dict[str, dict[str, Any]] = {}
         self.episode_fact_links: list[tuple[str, str]] = []
+        self.episode_entity_links: list[tuple[str, str]] = []
 
         self.upsert_entity_calls = 0
         self.upsert_fact_calls = 0
@@ -185,6 +186,11 @@ class FakeGraphitiStore:
     def link_episode_to_fact(self, *, episode_id: str, fact_id: str):
         self.link_calls += 1
         self.episode_fact_links.append((episode_id, fact_id))
+        
+    def link_episode_to_entity(self, *, episode_id: str, entity_id: str) -> None:
+        # Paper: episodic edges Episode→Entity
+        self.link_calls += 1
+        self.episode_entity_links.append((episode_id, entity_id))
 
 
 class FakeGraphitiEngine:
@@ -251,7 +257,8 @@ def test_consolidator_graphiti_incremental_only_latest_user_turn():
     # Semantic builder ran once for latest user turn
     assert store.upsert_entity_calls == 2
     assert store.upsert_fact_calls == 1
-    assert store.link_calls == 1
+    # Paper: Episode→Entity (2) + Episode→Fact (1)
+    assert store.link_calls == 3
 
     # Second run should be idempotent (no new episodes, no new semantic build)
     result2 = agent.run(turns=turns, session_id="s1")
@@ -261,4 +268,4 @@ def test_consolidator_graphiti_incremental_only_latest_user_turn():
     assert len(graphiti_engine.episodes) == 3
     assert store.upsert_entity_calls == 2
     assert store.upsert_fact_calls == 1
-    assert store.link_calls == 1
+    assert store.link_calls == 3

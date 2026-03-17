@@ -154,7 +154,9 @@ class NetworkXGraphStore(BaseMemoryStore):
             self._add_alias(canonical, raw_id)
         return canonical
 
-    def _upsert_node(self, node_id: str, label: str, properties: dict[str, Any] | None = None) -> str:
+    def _upsert_node(
+        self, node_id: str, label: str, properties: dict[str, Any] | None = None
+    ) -> str:
         raw_id = str(node_id)
         raw_id = self._resolve_canonical_id(raw_id)
 
@@ -220,8 +222,7 @@ class NetworkXGraphStore(BaseMemoryStore):
             edge_props.setdefault("source_session", item.get("source_session", ""))
             edge_props.setdefault(
                 "fact",
-                item.get("fact")
-                or f"{subj.get('name', subj_id)} {pred} {obj.get('name', obj_id)}",
+                item.get("fact") or f"{subj.get('name', subj_id)} {pred} {obj.get('name', obj_id)}",
             )
             edge_props.setdefault("evidence", item.get("evidence", ""))
             self.add_edge(subj_id, obj_id, relation=pred, properties=edge_props)
@@ -261,10 +262,7 @@ class NetworkXGraphStore(BaseMemoryStore):
                             if lex > 0.0:
                                 scored.append((lex, node_id, data))
                         scored.sort(key=lambda x: x[0], reverse=True)
-                        return [
-                            {"node_id": node_id, **data}
-                            for _, node_id, data in scored[:top_k]
-                        ]
+                        return [{"node_id": node_id, **data} for _, node_id, data in scored[:top_k]]
 
                 sims.sort(key=lambda x: x[0], reverse=True)
                 results: list[dict[str, Any]] = []
@@ -305,9 +303,7 @@ class NetworkXGraphStore(BaseMemoryStore):
             subgraph_nodes.update(next_frontier)
             frontier = next_frontier
 
-        nodes = [
-            {"id": n, **self.graph.nodes[n]} for n in subgraph_nodes if n in self.graph.nodes
-        ]
+        nodes = [{"id": n, **self.graph.nodes[n]} for n in subgraph_nodes if n in self.graph.nodes]
         edges = [
             {"source": u, "target": v, **d}
             for u, v, d in self.graph.edges(data=True)
@@ -325,10 +321,7 @@ class NetworkXGraphStore(BaseMemoryStore):
 
     def get_all_edges(self) -> list[dict[str, Any]]:
         """返回所有边（含 relation, timestamp, confidence 等属性）。"""
-        return [
-            {"source": u, "target": v, **d}
-            for u, v, d in self.graph.edges(data=True)
-        ]
+        return [{"source": u, "target": v, **d} for u, v, d in self.graph.edges(data=True)]
 
     def search_by_relation(self, relation: str, top_k: int = 10) -> list[dict[str, Any]]:
         """按关系类型检索边。"""

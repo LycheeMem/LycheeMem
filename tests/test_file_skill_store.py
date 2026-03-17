@@ -11,16 +11,18 @@ class TestFileSkillStore:
         fp = tmp_path / "skills.json"
         store = FileSkillStore(file_path=str(fp))
 
-        store.add([
-            {
-                "id": "s1",
-                "intent": "test",
-                "embedding": [0.1] * 8,
-                "doc_markdown": "# test\n\nstep1\n",
-                "metadata": {"a": 1},
-                "conditions": "always",
-            }
-        ])
+        store.add(
+            [
+                {
+                    "id": "s1",
+                    "intent": "test",
+                    "embedding": [0.1] * 8,
+                    "doc_markdown": "# test\n\nstep1\n",
+                    "metadata": {"a": 1},
+                    "conditions": "always",
+                }
+            ]
+        )
 
         assert fp.exists()
         # 重新加载
@@ -33,20 +35,22 @@ class TestFileSkillStore:
     def test_search_cosine_similarity(self, tmp_path: Path):
         fp = tmp_path / "skills.json"
         store = FileSkillStore(file_path=str(fp))
-        store.add([
-            {
-                "id": "s1",
-                "intent": "A",
-                "embedding": [1.0, 0.0, 0.0],
-                "doc_markdown": "# A\n",
-            },
-            {
-                "id": "s2",
-                "intent": "B",
-                "embedding": [0.0, 1.0, 0.0],
-                "doc_markdown": "# B\n",
-            },
-        ])
+        store.add(
+            [
+                {
+                    "id": "s1",
+                    "intent": "A",
+                    "embedding": [1.0, 0.0, 0.0],
+                    "doc_markdown": "# A\n",
+                },
+                {
+                    "id": "s2",
+                    "intent": "B",
+                    "embedding": [0.0, 1.0, 0.0],
+                    "doc_markdown": "# B\n",
+                },
+            ]
+        )
 
         results = store.search("q", top_k=1, query_embedding=[1.0, 0.0, 0.0])
         assert len(results) == 1
@@ -55,10 +59,12 @@ class TestFileSkillStore:
     def test_delete_persists(self, tmp_path: Path):
         fp = tmp_path / "skills.json"
         store = FileSkillStore(file_path=str(fp))
-        store.add([
-            {"id": "s1", "intent": "A", "embedding": [0.1], "doc_markdown": "# A"},
-            {"id": "s2", "intent": "B", "embedding": [0.2], "doc_markdown": "# B"},
-        ])
+        store.add(
+            [
+                {"id": "s1", "intent": "A", "embedding": [0.1], "doc_markdown": "# A"},
+                {"id": "s2", "intent": "B", "embedding": [0.2], "doc_markdown": "# B"},
+            ]
+        )
         store.delete(["s1"])
 
         store2 = FileSkillStore(file_path=str(fp))
@@ -69,9 +75,11 @@ class TestFileSkillStore:
     def test_record_usage_updates_fields(self, tmp_path: Path):
         fp = tmp_path / "skills.json"
         store = FileSkillStore(file_path=str(fp))
-        store.add([
-            {"id": "s1", "intent": "A", "embedding": [0.1], "doc_markdown": "# A"},
-        ])
+        store.add(
+            [
+                {"id": "s1", "intent": "A", "embedding": [0.1], "doc_markdown": "# A"},
+            ]
+        )
         store.record_usage("s1")
 
         all_skills = store.get_all()

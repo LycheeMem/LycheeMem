@@ -109,10 +109,10 @@ def test_graphiti_engine_search_constructs_context_and_provenance():
         include_communities=True,
     )
 
-    assert "[GraphitiRetrievedFacts]" in result.context
+    assert "<FACTS>" in result.context
     assert "Alice" in result.context
     assert "Acme" in result.context
-    assert "[GraphitiCommunities]" in result.context
+    assert "<COMMUNITIES>" in result.context
     assert len(result.provenance) == 2
     assert all("fact_id" in p for p in result.provenance)
     assert all("mentions" in p for p in result.provenance)

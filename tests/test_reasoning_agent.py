@@ -6,7 +6,9 @@ from a_frame.agents.reasoning_agent import ReasoningAgent
 class FakeLLMReasoner:
     def generate(self, messages, **kwargs):
         # 检查是否注入了背景知识
-        has_background = any("背景知识" in m.get("content", "") or "记忆" in m.get("content", "") for m in messages)
+        has_background = any(
+            "背景知识" in m.get("content", "") or "记忆" in m.get("content", "") for m in messages
+        )
         if has_background:
             return "根据记忆，张三在 Google 工作。"
         return "你好！有什么可以帮助你的？"

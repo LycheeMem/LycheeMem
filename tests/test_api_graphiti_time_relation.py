@@ -40,7 +40,9 @@ class FakeGraphitiStore:
             }
         ][:limit]
 
-    def search_facts_by_time(self, *, since: str | None = None, until: str | None = None, limit: int = 10):
+    def search_facts_by_time(
+        self, *, since: str | None = None, until: str | None = None, limit: int = 10
+    ):
         return [
             {
                 "source": "e-a",
@@ -81,7 +83,11 @@ def test_graphiti_by_time_uses_store():
 
     resp = client.get(
         "/memory/graph/by-time",
-        params={"since": "2026-01-01T00:00:00+00:00", "until": "2026-02-01T00:00:00+00:00", "top_k": 5},
+        params={
+            "since": "2026-01-01T00:00:00+00:00",
+            "until": "2026-02-01T00:00:00+00:00",
+            "top_k": 5,
+        },
     )
     assert resp.status_code == 200
     data = resp.json()

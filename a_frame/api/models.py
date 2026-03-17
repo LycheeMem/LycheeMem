@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 class ChatRequest(BaseModel):
     """对话请求。"""
+
     session_id: str = Field(..., min_length=1, max_length=128)
     message: str = Field(..., min_length=1, max_length=100_000)
 
@@ -79,6 +80,7 @@ class PipelineTrace(BaseModel):
 
 class ChatResponse(BaseModel):
     """对话响应。"""
+
     session_id: str
     response: str
     memories_retrieved: int = 0
@@ -87,6 +89,7 @@ class ChatResponse(BaseModel):
 
 
 # ─── Memory ───
+
 
 class GraphNode(BaseModel):
     id: str
@@ -146,6 +149,7 @@ class SkillsResponse(BaseModel):
 
 # ─── Session ───
 
+
 class SessionResponse(BaseModel):
     session_id: str
     turns: list[dict[str, str]]
@@ -158,6 +162,7 @@ class DeleteResponse(BaseModel):
 
 
 # ─── Sessions List ───
+
 
 class SessionSummary(BaseModel):
     session_id: str
@@ -176,11 +181,13 @@ class SessionListResponse(BaseModel):
 
 class SessionUpdateRequest(BaseModel):
     """会话元数据更新请求。"""
+
     topic: str | None = None
     tags: list[str] | None = None
 
 
 # ─── Memory Search ───
+
 
 class MemorySearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=1000)
@@ -197,6 +204,7 @@ class MemorySearchResponse(BaseModel):
 
 
 # ─── Graph Manual Operations ───
+
 
 class GraphNodeAddRequest(BaseModel):
     id: str = Field(..., min_length=1)
@@ -221,8 +229,10 @@ class HealthResponse(BaseModel):
 
 # ─── Pipeline Status ───
 
+
 class PipelineStatusResponse(BaseModel):
     """Pipeline 运行状态。"""
+
     session_count: int
     graph_node_count: int
     graph_edge_count: int

@@ -7,7 +7,9 @@ class FakeLLM:
     """假的 LLM，用于测试。"""
 
     def generate(self, messages, **kwargs):
-        return "## Intent Mapping\n测试\n## Progress Assessment\n完成\n## Recent Commands Analysis\n无"
+        return (
+            "## Intent Mapping\n测试\n## Progress Assessment\n完成\n## Recent Commands Analysis\n无"
+        )
 
 
 class TestCompressor:
