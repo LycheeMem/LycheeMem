@@ -558,6 +558,7 @@ class GraphitiEngine:
 
             final = base + distance_boost + mention_boost
             final_scores[fid] = final
+            _fact_text = str(info.get("fact") or info.get("fact_text") or "").strip()
             provenance_by_fact[fid] = {
                 "fact_id": fid,
                 "rrf": base,
@@ -567,6 +568,10 @@ class GraphitiEngine:
                 "distance": graph_distance,
                 "bfs_distance": edge_distance,
                 "gds_distance": graph_distance if self.strict else None,
+                "fact_text": _fact_text,
+                "subject_entity_id": str(info.get("source") or "").strip(),
+                "object_entity_id": str(info.get("target") or "").strip(),
+                "relation_type": str(info.get("relation") or "").strip(),
             }
 
         # ──────────────────────────────────────

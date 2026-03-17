@@ -225,13 +225,16 @@ def create_app(pipeline=None) -> FastAPI:
         if store is not None and hasattr(store, "export_semantic_graph"):
             try:
                 data = store.export_semantic_graph()
-                return GraphResponse(nodes=data.get("nodes", []), edges=data.get("edges", []))
+                return GraphResponse(
+                    nodes=_strip_node_embeddings(data.get("nodes", [])),
+                    edges=data.get("edges", []),
+                )
             except Exception as exc:
                 logger.exception("Graphiti export_semantic_graph failed")
                 raise HTTPException(status_code=500, detail=f"Graphiti export failed: {exc}")
 
         graph_store = pipeline.search_coordinator.graph_store
-        nodes = graph_store.get_all()
+        nodes = _strip_node_embeddings(graph_store.get_all())
         if hasattr(graph_store, "get_all_edges"):
             edges = graph_store.get_all_edges()
         else:
@@ -274,7 +277,7 @@ def create_app(pipeline=None) -> FastAPI:
                     edge_limit=min(500, max(50, top_k * 50)),
                 )
 
-                nodes = data.get("nodes", [])
+                nodes = _strip_node_embeddings(data.get("nodes", []))
                 edges = data.get("edges", [])
 
                 # Mark anchors (non-breaking extra metadata)
@@ -302,7 +305,9 @@ def create_app(pipeline=None) -> FastAPI:
             query_embedding = sc.embedder.embed_query(q)
         except Exception:
             query_embedding = None
-        matched_nodes = graph_store.search(q, top_k=top_k, query_embedding=query_embedding)
+        matched_nodes = _strip_node_embeddings(
+            graph_store.search(q, top_k=top_k, query_embedding=query_embedding)
+        )
         node_ids = {n["node_id"] for n in matched_nodes}
         if hasattr(graph_store, "get_all_edges"):
             all_edges = graph_store.get_all_edges()
@@ -657,6 +662,34 @@ def _build_trace(result: dict[str, Any]) -> PipelineTrace:
     graph_hits = []
     for mem in graph_mems:
         anchor = mem.get("anchor", mem)
+        # Graphiti mode: the anchor is a synthetic placeholder; expand provenance into
+        # individual fact hits so the UI shows what was actually retrieved.
+        if str(anchor.get("node_id", "")) == "graphiti_context":
+            for pv in mem.get("provenance", []):
+                if not isinstance(pv, dict):
+                    continue
+                fact_text = str(pv.get("fact_text") or "").strip()
+                subj = str(pv.get("subject_entity_id") or "").strip()
+                obj = str(pv.get("object_entity_id") or "").strip()
+                rel = str(pv.get("relation_type") or "").strip()
+                # Build a human-readable name: prefer fact_text, fall back to triple notation.
+                if fact_text:
+                    display_name = fact_text
+                elif subj and obj:
+                    display_name = f"{subj} —{rel}→ {obj}" if rel else f"{subj} → {obj}"
+                else:
+                    display_name = str(pv.get("fact_id") or "")
+                graph_hits.append(
+                    GraphMemoryHit(
+                        node_id=str(pv.get("fact_id") or ""),
+                        name=display_name,
+                        label=rel,
+                        score=float(pv.get("rrf") or 0.0),
+                        neighbor_count=int(pv.get("mentions") or 0),
+                    )
+                )
+            continue
+        # Legacy NetworkX / Neo4j path: anchor is a real entity node.
         subgraph = mem.get("subgraph", {})
         neighbor_count = len(subgraph.get("nodes", [])) + len(subgraph.get("edges", []))
         props = anchor.get("properties", {})
@@ -790,6 +823,23 @@ def _build_trace(result: dict[str, Any]) -> PipelineTrace:
         reasoner=reasoner,
         consolidator=consolidator,
     )
+
+
+def _strip_node_embeddings(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """从节点列表中移除 embedding 向量字段，避免 API 响应体过大。
+
+    兼容两种节点结构：
+    - Graphiti 路径：顶层 ``properties`` 子字典中含 ``embedding``。
+    - NetworkX / Neo4j legacy 路径：顶层直接含 ``embedding``。
+    """
+    result: list[dict[str, Any]] = []
+    for node in nodes:
+        n = {k: v for k, v in node.items() if k != "embedding"}
+        props = n.get("properties")
+        if isinstance(props, dict) and "embedding" in props:
+            n["properties"] = {k: v for k, v in props.items() if k != "embedding"}
+        result.append(n)
+    return result
 
 
 def _sse(data: dict) -> str:
