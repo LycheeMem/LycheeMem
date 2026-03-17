@@ -1,23 +1,23 @@
 ﻿"""
-FastAPI 鏈嶅姟鍣ㄣ€?
+FastAPI 服务器。
 
-鎻愪緵 HTTP 鎺ュ彛瀵瑰鏆撮湶 A-Frame Pipeline銆?
+提供 HTTP 接口对外暴露 A-Frame Pipeline。
 
-绔偣:
-- POST /chat/complete          鈥?闈炴祦寮忓畬鏁村璇?
-- POST /chat                  鈥?SSE 娴佸紡瀵硅瘽
-- GET  /sessions               鈥?浼氳瘽鍒楄〃
-- GET  /memory/graph           鈥?鏌ョ湅鐭ヨ瘑鍥捐氨
-- GET  /memory/graph/search    鈥?鎼滅储鍥捐氨鑺傜偣
-- POST /memory/graph/nodes     鈥?鎵嬪姩娣诲姞鑺傜偣
-- POST /memory/graph/edges     鈥?鎵嬪姩娣诲姞杈?
-- DELETE /memory/graph/nodes/{node_id} 鈥?鍒犻櫎鑺傜偣
-- POST /memory/search          鈥?缁熶竴璁板繂妫€绱?
-- GET  /memory/skills          鈥?鏌ョ湅鎶€鑳藉簱
-- DELETE /memory/skills/{skill_id} 鈥?鍒犻櫎鎶€鑳?
-- GET  /memory/session/{session_id} 鈥?鏌ョ湅浼氳瘽
-- DELETE /memory/session/{session_id} 鈥?鍒犻櫎浼氳瘽
-- GET  /health                 鈥?鍋ュ悍妫€鏌?
+端点:
+- POST /chat/complete          — 非流式完整对话
+- POST /chat                  — SSE 流式对话
+- GET  /sessions               — 会话列表
+- GET  /memory/graph           — 查看知识图谱
+- GET  /memory/graph/search    — 搜索图谱节点
+- POST /memory/graph/nodes     — 手动添加节点
+- POST /memory/graph/edges     — 手动添加边
+- DELETE /memory/graph/nodes/{node_id} — 删除节点
+- POST /memory/search          — 统一记忆检索
+- GET  /memory/skills          — 查看技能库
+- DELETE /memory/skills/{skill_id} — 删除技能
+- GET  /memory/session/{session_id} — 查看会话
+- DELETE /memory/session/{session_id} — 删除会话
+- GET  /health                 — 健康检查
 """
 
 from __future__ import annotations
@@ -39,16 +39,16 @@ from a_frame.api.routers.session import router as session_router
 
 logger = logging.getLogger("a_frame.api")
 
-# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# ──────────────────────────────────────
 # App factory
-# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# ──────────────────────────────────────
 
 
 def create_app(pipeline=None) -> FastAPI:
-    """鍒涘缓 FastAPI 搴旂敤銆?
+    """创建 FastAPI 应用。
 
     Args:
-        pipeline: AFramePipeline 瀹炰緥銆備紶 None 鏃跺彲鐢ㄤ簬娴嬭瘯锛堥渶鍚庣画璧嬪€?app.state.pipeline锛夈€?
+        pipeline: AFramePipeline 实例。传 None 时可用于测试（需后续赋值 app.state.pipeline）。
     """
     app = FastAPI(
         title="A-Frame Cognitive Memory API",
@@ -59,16 +59,16 @@ def create_app(pipeline=None) -> FastAPI:
     if pipeline is not None:
         app.state.pipeline = pipeline
 
-    # 鈹€鈹€ CORS 鈹€鈹€
+    # ── CORS ──
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # 鐢熶骇鐜寤鸿鏀逛负鍏蜂綋鍩熷悕
+        allow_origins=["*"],  # 生产环境建议改为具体域名
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
-    # 鈹€鈹€ Demo UI (optional) 鈹€鈹€
+    # ── Demo UI (optional) ──
     demo_dir = Path(__file__).resolve().parents[1] / "demo"
     if demo_dir.exists():
         app.mount(
@@ -85,7 +85,7 @@ def create_app(pipeline=None) -> FastAPI:
         async def demo_index_slash():
             return RedirectResponse(url="/demo")
 
-    # 鈹€鈹€ 涓棿浠讹細trace_id 娉ㄥ叆 鈹€鈹€
+    # ── 中间件：trace_id 注入 ──
 
     @app.middleware("http")
     async def trace_id_middleware(request: Request, call_next):
@@ -95,13 +95,13 @@ def create_app(pipeline=None) -> FastAPI:
         response.headers["X-Trace-ID"] = trace_id
         return response
 
-    # 鈹€鈹€ Health 鈹€鈹€
+    # ── Health ──
 
     @app.get("/health", response_model=HealthResponse)
     async def health():
         return HealthResponse(status="ok", version="0.1.0")
 
-    # 鈹€鈹€ Routers 鈹€鈹€
+    # ── Routers ──
     app.include_router(chat_router)
     app.include_router(session_router)
     app.include_router(memory_router)
