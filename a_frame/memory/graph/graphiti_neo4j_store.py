@@ -237,10 +237,21 @@ class GraphitiNeo4jStore:
 
     @staticmethod
     def entity_upsert_cypher() -> str:
+        # Paper §2.2.1: entity summary should accumulate across episodes.
+        # - New entity (e.summary IS NULL / ''): use $summary as-is.
+        # - Existing entity: keep the longer of old vs new summary to prevent
+        #   information loss from partial episode-local extractions.
+        #   Entity resolution already sees both summaries and returns a merged
+        #   one, so normally $summary is already the richest version.  The
+        #   size() guard is a safety net.
         return (
             "MERGE (e:Entity {entity_id: $entity_id}) "
             "SET e.name = $name, "
-            "    e.summary = $summary, "
+            "    e.summary = CASE "
+            "        WHEN $summary IS NULL OR $summary = '' THEN coalesce(e.summary, '') "
+            "        WHEN e.summary IS NULL OR e.summary = '' THEN $summary "
+            "        WHEN size($summary) >= size(e.summary) THEN $summary "
+            "        ELSE e.summary END, "
             "    e.aliases = $aliases, "
             "    e.type_label = $type_label, "
             "    e.embedding = $embedding, "
@@ -1540,6 +1551,46 @@ class GraphitiNeo4jStore:
                 k=int(limit),
             )
             return [dict(r) for r in rs]
+
+    # ──────────────────────────────────────
+    # Community member facts (for incremental summary updates — Paper §2.3)
+    # ──────────────────────────────────────
+
+    @staticmethod
+    def community_member_facts_cypher() -> str:
+        """Return fact texts among members of a given community.
+
+        Used to regenerate community summary after dynamic extension.
+        """
+        return (
+            "MATCH (e:Entity)-[:IN_COMMUNITY]->(c:Community {community_id: $community_id}) "
+            "WITH collect(e.entity_id) AS member_ids "
+            "MATCH (f:Fact) "
+            "WHERE f.subject_entity_id IN member_ids AND f.object_entity_id IN member_ids "
+            "  AND f.t_tx_expired IS NULL "
+            "RETURN coalesce(f.fact_text, '') AS fact_text "
+            "ORDER BY f.t_created DESC "
+            "LIMIT $limit"
+        )
+
+    def get_community_member_facts(
+        self, *, community_id: str, limit: int = 50
+    ) -> list[str]:
+        """Return fact texts for all facts whose endpoints are both in the community."""
+        community_id = str(community_id or "").strip()
+        if not community_id:
+            return []
+        with self._driver.session(database=self._database) as session:
+            rs = session.run(
+                self.community_member_facts_cypher(),
+                community_id=community_id,
+                limit=int(limit),
+            )
+            return [
+                str(r.get("fact_text") or "").strip()
+                for r in rs
+                if str(r.get("fact_text") or "").strip()
+            ]
 
     def close(self) -> None:
         self._driver.close()

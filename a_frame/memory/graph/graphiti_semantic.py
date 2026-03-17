@@ -21,6 +21,8 @@ from typing import Any
 from a_frame.embedder.base import BaseEmbedder
 from a_frame.llm.base import BaseLLM
 from a_frame.memory.graph.graphiti_prompts import (
+    COMMUNITY_SUMMARY_MAP_SYSTEM_PROMPT,
+    COMMUNITY_SUMMARY_REDUCE_SYSTEM_PROMPT,
     ENTITY_EXTRACTION_SYSTEM_PROMPT,
     ENTITY_EXTRACTION_TEXT_JSON_SYSTEM_PROMPT,
     ENTITY_REFLECTION_SYSTEM_PROMPT,
@@ -156,6 +158,63 @@ class GraphitiSemanticBuilder:
             {"role": "user", "content": user_content},
         ]
         return self.llm.generate(messages)
+
+    def _update_community_summary(self, community_id: str) -> None:
+        """Paper §2.3: update community summary after dynamic extension.
+
+        Fetches intra-community facts and runs map-reduce summarization
+        to regenerate the community name and summary, then re-embeds.
+        """
+        if not hasattr(self.store, "get_community_member_facts"):
+            return
+        if not hasattr(self.store, "upsert_community"):
+            return
+        facts = self.store.get_community_member_facts(
+            community_id=community_id, limit=50
+        )
+        if not facts:
+            return
+
+        # Map phase
+        chunk_size = 10
+        partials: list[str] = []
+        for i in range(0, len(facts), chunk_size):
+            chunk = facts[i : i + chunk_size]
+            prompt = COMMUNITY_SUMMARY_MAP_SYSTEM_PROMPT.format(
+                facts="\n".join(f"- {x}" for x in chunk)
+            )
+            raw = self._call_llm(system_prompt=prompt, user_content="Return JSON only.")
+            data = _safe_json_loads(raw)
+            if isinstance(data, dict) and str(data.get("summary") or "").strip():
+                partials.append(str(data["summary"]).strip())
+
+        # Reduce phase
+        reduce_prompt = COMMUNITY_SUMMARY_REDUCE_SYSTEM_PROMPT.format(
+            partial_summaries="\n".join(f"- {s}" for s in partials) if partials else ""
+        )
+        raw = self._call_llm(system_prompt=reduce_prompt, user_content="Return JSON only.")
+        data = _safe_json_loads(raw)
+        if not isinstance(data, dict):
+            return
+        name = str(data.get("name") or "").strip()
+        summary = str(data.get("summary") or "").strip()
+        if not summary:
+            return
+
+        # Re-embed community name (paper §2.3)
+        embedding = None
+        if name:
+            try:
+                embedding = self.embedder.embed_query(name)
+            except Exception:
+                pass
+
+        self.store.upsert_community(
+            community_id=community_id,
+            name=name,
+            summary=summary,
+            embedding=embedding,
+        )
 
     def _entity_id_from_name(self, name: str) -> str:
         return _sha1(name.strip().lower())
@@ -571,8 +630,11 @@ class GraphitiSemanticBuilder:
         """Validity interval overlap check.
 
         Treat missing *_to as open interval.
-        If either *_from is missing, we cannot determine overlap and return False.
-        If parsing fails, fall back to string compare (ISO-8601 lexical order).
+        Paper §2.2.3: when both facts lack t_valid_from they are
+        temporally indeterminate — treat as overlapping so that
+        semantic contradiction can still trigger invalidation.
+        If only one side has t_valid_from, we cannot determine
+        overlap and return False (conservative).
         """
 
         a_from_s = (a_from or "").strip()
@@ -580,6 +642,12 @@ class GraphitiSemanticBuilder:
         b_from_s = (b_from or "").strip()
         b_to_s = (b_to or "").strip()
 
+        # Both lack temporal info → indeterminate; assume overlap so
+        # contradiction-based invalidation can still proceed.
+        if not a_from_s and not b_from_s:
+            return True
+
+        # Only one side has temporal info → cannot determine overlap.
         if not a_from_s or not b_from_s:
             return False
 
@@ -683,7 +751,8 @@ class GraphitiSemanticBuilder:
         # 1.5) Ingestion-time community dynamic extension (paper §2.3)
         # "When the system adds a new entity node to the graph, it surveys the
         # communities of neighboring nodes. The system assigns the new node to the
-        # community held by the plurality of its neighbors."
+        # community held by the plurality of its neighbors, then updates the
+        # community summary and graph accordingly."
         if hasattr(self.store, "get_neighbor_communities") and hasattr(
             self.store, "link_entity_to_community"
         ):
@@ -698,6 +767,9 @@ class GraphitiSemanticBuilder:
                             self.store.link_entity_to_community(
                                 entity_id=r.entity_id, community_id=best_community_id
                             )
+                            # Paper §2.3: "then updates the community summary
+                            # and graph accordingly."
+                            self._update_community_summary(best_community_id)
                 except Exception:
                     # Best-effort; community assignment should not block entity ingestion.
                     continue

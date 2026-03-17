@@ -200,55 +200,58 @@ class ConsolidatorAgent(BaseAgent):
                 )
             self._graphiti_last_episode_ingested[session_id] = len(turns) - 1
 
-            # 0.2 只对“最新 user turn”做语义抽取（结合最近 n=4 上下文）
+            # 0.2 Paper §2.2: semantic extraction covers ALL turns
+            # (user + assistant), not just the latest user turn.
+            # Process every new turn since last semantic extraction.
             if self._graphiti_semantic_builder is not None:
-                latest_user_idx = None
-                for i in range(len(turns) - 1, -1, -1):
-                    if str((turns[i] or {}).get("role") or "") == "user":
-                        latest_user_idx = i
-                        break
+                last_semantic = self._graphiti_last_semantic.get(session_id, -1)
+                for turn_idx in range(last_semantic + 1, len(turns)):
+                    current_turn = turns[turn_idx] or {}
+                    role = str(current_turn.get("role") or "")
+                    content = str(current_turn.get("content") or "")
+                    if not role or not content:
+                        continue
+                    # Skip system messages — they carry no facts worth extracting.
+                    if role == "system":
+                        continue
+                    previous_turns = turns[max(0, turn_idx - 4) : turn_idx]
+                    episode_id = self._episode_id(
+                        session_id=session_id,
+                        turn_index=turn_idx,
+                        role=role,
+                        content=content,
+                    )
+                    reference_timestamp = str(current_turn.get("created_at") or now_iso)
+                    ep_type = str(current_turn.get("episode_type") or "message")
+                    built = self._graphiti_semantic_builder.ingest_user_turn(
+                        session_id=session_id,
+                        episode_id=episode_id,
+                        previous_turns=previous_turns,
+                        current_turn=current_turn,
+                        reference_timestamp=reference_timestamp,
+                        episode_type=ep_type,
+                    )
+                    graphiti_entities_added += int(built.get("entities_added", 0))
+                    graphiti_facts_added += int(built.get("facts_added", 0))
 
-                if latest_user_idx is not None:
-                    last_semantic = self._graphiti_last_user_semantic.get(session_id, -1)
-                    if latest_user_idx > last_semantic:
-                        current_turn = turns[latest_user_idx] or {}
-                        previous_turns = turns[max(0, latest_user_idx - 4) : latest_user_idx]
-                        episode_id = self._episode_id(
-                            session_id=session_id,
-                            turn_index=latest_user_idx,
-                            role=str(current_turn.get("role") or ""),
-                            content=str(current_turn.get("content") or ""),
-                        )
-                        reference_timestamp = str(current_turn.get("created_at") or now_iso)
-                        ep_type = str(current_turn.get("episode_type") or "message")
-                        built = self._graphiti_semantic_builder.ingest_user_turn(
-                            session_id=session_id,
-                            episode_id=episode_id,
-                            previous_turns=previous_turns,
-                            current_turn=current_turn,
-                            reference_timestamp=reference_timestamp,
-                            episode_type=ep_type,
-                        )
-                        graphiti_entities_added = int(built.get("entities_added", 0))
-                        graphiti_facts_added = int(built.get("facts_added", 0))
-                        self._graphiti_last_user_semantic[session_id] = latest_user_idx
+                if len(turns) > 0:
+                    self._graphiti_last_semantic[session_id] = len(turns) - 1
 
-                        strict = bool(getattr(self.graphiti_engine, "strict", False))
-                        if hasattr(self.graphiti_engine, "refresh_communities_for_session"):
-                            if strict:
+                    strict = bool(getattr(self.graphiti_engine, "strict", False))
+                    if hasattr(self.graphiti_engine, "refresh_communities_for_session"):
+                        if strict:
+                            self.graphiti_engine.refresh_communities_for_session(
+                                session_id=session_id,
+                                limit=50,
+                            )
+                        else:
+                            try:
                                 self.graphiti_engine.refresh_communities_for_session(
                                     session_id=session_id,
                                     limit=50,
                                 )
-                            else:
-                                # PR5 legacy behavior: best-effort refresh (do not block)
-                                try:
-                                    self.graphiti_engine.refresh_communities_for_session(
-                                        session_id=session_id,
-                                        limit=50,
-                                    )
-                                except Exception:
-                                    pass
+                            except Exception:
+                                pass
 
         # 格式化对话用于分析
         conversation_text = "\n".join(f"{t['role']}: {t['content']}" for t in turns)
