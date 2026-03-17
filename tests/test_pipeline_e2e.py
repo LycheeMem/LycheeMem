@@ -1,9 +1,7 @@
 """Pipeline E2E 测试。
 
 用 Fake LLM 和 Fake Embedder 完整跑通整个 LangGraph Pipeline。
-测试两条路径：
-1. 需要检索的分支 (router → search → synthesize → reason)
-2. 直接回答的分支 (router → reason)
+流水线拓扑：wm_manager → search → synthesize → reason
 """
 
 from a_frame.core.factory import create_pipeline
@@ -27,14 +25,6 @@ class FakeLLMForPipeline:
             elif m["role"] == "user":
                 user_msg += m["content"]
 
-        # 路由器
-        if "路由分析" in system_msg or "need_graph" in system_msg:
-            self.call_log.append("router")
-            # 根据用户查询决定路由
-            if "张三" in user_msg or "实体" in user_msg:
-                return '{"need_graph": true, "need_skills": false, "need_sensory": false, "reasoning": "实体查询"}'
-            return '{"need_graph": false, "need_skills": false, "need_sensory": false, "reasoning": "简单对话"}'
-
         # 整合器（放在压缩器之前，因为 SYNTHESIS_SYSTEM_PROMPT 包含 "压缩" 子串）
         if (
             "记忆整合与法官" in system_msg
@@ -50,9 +40,14 @@ class FakeLLMForPipeline:
             return "## Intent Mapping\n测试\n## Progress Assessment\n完成\n## Recent Commands Analysis\n无"
 
         # HyDE (检索协调器)
-        if "假设文档" in system_msg or "锚点文本" in system_msg:
+        if "HyDE" in system_msg or "假设性回答" in system_msg or "锚点文本" in system_msg:
             self.call_log.append("hyde")
             return "这是一个关于查询的假设回答"
+
+        # 检索规划
+        if "检索规划" in system_msg or "sub_queries" in system_msg:
+            self.call_log.append("planner")
+            return '{"sub_queries": [{"source": "graph", "query": "子查询"}], "reasoning": "test"}'
 
         # 固化器
         if "固化" in system_msg or "记忆巩固" in system_msg or "new_skills" in system_msg:
@@ -77,42 +72,42 @@ class FakeEmbedder:
         return [0.1] * 8
 
 
-class TestPipelineE2EDirectAnswer:
-    """测试直接回答路径：router 判断不需要检索 → 直接 reason。"""
+class TestPipelineE2E:
+    """测试完整 Pipeline 流程。"""
 
-    def test_simple_greeting(self):
+    def test_basic_response(self):
         llm = FakeLLMForPipeline()
         pipeline = create_pipeline(llm=llm, embedder=FakeEmbedder(), max_tokens=100_000)
 
         result = pipeline.run(user_query="你好", session_id="test-session-1")
 
-        # 验证有最终回复
         assert "final_response" in result
         assert len(result["final_response"]) > 0
-
-        # 验证路由决策为不检索
-        assert result["route"]["need_graph"] is False
-        assert result["route"]["need_skills"] is False
-
-        # 验证调用链：router → reasoner（无 search/synthesize）
-        assert "router" in llm.call_log
         assert "reasoner" in llm.call_log
-        assert "hyde" not in llm.call_log  # 未走检索分支
+
+    def test_always_searches(self):
+        """Pipeline 每次都走 search → synthesize → reason。"""
+        llm = FakeLLMForPipeline()
+        pipeline = create_pipeline(llm=llm, embedder=FakeEmbedder())
+
+        result = pipeline.run(user_query="你好", session_id="s1")
+
+        assert "retrieved_graph_memories" in result
+        assert "retrieved_skills" in result
+        assert "background_context" in result
+        assert "synthesizer" in llm.call_log
 
     def test_session_persistence(self):
         """测试多轮对话的会话持久化。"""
         llm = FakeLLMForPipeline()
         pipeline = create_pipeline(llm=llm, embedder=FakeEmbedder())
 
-        # 第一轮
         r1 = pipeline.run(user_query="你好", session_id="s1")
         assert r1["final_response"]
 
-        # 第二轮（同一session）
         r2 = pipeline.run(user_query="继续", session_id="s1")
         assert r2["final_response"]
 
-        # 验证会话日志中有多轮
         turns = pipeline.wm_manager.session_store.get_turns("s1")
         assert len(turns) >= 4  # 2轮 × (user + assistant)
 
@@ -130,14 +125,13 @@ class TestPipelineE2EDirectAnswer:
         assert len(turns_b) == 2
 
 
-class TestPipelineE2EWithRetrieval:
-    """测试需要检索的路径：router → search → synthesize → reason。"""
+class TestPipelineWithGraphData:
+    """测试图谱检索路径。"""
 
-    def test_entity_query_triggers_retrieval(self):
+    def test_graph_retrieval(self):
         llm = FakeLLMForPipeline()
         pipeline = create_pipeline(llm=llm, embedder=FakeEmbedder())
 
-        # 预填充图谱数据
         pipeline.search_coordinator.graph_store.add([{
             "subject": {"name": "张三", "label": "Person"},
             "predicate": "works_at",
@@ -146,34 +140,11 @@ class TestPipelineE2EWithRetrieval:
 
         result = pipeline.run(user_query="张三在哪里工作？", session_id="s-retrieval")
 
-        # 验证走了检索路径
-        assert result["route"]["need_graph"] is True
         assert "background_context" in result
         assert result["final_response"]
-
-        # 验证图谱检索结果非空（双向匹配：节点名 "张三" 出现在查询中）
         assert len(result.get("retrieved_graph_memories", [])) >= 1
-
-        # 验证调用链包含 router 和 reasoner
-        assert "router" in llm.call_log
         assert "synthesizer" in llm.call_log
         assert "reasoner" in llm.call_log
-
-
-class TestPipelineSensoryBuffer:
-    """测试感觉缓冲区的更新。"""
-
-    def test_user_input_pushed_to_sensory(self):
-        llm = FakeLLMForPipeline()
-        pipeline = create_pipeline(llm=llm, embedder=FakeEmbedder())
-
-        pipeline.run(user_query="第一条消息", session_id="sb-test")
-        pipeline.run(user_query="第二条消息", session_id="sb-test")
-
-        items = pipeline.sensory_buffer.get_recent()
-        assert len(items) == 2
-        assert items[0].content == "第一条消息"
-        assert items[1].content == "第二条消息"
 
 
 class TestPipelineConsolidation:
@@ -185,25 +156,24 @@ class TestPipelineConsolidation:
 
         result = pipeline.run(user_query="帮我做个任务", session_id="s-consolidate")
 
-        # consolidation_pending 应为 True
         assert result.get("consolidation_pending") is True
-        # 固化器应该被调用
         assert "consolidator" in llm.call_log
 
 
 class TestPipelineStateFields:
     """测试 Pipeline 返回的状态包含所有预期字段。"""
 
-    def test_direct_answer_state_fields(self):
+    def test_state_fields(self):
         llm = FakeLLMForPipeline()
         pipeline = create_pipeline(llm=llm, embedder=FakeEmbedder())
 
         result = pipeline.run(user_query="你好", session_id="s-fields")
 
-        # 必须包含的核心字段
         assert "user_query" in result
         assert "session_id" in result
         assert "compressed_history" in result
         assert "wm_token_usage" in result
-        assert "route" in result
+        assert "retrieved_graph_memories" in result
+        assert "retrieved_skills" in result
+        assert "background_context" in result
         assert "final_response" in result

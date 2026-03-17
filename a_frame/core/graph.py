@@ -4,9 +4,7 @@ LangGraph Pipeline 构建。
 定义节点和边，编译为可执行的状态图。
 
 流水线拓扑：
-  __start__ → wm_manager → router → (条件分支)
-                                       ├─ need_retrieval → search → synthesize → reason → __end__
-                                       └─ direct_answer  →                        reason → __end__
+  __start__ → wm_manager → search → synthesize → reason → __end__
 
 固化 Agent 不在主图中，在 reason 节点完成后通过 asyncio.create_task 异步触发。
 """
@@ -22,12 +20,10 @@ from langgraph.graph import StateGraph, START, END
 
 from a_frame.agents.consolidator_agent import ConsolidatorAgent
 from a_frame.agents.reasoning_agent import ReasoningAgent
-from a_frame.agents.router_agent import RouterAgent
 from a_frame.agents.search_coordinator import SearchCoordinator
 from a_frame.agents.synthesizer_agent import SynthesizerAgent
 from a_frame.agents.wm_manager import WMManager
 from a_frame.core.state import PipelineState
-from a_frame.memory.sensory.buffer import SensoryBuffer
 
 logger = logging.getLogger("a_frame.pipeline")
 
@@ -42,22 +38,19 @@ class AFramePipeline:
     def __init__(
         self,
         wm_manager: WMManager,
-        router: RouterAgent,
         search_coordinator: SearchCoordinator,
         synthesizer: SynthesizerAgent,
         reasoner: ReasoningAgent,
         consolidator: ConsolidatorAgent,
-        sensory_buffer: SensoryBuffer,
     ):
         self.wm_manager = wm_manager
-        self.router = router
         self.search_coordinator = search_coordinator
         self.synthesizer = synthesizer
         self.reasoner = reasoner
         self.consolidator = consolidator
-        self.sensory_buffer = sensory_buffer
 
         self._graph = self._build_graph()
+        self._last_consolidation: dict[str, Any] | None = None
 
     # ──────────────────────────────────────
     # Node functions
@@ -75,24 +68,14 @@ class AFramePipeline:
             "wm_token_usage": result["wm_token_usage"],
         }
 
-    def _router_node(self, state: PipelineState) -> dict[str, Any]:
-        """路由节点：分析意图，决定检索哪些记忆。"""
-        decision = self.router.run(
-            user_query=state["user_query"],
-            recent_turns=state.get("raw_recent_turns", []),
-        )
-        return {"route": decision}
-
     def _search_node(self, state: PipelineState) -> dict[str, Any]:
-        """检索协调节点：按路由决策从各记忆基质检索。"""
+        """检索协调节点：从图谱和技能库检索相关记忆。"""
         result = self.search_coordinator.run(
             user_query=state["user_query"],
-            route=state["route"],
         )
         return {
             "retrieved_graph_memories": result["retrieved_graph_memories"],
             "retrieved_skills": result["retrieved_skills"],
-            "retrieved_sensory": result["retrieved_sensory"],
         }
 
     def _synthesize_node(self, state: PipelineState) -> dict[str, Any]:
@@ -101,7 +84,6 @@ class AFramePipeline:
             user_query=state["user_query"],
             retrieved_graph_memories=state.get("retrieved_graph_memories", []),
             retrieved_skills=state.get("retrieved_skills", []),
-            retrieved_sensory=state.get("retrieved_sensory", []),
         )
         return {
             "background_context": result["background_context"],
@@ -123,26 +105,11 @@ class AFramePipeline:
             state["session_id"], result["final_response"]
         )
 
-        # 将用户输入推入感觉缓冲
-        self.sensory_buffer.push(state["user_query"])
-
         # 标记固化待处理
         return {
             "final_response": result["final_response"],
             "consolidation_pending": True,
         }
-
-    # ──────────────────────────────────────
-    # Routing logic
-    # ──────────────────────────────────────
-
-    @staticmethod
-    def _route_decision(state: PipelineState) -> str:
-        """条件边：根据路由结果决定走检索分支还是直接回答。"""
-        route = state.get("route", {})
-        if route.get("need_graph") or route.get("need_skills") or route.get("need_sensory"):
-            return "need_retrieval"
-        return "direct_answer"
 
     # ──────────────────────────────────────
     # Graph building
@@ -154,25 +121,13 @@ class AFramePipeline:
 
         # 注册节点
         g.add_node("wm_manager", self._wm_manager_node)
-        g.add_node("router", self._router_node)
         g.add_node("search", self._search_node)
         g.add_node("synthesize", self._synthesize_node)
         g.add_node("reason", self._reason_node)
 
-        # 连接边
+        # 线性连接
         g.add_edge(START, "wm_manager")
-        g.add_edge("wm_manager", "router")
-
-        # 条件分支
-        g.add_conditional_edges(
-            "router",
-            self._route_decision,
-            {
-                "need_retrieval": "search",
-                "direct_answer": "reason",
-            },
-        )
-
+        g.add_edge("wm_manager", "search")
         g.add_edge("search", "synthesize")
         g.add_edge("synthesize", "reason")
         g.add_edge("reason", END)
@@ -227,7 +182,7 @@ class AFramePipeline:
         """
         turns = self.wm_manager.session_store.get_turns(session_id)
         if turns:
-            return self.consolidator.run(turns=turns)
+            return self.consolidator.run(turns=turns, session_id=session_id)
         return {"entities_added": 0, "skills_added": 0}
 
     def _trigger_consolidation_bg(self, session_id: str) -> None:
@@ -242,9 +197,19 @@ class AFramePipeline:
     def _safe_consolidate(self, session_id: str) -> None:
         """安全执行固化，异常不影响主流程。"""
         try:
-            self.consolidate(session_id)
+            result = self.consolidate(session_id)
+            self._last_consolidation = {
+                "session_id": session_id,
+                "entities_added": result.get("entities_added", 0),
+                "skills_added": result.get("skills_added", 0),
+            }
         except Exception:
             logger.warning("固化失败 session=%s", session_id, exc_info=True)
+            self._last_consolidation = {
+                "session_id": session_id,
+                "entities_added": 0,
+                "skills_added": 0,
+            }
 
     async def _aconsolidate(self, session_id: str) -> None:
         """异步场景下的后台固化。"""
@@ -252,7 +217,7 @@ class AFramePipeline:
         if turns:
             # 在线程池中运行（因为 consolidator.run 是同步的）
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self.consolidator.run, turns)
+            await loop.run_in_executor(None, self.consolidator.run, turns, session_id)
 
     @property
     def graph(self):

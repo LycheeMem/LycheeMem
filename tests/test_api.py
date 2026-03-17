@@ -22,8 +22,10 @@ class FakeLLM:
             elif m["role"] == "user":
                 user_msg += m["content"]
 
-        if "路由分析" in system_msg or "need_graph" in system_msg:
-            return '{"need_graph": false, "need_skills": false, "need_sensory": false, "reasoning": "test"}'
+        if "HyDE" in system_msg or "假设性回答" in system_msg or "锚点文本" in system_msg:
+            return "假设性回答文本"
+        if "检索规划" in system_msg or "sub_queries" in system_msg:
+            return '{"sub_queries": [], "reasoning": "test"}'
         if (
             "记忆整合与法官" in system_msg
             or "Memory Synthesizer" in system_msg
@@ -301,7 +303,6 @@ class TestMemorySearch:
             "query": "test",
             "include_graph": True,
             "include_skills": False,
-            "include_sensory": False,
         })
         assert resp.status_code == 200
 
@@ -367,34 +368,6 @@ class TestGraphCRUD:
         graph_resp = client.get("/memory/graph")
         node_ids = [n["id"] for n in graph_resp.json()["nodes"]]
         assert "TempNode" not in node_ids
-
-
-# ─── Memory: Sensory ───
-
-
-class TestMemorySensory:
-    def test_empty_sensory(self):
-        client = _make_client()
-        resp = client.get("/memory/sensory")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["items"] == []
-        assert data["total"] == 0
-        assert data["max_size"] > 0
-
-    def test_sensory_after_chat(self):
-        """聊天后感觉缓冲区应有内容（pipeline 推送 sensory 输入）。"""
-        client = _make_client()
-        client.post("/chat/complete", json={"session_id": "s1", "message": "test"})
-        resp = client.get("/memory/sensory")
-        # 不强制断言有内容，仅确认端点正常工作
-        assert resp.status_code == 200
-
-    def test_clear_sensory(self):
-        client = _make_client()
-        resp = client.delete("/memory/sensory")
-        assert resp.status_code == 200
-        assert "cleared" in resp.json()["message"].lower()
 
 
 # ─── Memory: Skills Delete ───

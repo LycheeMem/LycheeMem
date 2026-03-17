@@ -25,7 +25,6 @@ from a_frame.core.factory import create_pipeline
 from a_frame.memory.graph.entity_extractor import EntityExtractor
 from a_frame.memory.graph.graph_store import NetworkXGraphStore
 from a_frame.memory.procedural.skill_store import InMemorySkillStore, SkillEntry
-from a_frame.memory.sensory.buffer import SensoryBuffer
 from a_frame.memory.working.compressor import WorkingMemoryCompressor
 from a_frame.memory.working.session_store import InMemorySessionStore
 
@@ -44,17 +43,15 @@ class FakeLLM:
             elif m["role"] == "user":
                 user_msg += m["content"]
 
-        if "路由分析" in system_msg or "need_graph" in system_msg:
-            return '{"need_graph": true, "need_skills": true, "need_sensory": false, "reasoning": "test"}'
+        if "HyDE" in system_msg or "假设文档" in system_msg or "锚点文本" in system_msg:
+            return "假设性回答文本"
         if "打分" in system_msg or "scored_fragments" in system_msg:
             return (
                 '{"scored_fragments": [{"source": "graph", "index": 0, "relevance": 0.95, "summary": "test"}],'
                 ' "kept_count": 1, "dropped_count": 0, "background_context": "整合上下文"}'
             )
-        if "检索规划" in system_msg:
+        if "检索规划" in system_msg or "sub_queries" in system_msg:
             return '{"sub_queries": [{"source": "graph", "query": "子查询1"}], "reasoning": "分解"}'
-        if "假设文档" in system_msg:
-            return "假设性回答文本"
         if "压缩" in system_msg or "状态交接" in system_msg:
             return "## Summary\ntest"
         if "固化" in system_msg or "new_skills" in system_msg:
@@ -212,7 +209,6 @@ class TestSkillReuse:
             llm=llm, embedder=embedder,
             graph_store=NetworkXGraphStore(),
             skill_store=store,
-            sensory_buffer=SensoryBuffer(),
             skill_reuse_threshold=0.5,  # 低阈值确保命中
         )
         results = sc._search_skills("test")
@@ -264,9 +260,8 @@ class TestStructuredRetrievalPlanning:
             llm=FakeLLM(), embedder=FakeEmbedder(),
             graph_store=NetworkXGraphStore(),
             skill_store=InMemorySkillStore(),
-            sensory_buffer=SensoryBuffer(),
         )
-        plan = sc._plan_retrieval("复杂查询", {"need_graph": True, "need_skills": True})
+        plan = sc._plan_retrieval("复杂查询")
         assert isinstance(plan, dict)
 
     def test_plan_retrieval_fallback_on_error(self):
@@ -278,34 +273,20 @@ class TestStructuredRetrievalPlanning:
             llm=BrokenLLM(), embedder=FakeEmbedder(),
             graph_store=NetworkXGraphStore(),
             skill_store=InMemorySkillStore(),
-            sensory_buffer=SensoryBuffer(),
         )
-        plan = sc._plan_retrieval("查询", {"need_graph": True})
+        plan = sc._plan_retrieval("查询")
         assert plan == {}
 
-    def test_multi_source_triggers_planning(self):
-        """多源检索应触发检索规划。"""
+    def test_run_returns_both_sources(self):
+        """run() 应同时返回图谱和技能检索结果。"""
         sc = SearchCoordinator(
             llm=FakeLLM(), embedder=FakeEmbedder(),
             graph_store=NetworkXGraphStore(),
             skill_store=InMemorySkillStore(),
-            sensory_buffer=SensoryBuffer(),
         )
-        result = sc.run("复杂查询", route={"need_graph": True, "need_skills": True, "need_sensory": True})
+        result = sc.run("复杂查询")
         assert "retrieved_graph_memories" in result
         assert "retrieved_skills" in result
-        assert "retrieved_sensory" in result
-
-    def test_single_source_skips_planning(self):
-        """单源检索不需要规划。"""
-        sc = SearchCoordinator(
-            llm=FakeLLM(), embedder=FakeEmbedder(),
-            graph_store=NetworkXGraphStore(),
-            skill_store=InMemorySkillStore(),
-            sensory_buffer=SensoryBuffer(),
-        )
-        result = sc.run("简单查询", route={"need_graph": True, "need_skills": False, "need_sensory": False})
-        assert "retrieved_graph_memories" in result
 
 
 # ═══════════════════════════════════════
@@ -610,7 +591,6 @@ class TestOperationalAPI:
         assert data["graph_edge_count"] >= 1
         assert "session_count" in data
         assert "skill_count" in data
-        assert "sensory_buffer_size" in data
 
     def test_session_summary_has_new_fields(self):
         """会话列表条目应包含 topic, tags, created_at。"""

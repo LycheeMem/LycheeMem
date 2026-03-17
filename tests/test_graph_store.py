@@ -28,3 +28,11 @@ class TestGraphStore:
         store.add(sample_triples)
         all_nodes = store.get_all()
         assert len(all_nodes) >= 3  # 张三, Google, 北京
+
+    def test_edges_store_fact(self, sample_triples):
+        store = NetworkXGraphStore()
+        store.add(sample_triples)
+        edges = store.get_all_edges()
+        assert edges
+        # 每条边都应有可读事实
+        assert all(e.get("fact") for e in edges)

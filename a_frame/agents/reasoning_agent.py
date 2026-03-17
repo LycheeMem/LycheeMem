@@ -69,6 +69,8 @@ class ReasoningAgent(BaseAgent):
             skill_plan_section=skill_plan_section,
         )
 
+        system_prompt = self._append_time_basis(system_prompt)
+
         # 构建完整消息列表
         messages = [{"role": "system", "content": system_prompt}]
 

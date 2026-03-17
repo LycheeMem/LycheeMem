@@ -125,6 +125,7 @@ class ConsolidatorAgent(BaseAgent):
     def run(
         self,
         turns: list[dict[str, str]],
+        session_id: str | None = None,
         **kwargs,
     ) -> dict[str, Any]:
         """分析对话并固化到长期记忆。
@@ -144,7 +145,11 @@ class ConsolidatorAgent(BaseAgent):
         )
 
         # 1. 用 LLM 分析对话，判断是否有新技能和是否需要实体抽取
-        response = self._call_llm(conversation_text, system_content=self.prompt_template)
+        response = self._call_llm(
+            conversation_text,
+            system_content=self.prompt_template,
+            add_time_basis=True,
+        )
         analysis = self._safe_parse(response)
 
         entities_added = 0
@@ -152,7 +157,10 @@ class ConsolidatorAgent(BaseAgent):
 
         # 2. 实体抽取 → 更新图谱
         if analysis.get("should_extract_entities", False):
-            triples = self.entity_extractor.extract_from_turns(turns)
+            triples = self.entity_extractor.extract_from_turns(
+                turns,
+                source_session=session_id or "",
+            )
             if triples:
                 self.graph_store.add(triples)
                 entities_added = len(triples)

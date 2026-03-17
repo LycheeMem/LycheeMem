@@ -38,7 +38,7 @@ class TestSynthesizerAgent:
         synth = SynthesizerAgent(llm=FakeLLMBroken())
         result = synth.run(
             user_query="测试",
-            retrieved_sensory=[{"content": "感觉数据", "modality": "text", "timestamp": "2026-01-01"}],
+            retrieved_skills=[{"intent": "测试技能", "doc_markdown": "# 测试\n", "reusable": False}],
         )
         # 应该 fallback 到原始 LLM 输出
         assert "background_context" in result
@@ -48,7 +48,6 @@ class TestSynthesizerAgent:
         fragments = SynthesizerAgent._format_fragments(
             graph_memories=[],
             skills=[{"intent": "写爬虫", "doc_markdown": "# 写爬虫\n\n1. GET\n"}],
-            sensory=[],
         )
         assert "[技能库]" in fragments
         assert "写爬虫" in fragments
@@ -60,8 +59,25 @@ class TestSynthesizerAgent:
                 "subgraph": {"nodes": [], "edges": [{"source": "A", "target": "B", "relation": "r"}]},
             }],
             skills=[{"intent": "t", "doc_markdown": "# t\n"}],
-            sensory=[{"content": "s", "modality": "text", "timestamp": "now"}],
         )
         assert "[知识图谱]" in fragments
         assert "[技能库]" in fragments
-        assert "[感觉记忆]" in fragments
+
+    def test_format_graph_edges_include_fact(self):
+        fragments = SynthesizerAgent._format_fragments(
+            graph_memories=[{
+                "anchor": {"node_id": "张三"},
+                "subgraph": {
+                    "nodes": [],
+                    "edges": [{
+                        "source": "张三",
+                        "target": "Google",
+                        "relation": "works_at",
+                        "fact": "张三在 Google 工作",
+                        "evidence": "user: 张三在哪工作？ assistant: 张三在 Google 工作",
+                    }],
+                },
+            }],
+            skills=[],
+        )
+        assert "事实: 张三在 Google 工作" in fragments

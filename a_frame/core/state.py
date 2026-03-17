@@ -9,14 +9,6 @@ from __future__ import annotations
 from typing import Any, TypedDict
 
 
-class RouteDecision(TypedDict):
-    """路由器的输出结构。"""
-    need_graph: bool
-    need_skills: bool
-    need_sensory: bool
-    reasoning: str
-
-
 class PipelineState(TypedDict, total=False):
     """LangGraph 全局状态。
 
@@ -31,13 +23,9 @@ class PipelineState(TypedDict, total=False):
     raw_recent_turns: list[dict[str, str]]     # 最近 N 轮原始对话
     wm_token_usage: int                         # 当前 token 占用
 
-    # ─── 路由器输出 ───
-    route: RouteDecision
-
     # ─── 检索协调器输出 ───
     retrieved_graph_memories: list[dict[str, Any]]
     retrieved_skills: list[dict[str, Any]]
-    retrieved_sensory: list[dict[str, Any]]
 
     # ─── 整合器输出 ───
     background_context: str   # 融合后的上下文注入字符串

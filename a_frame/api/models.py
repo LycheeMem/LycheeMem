@@ -16,13 +16,74 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=100_000)
 
 
+class WMManagerTrace(BaseModel):
+    wm_token_usage: int = 0
+    compressed_turn_count: int = 0
+    raw_recent_turn_count: int = 0
+    compression_happened: bool = False
+
+
+class GraphMemoryHit(BaseModel):
+    node_id: str = ""
+    name: str = ""
+    label: str = ""
+    score: float = 0.0
+    neighbor_count: int = 0
+
+
+class SkillHit(BaseModel):
+    skill_id: str = ""
+    intent: str = ""
+    score: float = 0.0
+    reusable: bool = False
+
+
+class SearchCoordinatorTrace(BaseModel):
+    graph_memories: list[GraphMemoryHit] = []
+    skills: list[SkillHit] = []
+    total_retrieved: int = 0
+
+
+class ProvenanceItem(BaseModel):
+    source: str = ""
+    index: int = 0
+    relevance: float = 0.0
+    summary: str = ""
+
+
+class SynthesizerTrace(BaseModel):
+    background_context: str = ""
+    provenance: list[ProvenanceItem] = []
+    skill_reuse_plan: list[dict[str, Any]] = []
+    kept_count: int = 0
+    dropped_count: int = 0
+
+
+class ReasonerTrace(BaseModel):
+    response_length: int = 0
+
+
+class ConsolidatorTrace(BaseModel):
+    status: str = "pending"
+    entities_added: int = 0
+    skills_added: int = 0
+
+
+class PipelineTrace(BaseModel):
+    wm_manager: WMManagerTrace = WMManagerTrace()
+    search_coordinator: SearchCoordinatorTrace = SearchCoordinatorTrace()
+    synthesizer: SynthesizerTrace = SynthesizerTrace()
+    reasoner: ReasonerTrace = ReasonerTrace()
+    consolidator: ConsolidatorTrace = ConsolidatorTrace()
+
+
 class ChatResponse(BaseModel):
     """对话响应。"""
     session_id: str
     response: str
-    route: dict[str, Any] | None = None
     memories_retrieved: int = 0
     wm_token_usage: int = 0
+    trace: PipelineTrace | None = None
 
 
 # ─── Memory ───
@@ -99,14 +160,12 @@ class MemorySearchRequest(BaseModel):
     top_k: int = Field(default=5, ge=1, le=50)
     include_graph: bool = True
     include_skills: bool = True
-    include_sensory: bool = True
 
 
 class MemorySearchResponse(BaseModel):
     query: str
     graph_results: list[dict[str, Any]]
     skill_results: list[dict[str, Any]]
-    sensory_results: list[dict[str, Any]]
     total: int
 
 
@@ -125,14 +184,6 @@ class GraphEdgeAddRequest(BaseModel):
     properties: dict[str, Any] = {}
 
 
-# ─── Sensory ───
-
-class SensoryResponse(BaseModel):
-    items: list[dict[str, Any]]
-    total: int
-    max_size: int
-
-
 # ─── Health ───
 
 
@@ -149,4 +200,3 @@ class PipelineStatusResponse(BaseModel):
     graph_node_count: int
     graph_edge_count: int
     skill_count: int
-    sensory_buffer_size: int

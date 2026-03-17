@@ -15,8 +15,6 @@ FastAPI 服务器。
 - POST /memory/search          — 统一记忆检索
 - GET  /memory/skills          — 查看技能库
 - DELETE /memory/skills/{skill_id} — 删除技能
-- GET  /memory/sensory         — 感觉缓冲区
-- DELETE /memory/sensory       — 清空感觉缓冲区
 - GET  /memory/session/{session_id} — 查看会话
 - DELETE /memory/session/{session_id} — 删除会话
 - GET  /health                 — 健康检查
@@ -38,20 +36,28 @@ from fastapi.staticfiles import StaticFiles
 from a_frame.api.models import (
     ChatRequest,
     ChatResponse,
+    ConsolidatorTrace,
     DeleteResponse,
     GraphEdgeAddRequest,
+    GraphMemoryHit,
     GraphNodeAddRequest,
     GraphResponse,
     HealthResponse,
     MemorySearchRequest,
     MemorySearchResponse,
     PipelineStatusResponse,
-    SensoryResponse,
+    PipelineTrace,
+    ProvenanceItem,
+    ReasonerTrace,
+    SearchCoordinatorTrace,
     SessionListResponse,
     SessionResponse,
     SessionSummary,
     SessionUpdateRequest,
+    SkillHit,
     SkillsResponse,
+    SynthesizerTrace,
+    WMManagerTrace,
 )
 
 logger = logging.getLogger("a_frame.api")
@@ -131,8 +137,8 @@ def create_app(pipeline=None) -> FastAPI:
         """SSE 流式对话。
 
         流式 chunk 格式 (Server-Sent Events):
-          data: {"type": "status", "content": "routing..."}
-          data: {"type": "status", "content": "searching..."}
+          data: {"type": "status", "content": "processing"}
+          data: {"type": "status", "content": "retrieved"}
           data: {"type": "answer", "content": "最终回答文本"}
           data: {"type": "done", "session_id": "...", "memories_retrieved": 0}
         """
@@ -143,8 +149,11 @@ def create_app(pipeline=None) -> FastAPI:
 
             result = pipeline.run(user_query=req.message, session_id=req.session_id)
 
-            route = result.get("route", {})
-            if route.get("need_graph") or route.get("need_skills") or route.get("need_sensory"):
+            memories = (
+                len(result.get("retrieved_graph_memories", []))
+                + len(result.get("retrieved_skills", []))
+            )
+            if memories:
                 yield _sse({"type": "status", "content": "retrieved"})
 
             yield _sse({
@@ -152,16 +161,13 @@ def create_app(pipeline=None) -> FastAPI:
                 "content": result.get("final_response", ""),
             })
 
-            memories = (
-                len(result.get("retrieved_graph_memories", []))
-                + len(result.get("retrieved_skills", []))
-                + len(result.get("retrieved_sensory", []))
-            )
+            trace = _build_trace(result)
             yield _sse({
                 "type": "done",
                 "session_id": req.session_id,
                 "memories_retrieved": memories,
                 "wm_token_usage": result.get("wm_token_usage", 0),
+                "trace": trace.model_dump(),
             })
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -184,7 +190,7 @@ def create_app(pipeline=None) -> FastAPI:
 
     @app.post("/memory/search", response_model=MemorySearchResponse)
     async def memory_search(req: MemorySearchRequest):
-        """统一记忆检索：同时查询图谱、技能库和感觉缓冲。"""
+        """统一记忆检索：同时查询图谱和技能库。"""
         pipeline = _get_pipeline(app)
         sc = pipeline.search_coordinator
 
@@ -199,20 +205,11 @@ def create_app(pipeline=None) -> FastAPI:
                 req.query, top_k=req.top_k, query_embedding=q_emb
             )
 
-        sensory_results: list[dict[str, Any]] = []
-        if req.include_sensory:
-            items = sc.sensory_buffer.get_recent(req.top_k)
-            sensory_results = [
-                {"content": i.content, "modality": i.modality, "timestamp": i.timestamp}
-                for i in items
-            ]
-
-        total = len(graph_results) + len(skill_results) + len(sensory_results)
+        total = len(graph_results) + len(skill_results)
         return MemorySearchResponse(
             query=req.query,
             graph_results=graph_results,
             skill_results=skill_results,
-            sensory_results=sensory_results,
             total=total,
         )
 
@@ -239,8 +236,14 @@ def create_app(pipeline=None) -> FastAPI:
     ):
         """按关键词搜索图谱节点，返回处国子图。"""
         pipeline = _get_pipeline(app)
-        graph_store = pipeline.search_coordinator.graph_store
-        matched_nodes = graph_store.search(q, top_k=top_k)
+        sc = pipeline.search_coordinator
+        graph_store = sc.graph_store
+        query_embedding = None
+        try:
+            query_embedding = sc.embedder.embed_query(q)
+        except Exception:
+            query_embedding = None
+        matched_nodes = graph_store.search(q, top_k=top_k, query_embedding=query_embedding)
         node_ids = {n["node_id"] for n in matched_nodes}
         if hasattr(graph_store, "get_all_edges"):
             all_edges = graph_store.get_all_edges()
@@ -293,26 +296,6 @@ def create_app(pipeline=None) -> FastAPI:
         skill_store = pipeline.search_coordinator.skill_store
         skill_store.delete([skill_id])
         return DeleteResponse(message=f"Skill '{skill_id}' deleted.")
-
-    # ── Memory: Sensory ──
-
-    @app.get("/memory/sensory", response_model=SensoryResponse)
-    async def get_sensory():
-        """查看当前感觉记忆缓冲区内容。"""
-        pipeline = _get_pipeline(app)
-        buf = pipeline.search_coordinator.sensory_buffer
-        items = [
-            {"content": i.content, "modality": i.modality, "timestamp": i.timestamp}
-            for i in buf.get_recent()
-        ]
-        return SensoryResponse(items=items, total=len(items), max_size=buf.max_size)
-
-    @app.delete("/memory/sensory", response_model=DeleteResponse)
-    async def clear_sensory():
-        """清空感觉记忆缓冲区。"""
-        pipeline = _get_pipeline(app)
-        pipeline.search_coordinator.sensory_buffer.clear()
-        return DeleteResponse(message="Sensory buffer cleared.")
 
     # ── Memory: Session ──
 
@@ -398,13 +381,11 @@ def create_app(pipeline=None) -> FastAPI:
         pipeline = _get_pipeline(app)
         gs = pipeline.search_coordinator.graph_store
         ss = pipeline.search_coordinator.skill_store
-        sb = pipeline.search_coordinator.sensory_buffer
         ws = pipeline.wm_manager.session_store
 
         node_count = len(gs.get_all())
         edge_count = len(gs.get_all_edges()) if hasattr(gs, "get_all_edges") else 0
         skill_count = len(ss.get_all())
-        sensory_size = len(sb.get_recent())
         session_count = len(ws.list_sessions())
 
         return PipelineStatusResponse(
@@ -412,8 +393,18 @@ def create_app(pipeline=None) -> FastAPI:
             graph_node_count=node_count,
             graph_edge_count=edge_count,
             skill_count=skill_count,
-            sensory_buffer_size=sensory_size,
         )
+
+    # ── Pipeline: Last Consolidation ──
+
+    @app.get("/pipeline/last-consolidation")
+    async def last_consolidation():
+        """返回最近一次固化的结果（供前端轮询）。"""
+        pipeline = _get_pipeline(app)
+        result = getattr(pipeline, "_last_consolidation", None)
+        if result is None:
+            return {"status": "pending"}
+        return {"status": "done", **result}
 
     return app
 
@@ -434,14 +425,90 @@ def _build_chat_response(session_id: str, result: dict[str, Any]) -> ChatRespons
     memories = (
         len(result.get("retrieved_graph_memories", []))
         + len(result.get("retrieved_skills", []))
-        + len(result.get("retrieved_sensory", []))
     )
     return ChatResponse(
         session_id=session_id,
         response=result.get("final_response", ""),
-        route=result.get("route"),
         memories_retrieved=memories,
         wm_token_usage=result.get("wm_token_usage", 0),
+        trace=_build_trace(result),
+    )
+
+
+def _build_trace(result: dict[str, Any]) -> PipelineTrace:
+    """从完整的 PipelineState dict 中提取结构化的 Pipeline 追踪信息。"""
+    # WM Manager
+    compressed_history = result.get("compressed_history", [])
+    raw_recent_turns = result.get("raw_recent_turns", [])
+    has_summary = any(t.get("role") == "system" for t in compressed_history)
+    wm = WMManagerTrace(
+        wm_token_usage=result.get("wm_token_usage", 0),
+        compressed_turn_count=len(compressed_history),
+        raw_recent_turn_count=len(raw_recent_turns),
+        compression_happened=has_summary,
+    )
+
+    # Search Coordinator
+    graph_mems = result.get("retrieved_graph_memories", [])
+    skills = result.get("retrieved_skills", [])
+    graph_hits = []
+    for mem in graph_mems:
+        anchor = mem.get("anchor", mem)
+        subgraph = mem.get("subgraph", {})
+        neighbor_count = len(subgraph.get("nodes", [])) + len(subgraph.get("edges", []))
+        props = anchor.get("properties", {})
+        graph_hits.append(GraphMemoryHit(
+            node_id=str(anchor.get("node_id", anchor.get("id", ""))),
+            name=str(props.get("name", anchor.get("name", ""))),
+            label=str(anchor.get("label", props.get("label", ""))),
+            score=float(anchor.get("score", 0.0)),
+            neighbor_count=neighbor_count,
+        ))
+    skill_hits = []
+    for sk in skills:
+        skill_hits.append(SkillHit(
+            skill_id=str(sk.get("id", sk.get("skill_id", ""))),
+            intent=str(sk.get("intent", "")),
+            score=float(sk.get("score", 0.0)),
+            reusable=bool(sk.get("reusable", False)),
+        ))
+    search = SearchCoordinatorTrace(
+        graph_memories=graph_hits,
+        skills=skill_hits,
+        total_retrieved=len(graph_hits) + len(skill_hits),
+    )
+
+    # Synthesizer
+    provenance_raw = result.get("provenance", [])
+    provenance = [
+        ProvenanceItem(
+            source=str(p.get("source", "")),
+            index=int(p.get("index", 0)),
+            relevance=float(p.get("relevance", 0.0)),
+            summary=str(p.get("summary", "")),
+        )
+        for p in provenance_raw
+    ]
+    synth = SynthesizerTrace(
+        background_context=str(result.get("background_context", "")),
+        provenance=provenance,
+        skill_reuse_plan=result.get("skill_reuse_plan", []),
+        kept_count=len(provenance),
+    )
+
+    # Reasoner
+    final_response = result.get("final_response", "")
+    reasoner = ReasonerTrace(response_length=len(final_response))
+
+    # Consolidator (always pending at response time)
+    consolidator = ConsolidatorTrace(status="pending")
+
+    return PipelineTrace(
+        wm_manager=wm,
+        search_coordinator=search,
+        synthesizer=synth,
+        reasoner=reasoner,
+        consolidator=consolidator,
     )
 
 

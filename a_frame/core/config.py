@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     neo4j_user: str = "neo4j"
     neo4j_password: str = "Lejda-EpJh266.k"
 
+    # ─── Graph Semantic (向量检索 / 同义合并) ───
+    graph_semantic_search: bool = True
+    graph_semantic_merge: bool = True
+    graph_semantic_merge_threshold: float = 0.88
+    graph_semantic_search_threshold: float = 0.55
+    graph_semantic_scan_limit: int = 5000
+
     # ─── LanceDB (向量持久化) ───
     lancedb_path: str = "a_frame_lancedb"
 

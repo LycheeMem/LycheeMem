@@ -70,7 +70,7 @@ def main():
     print("  http://localhost:8000/demo")
     print("=" * 52 + "\n")
 
-    uvicorn.run(app, host="0.0.0.0", port=8010, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
 
 
 if __name__ == "__main__":

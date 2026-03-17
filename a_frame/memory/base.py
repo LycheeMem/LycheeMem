@@ -12,8 +12,19 @@ class BaseMemoryStore(ABC):
         """写入记忆条目。"""
 
     @abstractmethod
-    def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
-        """检索记忆。"""
+    def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        query_embedding: list[float] | None = None,
+    ) -> list[dict[str, Any]]:
+        """检索记忆。
+
+        Args:
+            query: 查询文本。
+            top_k: 返回条数上限。
+            query_embedding: 可选的查询向量；当存储支持向量检索时应优先使用。
+        """
 
     @abstractmethod
     def delete(self, ids: list[str]) -> None:

@@ -1,15 +1,15 @@
 /* ═══════════════════════════════════════════════════
-   A-Frame Console — Dark Glassmorphism Theme
+   A-Frame Console — Light Theme
    Inspired by supermemory Console
    ═══════════════════════════════════════════════════ */
 
 :root {
   /* ── Background Layers ── */
-  --bg-deepest:   #060a10;
-  --bg-dark:      #0b1017;
-  --bg-surface:   #111827;
-  --bg-card:      #151c28;
-  --bg-hover:     rgba(99, 102, 241, 0.08);
+  --bg-deepest:   #f7fafc;
+  --bg-dark:      #ffffff;
+  --bg-surface:   #ffffff;
+  --bg-card:      #ffffff;
+  --bg-hover:     rgba(15, 23, 42, 0.06);
   --bg-active:    rgba(99, 102, 241, 0.14);
 
   /* ── Accent ── */
@@ -23,19 +23,19 @@
   --purple:       #8b5cf6;
 
   /* ── Text ── */
-  --text-primary:   #f1f5f9;
-  --text-secondary: #94a3b8;
+  --text-primary:   #0f172a;
+  --text-secondary: #475569;
   --text-muted:     #64748b;
 
   /* ── Borders ── */
-  --border:       rgba(148, 163, 184, 0.1);
-  --border-light: rgba(148, 163, 184, 0.18);
+  --border:       rgba(15, 23, 42, 0.12);
+  --border-light: rgba(15, 23, 42, 0.08);
 
   /* ── Misc ── */
   --radius:  12px;
   --radius-sm: 8px;
   --radius-xs: 6px;
-  --shadow:  0 4px 24px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.04);
+  --shadow:  0 4px 24px rgba(15, 23, 42, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.8);
   --font:    'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --transition: 200ms ease;
 }
@@ -72,6 +72,10 @@ html, body {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+.logo img {
+  height: 28px;
+  width: auto;
 }
 .logo-text {
   font-size: 16px;
@@ -205,9 +209,9 @@ html, body {
 
 .msg-user {
   align-self: flex-end;
-  background: linear-gradient(135deg, #312e81, #1e1b4b);
+  background: linear-gradient(135deg, #4f46e5, #818cf8);
   border: 1px solid rgba(99, 102, 241, 0.3);
-  color: #e0e7ff;
+  color: #f8fafc;
 }
 
 .msg-assistant {
@@ -330,7 +334,7 @@ html, body {
   position: absolute;
   pointer-events: none;
   padding: 8px 12px;
-  background: rgba(15, 23, 42, 0.95);
+  background: rgba(255, 255, 255, 0.95);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-xs);
   font-size: 11px;
@@ -338,7 +342,7 @@ html, body {
   max-width: 240px;
   z-index: 10;
   backdrop-filter: blur(8px);
-  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
 }
 .graph-tooltip.hidden { display: none; }
 
@@ -568,6 +572,12 @@ html, body {
 .memory-item.retrieved {
   border-left: 3px solid var(--accent);
   animation: memHighlight 0.6s ease;
+}
+
+/* ─── Graph Edge Detail / Active Edge ─── */
+.edge-detail.hidden { display: none; }
+.memory-item.edge-active {
+  border-left: 3px solid var(--cyan);
 }
 
 @keyframes memHighlight {

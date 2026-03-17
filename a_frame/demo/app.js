@@ -93,6 +93,10 @@ function initTabs() {
       document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
       btn.classList.add("active");
       document.getElementById(btn.dataset.tab).classList.add("active");
+
+      if (btn.dataset.tab === "tab-graph-mem") {
+        setGraphEdgeDetail(hoveredEdge, selectedEdge ? "selected" : "hover");
+      }
     });
   });
 }
@@ -141,8 +145,8 @@ async function sendMessage(text) {
   // Best-effort status UI (API is non-streaming here)
   setAgentStatus("wm_manager", "running");
   updateTimeline("wm_manager", "running");
-  setAgentStatus("router", "running");
-  updateTimeline("router", "running");
+  setAgentStatus("search_coordinator", "running");
+  updateTimeline("search_coordinator", "running");
   setAgentStatus("reasoner", "running");
   updateTimeline("reasoner", "running");
 
@@ -161,9 +165,6 @@ async function sendMessage(text) {
     hideTyping();
 
     // Route + WM token usage
-    if (data.route) {
-      showRouteInfo(data.route);
-    }
     state.wmTokenUsage = data.wm_token_usage || 0;
     updateWMProgress();
 
@@ -181,15 +182,10 @@ async function sendMessage(text) {
     // Mark pipeline steps as done
     setAgentStatus("wm_manager", "done");
     updateTimeline("wm_manager", "done");
-    setAgentStatus("router", "done");
-    updateTimeline("router", "done");
-    const needRetrieval = Boolean(data?.route?.need_graph || data?.route?.need_skills || data?.route?.need_sensory);
-    if (needRetrieval) {
-      setAgentStatus("search_coordinator", "done");
-      updateTimeline("search_coordinator", "done");
-      setAgentStatus("synthesizer", "done");
-      updateTimeline("synthesizer", "done");
-    }
+    setAgentStatus("search_coordinator", "done");
+    updateTimeline("search_coordinator", "done");
+    setAgentStatus("synthesizer", "done");
+    updateTimeline("synthesizer", "done");
     setAgentStatus("reasoner", "done");
     updateTimeline("reasoner", "done");
     setTimeout(() => setAgentStatus("consolidator", "done"), 1000);
@@ -216,9 +212,6 @@ function handleSSEEvent(evt) {
     case "agent":
       setAgentStatus(evt.agent, evt.status);
       updateTimeline(evt.agent, evt.status);
-      if (evt.agent === "router" && evt.data) {
-        showRouteInfo(evt.data);
-      }
       if (evt.agent === "wm_manager" && evt.data) {
         state.wmTokenUsage = evt.data.wm_token_usage || 0;
         updateWMProgress();
@@ -331,37 +324,15 @@ function setAgentStatus(name, status) {
 }
 
 function resetAgents() {
-  ["wm_manager", "router", "search_coordinator", "synthesizer", "reasoner", "consolidator"].forEach(a => {
+  ["wm_manager", "search_coordinator", "synthesizer", "reasoner", "consolidator"].forEach(a => {
     setAgentStatus(a, "idle");
   });
-  document.getElementById("route-info").classList.add("hidden");
-}
-
-function showRouteInfo(routeData) {
-  const el = document.getElementById("route-info");
-  el.classList.remove("hidden");
-
-  const detail = document.getElementById("route-detail");
-  const reasoning = routeData.reasoning || "";
-  const flags = [
-    { key: "need_graph", label: "📊 图谱", on: routeData.need_graph },
-    { key: "need_skills", label: "⚡ 技能", on: routeData.need_skills },
-    { key: "need_sensory", label: "👁 感觉", on: routeData.need_sensory },
-  ];
-
-  detail.innerHTML = `
-    ${reasoning ? `<div style="margin-bottom:6px;">${escapeHtml(reasoning)}</div>` : ""}
-    <div class="route-flags">
-      ${flags.map(f => `<span class="route-flag ${f.on ? 'on' : 'off'}">${f.label}</span>`).join("")}
-    </div>
-  `;
 }
 
 // ═══ TIMELINE ═══
-const PIPELINE_STEPS = ["wm_manager", "router", "search_coordinator", "synthesizer", "reasoner"];
+const PIPELINE_STEPS = ["wm_manager", "search_coordinator", "synthesizer", "reasoner"];
 const STEP_LABELS = {
   wm_manager: "工作记忆",
-  router: "路由",
   search_coordinator: "检索",
   synthesizer: "合成",
   reasoner: "推理",
@@ -421,44 +392,98 @@ function showRetrievedMemories(evt) {
   if (evt.skills && evt.skills.length > 0) {
     renderSkills(evt.skills, true);
   }
-  if (evt.sensory && evt.sensory.length > 0) {
-    renderSensory(evt.sensory, true);
-  }
 }
 
 // ═══ MEMORY PANELS ═══
 async function loadAllMemory() {
-  await Promise.all([loadGraphMemory(), loadSkills(), loadSensory()]);
+  await Promise.all([loadGraphMemory(), loadSkills()]);
 }
 
 async function loadGraphMemory() {
   try {
     const r = await fetch(`${API}/memory/graph`);
     const data = await r.json();
-    const nodes = data.nodes || [];
-    renderGraphMemory(nodes.slice(0, 50));
+    const edges = data.edges || [];
+    edges.sort((a, b) => String(b.timestamp || "").localeCompare(String(a.timestamp || "")));
+    renderGraphMemory(edges.slice(0, 80));
   } catch (_) { /* ignore */ }
 }
 
-function renderGraphMemory(nodes, retrieved = false) {
+function normalizeGraphEdges(graph) {
+  if (!Array.isArray(graph)) return [];
+  if (!graph.length) return [];
+  // Case 1: already edge list
+  if (graph[0] && graph[0].source && graph[0].target) return graph;
+  // Case 2: retrieved_graph_memories style: [{anchor, subgraph:{nodes,edges}}]
+  const edges = [];
+  for (const item of graph) {
+    const es = item?.subgraph?.edges;
+    if (Array.isArray(es)) edges.push(...es);
+  }
+  return edges;
+}
+
+function renderGraphMemory(edges, retrieved = false) {
   const container = document.getElementById("graph-mem-list");
   container.innerHTML = "";
-  if (!nodes.length) {
-    container.innerHTML = '<div class="empty-hint">暂无图谱记忆</div>';
+  const es = normalizeGraphEdges(edges);
+  if (!es.length) {
+    ensureGraphEdgeDetail();
+    container.innerHTML = '<div class="empty-hint">暂无图谱事实边</div>';
     return;
   }
-  nodes.forEach(n => {
+
+  const nodeById = new Map((state.graphData.nodes || []).map(n => [n.id, n]));
+
+  es.forEach(e => {
     const item = document.createElement("div");
     item.className = "memory-item" + (retrieved ? " retrieved" : "");
-    const label = getNodeDisplayText(n) || "entity";
-    const props = n.properties ? Object.entries(n.properties).map(([k,v]) => `${k}: ${v}`).join(", ") : "";
+
+    const s = typeof e.source === "object" ? e.source.id : e.source;
+    const t = typeof e.target === "object" ? e.target.id : e.target;
+    const srcLabel = nodeById.get(s)?.label || s || "?";
+    const tgtLabel = nodeById.get(t)?.label || t || "?";
+    const rel = e.relation || "?";
+    const fact = getEdgeFact(e, nodeById);
+    const evidence = (e.evidence || "").toString().trim();
+    const confidence = e.confidence != null ? Number(e.confidence) : null;
+    const ts = (e.timestamp || "").toString();
+
+    item.dataset.edgeKey = edgeKey(e);
+
     item.innerHTML = `
-      <div class="mem-label graph">🔵 ${escapeHtml(label)}</div>
-      <div class="mem-content">${escapeHtml(n.node_id || n.id || "")}</div>
-      ${props ? `<div class="mem-meta">${escapeHtml(props.slice(0, 120))}</div>` : ""}
+      <div class="mem-label graph">🔗 图谱事实</div>
+      <div class="mem-content">${escapeHtml(fact)}</div>
+      <div class="mem-meta">${escapeHtml(srcLabel)} --[${escapeHtml(rel)}]--> ${escapeHtml(tgtLabel)}</div>
+      ${evidence ? `<div class="mem-meta">证据: ${escapeHtml(evidence.slice(0, 200))}</div>` : ""}
+      ${(confidence != null || ts) ? `<div class="mem-meta">${confidence != null ? `置信度: ${(confidence * 100).toFixed(0)}%` : ""}${(confidence != null && ts) ? " | " : ""}${ts ? `时间: ${escapeHtml(ts)}` : ""}</div>` : ""}
     `;
+
+    item.addEventListener("mouseenter", () => {
+      if (!selectedEdge && isGraphMemTabActive()) {
+        hoveredEdge = e;
+        setGraphEdgeDetail(e, "hover");
+      }
+    });
+    item.addEventListener("mouseleave", () => {
+      if (!selectedEdge && isGraphMemTabActive()) {
+        hoveredEdge = null;
+        setGraphEdgeDetail(null);
+      }
+    });
+    item.addEventListener("click", () => {
+      selectedEdge = e;
+      hoveredEdge = e;
+      setGraphEdgeDetail(e, "selected");
+    });
+
     container.appendChild(item);
   });
+
+  if (isGraphMemTabActive()) {
+    if (selectedEdge) setGraphEdgeDetail(selectedEdge, "selected");
+    else setGraphEdgeDetail(hoveredEdge, "hover");
+  }
 }
 
 async function loadSkills() {
@@ -499,33 +524,6 @@ function renderSkills(skills, retrieved = false) {
   });
 }
 
-async function loadSensory() {
-  try {
-    const r = await fetch(`${API}/memory/sensory`);
-    const data = await r.json();
-    renderSensory(data.items || []);
-  } catch (_) { /* ignore */ }
-}
-
-function renderSensory(items, retrieved = false) {
-  const container = document.getElementById("sensory-list");
-  container.innerHTML = "";
-  if (!items.length) {
-    container.innerHTML = '<div class="empty-hint">感觉缓冲区为空</div>';
-    return;
-  }
-  items.forEach(item => {
-    const el = document.createElement("div");
-    el.className = "memory-item" + (retrieved ? " retrieved" : "");
-    el.innerHTML = `
-      <div class="mem-label sensory">👁 ${escapeHtml(item.modality || "text")}</div>
-      <div class="mem-content">${escapeHtml((item.content || "").slice(0, 200))}</div>
-      ${item.timestamp ? `<div class="mem-meta">${item.timestamp}</div>` : ""}
-    `;
-    container.appendChild(el);
-  });
-}
-
 // ═══ PIPELINE STATUS ═══
 async function loadPipelineStatus() {
   try {
@@ -534,13 +532,138 @@ async function loadPipelineStatus() {
     document.getElementById("chip-sessions").textContent = `📋 ${data.session_count || 0}`;
     document.getElementById("chip-graph").textContent = `🔵 ${data.graph_node_count || 0}`;
     document.getElementById("chip-skills").textContent = `⚡ ${data.skill_count || 0}`;
-    document.getElementById("chip-sensory").textContent = `👁 ${data.sensory_buffer_size || 0}`;
   } catch (_) { /* ignore */ }
 }
 
 // ═══ GRAPH VISUALIZATION ═══
 let graphSim = null;
 let graphTransform = { x: 0, y: 0, k: 1 };
+
+let hoveredEdge = null;
+let selectedEdge = null;
+
+function edgeKey(e) {
+  const s = typeof e?.source === "object" ? e.source?.id : e?.source;
+  const t = typeof e?.target === "object" ? e.target?.id : e?.target;
+  const r = e?.relation || "";
+  const ts = e?.timestamp || "";
+  return `${s}::${r}::${t}::${ts}`;
+}
+
+function sameEdge(a, b) {
+  if (!a || !b) return false;
+  return edgeKey(a) === edgeKey(b);
+}
+
+function getEdgeFact(e, nodeById) {
+  const fact = (e?.fact || "").toString().trim();
+  if (fact) return fact;
+  const s = typeof e?.source === "object" ? e.source?.id : e?.source;
+  const t = typeof e?.target === "object" ? e.target?.id : e?.target;
+  const srcLabel = nodeById?.get(s)?.label || s || "?";
+  const tgtLabel = nodeById?.get(t)?.label || t || "?";
+  const rel = e?.relation || "?";
+  return `${srcLabel} ${rel} ${tgtLabel}`;
+}
+
+function ensureGraphEdgeDetail() {
+  const tab = document.getElementById("tab-graph-mem");
+  if (!tab) return null;
+  let el = document.getElementById("graph-edge-detail");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "graph-edge-detail";
+    el.className = "memory-item edge-detail hidden";
+    tab.insertBefore(el, tab.firstChild);
+  }
+  return el;
+}
+
+function isGraphMemTabActive() {
+  const el = document.getElementById("tab-graph-mem");
+  return Boolean(el && el.classList.contains("active"));
+}
+
+function setGraphEdgeDetail(edge, mode = "hover") {
+  const detail = ensureGraphEdgeDetail();
+  if (!detail) return;
+
+  const showEdge = selectedEdge || edge;
+  if (!showEdge) {
+    detail.classList.add("hidden");
+    detail.innerHTML = "";
+    return;
+  }
+
+  const nodeById = new Map((state.graphData.nodes || []).map(n => [n.id, n]));
+  const s = typeof showEdge.source === "object" ? showEdge.source.id : showEdge.source;
+  const t = typeof showEdge.target === "object" ? showEdge.target.id : showEdge.target;
+  const srcLabel = nodeById.get(s)?.label || s || "?";
+  const tgtLabel = nodeById.get(t)?.label || t || "?";
+  const rel = showEdge.relation || "?";
+  const fact = getEdgeFact(showEdge, nodeById);
+  const evidence = (showEdge.evidence || "").toString().trim();
+  const confidence = showEdge.confidence != null ? Number(showEdge.confidence) : null;
+  const ts = (showEdge.timestamp || "").toString();
+  const sourceSession = (showEdge.source_session || "").toString();
+
+  detail.classList.remove("hidden");
+  detail.innerHTML = `
+    <div class="mem-label graph">${mode === "selected" || selectedEdge ? "📌 选中边" : "👆 悬浮边"}</div>
+    <div class="mem-content">${escapeHtml(fact)}</div>
+    <div class="mem-meta">${escapeHtml(srcLabel)} --[${escapeHtml(rel)}]--> ${escapeHtml(tgtLabel)}</div>
+    ${evidence ? `<div class="mem-meta">证据: ${escapeHtml(evidence.slice(0, 200))}</div>` : ""}
+    ${(confidence != null || ts || sourceSession) ? `
+      <div class="mem-meta">
+        ${confidence != null ? `置信度: ${(confidence * 100).toFixed(0)}%` : ""}
+        ${ts ? `${confidence != null ? " | " : ""}时间: ${escapeHtml(ts)}` : ""}
+        ${sourceSession ? `${(confidence != null || ts) ? " | " : ""}会话: ${escapeHtml(sourceSession)}` : ""}
+      </div>
+    ` : ""}
+  `;
+
+  // Highlight in list (best-effort)
+  const k = edgeKey(showEdge);
+  const list = document.getElementById("graph-mem-list");
+  if (list) {
+    Array.from(list.children).forEach((child) => {
+      if (!(child instanceof HTMLElement)) return;
+      const ck = child.dataset.edgeKey;
+      if (ck && ck === k) child.classList.add("edge-active");
+      else child.classList.remove("edge-active");
+    });
+  }
+}
+
+function pointToSegmentDistanceSq(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  if (dx === 0 && dy === 0) {
+    const ox = px - x1;
+    const oy = py - y1;
+    return ox * ox + oy * oy;
+  }
+  const t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy);
+  const tt = Math.max(0, Math.min(1, t));
+  const cx = x1 + tt * dx;
+  const cy = y1 + tt * dy;
+  const ox = px - cx;
+  const oy = py - cy;
+  return ox * ox + oy * oy;
+}
+
+function findEdgeAt(edges, wx, wy, threshold) {
+  const thrSq = threshold * threshold;
+  for (let i = edges.length - 1; i >= 0; i--) {
+    const e = edges[i];
+    const s = typeof e.source === "object" ? e.source : null;
+    const t = typeof e.target === "object" ? e.target : null;
+    if (!s || !t) continue;
+    const d2 = pointToSegmentDistanceSq(wx, wy, s.x, s.y, t.x, t.y);
+    if (d2 <= thrSq) return e;
+  }
+  return null;
+}
 
 function getNodeDisplayText(n) {
   // Prefer human-friendly names; fallback to id.
@@ -578,6 +701,10 @@ async function loadGraphData() {
         target: e.target,
         relation: e.relation || "",
         confidence: e.confidence || 0.5,
+        fact: e.fact || "",
+        evidence: e.evidence || "",
+        timestamp: e.timestamp || "",
+        source_session: e.source_session || "",
       })),
     };
     renderGraph();
@@ -692,13 +819,19 @@ function renderGraph() {
       const tgt = resolveNode(e.target);
       if (!src || !tgt) return;
 
+      const isActiveEdge = sameEdge(e, hoveredEdge) || sameEdge(e, selectedEdge);
+      const hasAnyActive = Boolean(hoveredEdge || selectedEdge || hoveredNode);
+
       ctx.beginPath();
       ctx.moveTo(src.x, src.y);
       ctx.lineTo(tgt.x, tgt.y);
       ctx.strokeStyle = edgeColor(e);
-      ctx.lineWidth = (e.confidence || 0.5) > 0.7 ? 1.8 : 1;
-      ctx.globalAlpha = hoveredNode ?
-        (hoveredNode === src || hoveredNode === tgt ? 1 : 0.15) : 0.6;
+      ctx.lineWidth = isActiveEdge ? 2.6 : ((e.confidence || 0.5) > 0.7 ? 1.8 : 1);
+      if (hasAnyActive) {
+        ctx.globalAlpha = isActiveEdge ? 1 : 0.12;
+      } else {
+        ctx.globalAlpha = 0.6;
+      }
       ctx.stroke();
       ctx.globalAlpha = 1;
 
@@ -708,8 +841,11 @@ function renderGraph() {
         const my = (src.y + tgt.y) / 2;
         ctx.font = `${9 / Math.max(graphTransform.k, 0.5)}px Inter`;
         ctx.fillStyle = "#64748b";
-        ctx.globalAlpha = hoveredNode ?
-          (hoveredNode === src || hoveredNode === tgt ? 0.9 : 0.08) : 0.5;
+        if (hasAnyActive) {
+          ctx.globalAlpha = isActiveEdge ? 0.95 : 0.06;
+        } else {
+          ctx.globalAlpha = 0.5;
+        }
         ctx.textAlign = "center";
         ctx.fillText(e.relation, mx, my - 4);
         ctx.globalAlpha = 1;
@@ -785,11 +921,27 @@ function renderGraph() {
       hit.fy = hit.y;
       graphSim.alphaTarget(0.3).restart();
       scheduleRender();
+
+      // Clicking a node clears edge selection
+      selectedEdge = null;
+      hoveredEdge = null;
+      if (isGraphMemTabActive()) setGraphEdgeDetail(null);
     } else {
-      isPanning = true;
-      panStartX = e.offsetX;
-      panStartY = e.offsetY;
-      scheduleRender();
+      const edgeHit = findEdgeAt(simEdges, mx, my, 10 / graphTransform.k);
+      if (edgeHit) {
+        selectedEdge = edgeHit;
+        hoveredEdge = edgeHit;
+        if (isGraphMemTabActive()) setGraphEdgeDetail(edgeHit, "selected");
+        scheduleRender();
+      } else {
+        selectedEdge = null;
+        hoveredEdge = null;
+        if (isGraphMemTabActive()) setGraphEdgeDetail(null);
+        isPanning = true;
+        panStartX = e.offsetX;
+        panStartY = e.offsetY;
+        scheduleRender();
+      }
     }
   };
 
@@ -809,6 +961,7 @@ function renderGraph() {
       const [mx, my] = screenToWorld(e.offsetX, e.offsetY);
       hoveredNode = findNodeAt(simNodes, mx, my, 20 / graphTransform.k);
       if (hoveredNode) {
+        hoveredEdge = null;
         canvas.style.cursor = "pointer";
         tooltip.classList.remove("hidden");
         tooltip.style.left = (e.offsetX + 12) + "px";
@@ -823,9 +976,35 @@ function renderGraph() {
           if (p.description) tooltipText += `<br>${escapeHtml(String(p.description).slice(0, 100))}`;
         }
         tooltip.innerHTML = tooltipText;
+
+        if (isGraphMemTabActive()) {
+          if (selectedEdge) setGraphEdgeDetail(selectedEdge, "selected");
+          else setGraphEdgeDetail(null);
+        }
       } else {
-        canvas.style.cursor = "default";
-        tooltip.classList.add("hidden");
+        const edgeHit = findEdgeAt(simEdges, mx, my, 10 / graphTransform.k);
+        hoveredEdge = edgeHit;
+        if (edgeHit) {
+          canvas.style.cursor = "pointer";
+          tooltip.classList.remove("hidden");
+          tooltip.style.left = (e.offsetX + 12) + "px";
+          tooltip.style.top = (e.offsetY - 20) + "px";
+          const fact = getEdgeFact(edgeHit, nodeById);
+          const evidence = (edgeHit.evidence || "").toString().trim();
+          tooltip.innerHTML = `
+            <strong>关系</strong><br>
+            ${escapeHtml(fact.slice(0, 180))}
+            ${evidence ? `<br><span style="opacity:0.75">证据: ${escapeHtml(evidence.slice(0, 120))}</span>` : ""}
+          `;
+
+          if (isGraphMemTabActive() && !selectedEdge) setGraphEdgeDetail(edgeHit, "hover");
+          if (isGraphMemTabActive() && selectedEdge) setGraphEdgeDetail(selectedEdge, "selected");
+        } else {
+          canvas.style.cursor = "default";
+          tooltip.classList.add("hidden");
+          if (isGraphMemTabActive() && !selectedEdge) setGraphEdgeDetail(null);
+          if (isGraphMemTabActive() && selectedEdge) setGraphEdgeDetail(selectedEdge, "selected");
+        }
       }
       scheduleRender();
     }
@@ -846,6 +1025,8 @@ function renderGraph() {
   canvas.onmouseleave = () => {
     isPanning = false;
     tooltip.classList.add("hidden");
+    hoveredEdge = null;
+    if (isGraphMemTabActive() && !selectedEdge) setGraphEdgeDetail(null);
     scheduleRender();
   };
 
