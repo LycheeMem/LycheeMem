@@ -87,13 +87,7 @@ def create_pipeline(
     llm: BaseLLM,
     embedder: BaseEmbedder,
     *,
-    settings=None,
-    max_tokens: int = 128_000,
-    warn_threshold: float = 0.7,
-    block_threshold: float = 0.9,
-    min_recent_turns: int = 4,
-    graph_search_depth: int = 1,
-    skill_top_k: int = 3,
+    settings,
 ) -> LycheePipeline:
     """一键组装 LycheeMemOS Pipeline。
 
@@ -104,16 +98,18 @@ def create_pipeline(
         llm: LLM 适配器实例。
         embedder: Embedding 适配器实例。
         settings: 可选配置对象，控制存储后端选择。
-        max_tokens: 工作记忆 token 上限。
-        warn_threshold: 预警压缩阈值。
-        block_threshold: 阻塞压缩阈值。
-        min_recent_turns: 压缩时保留的最近轮数。
-
     Returns:
         组装好的 LycheePipeline 实例。
     """
     # 根据 settings 选择存储后端
-    embedding_dim = getattr(settings, "embedding_dim", 768) if settings else 768
+    embedding_dim = settings.embedding_dim
+    wm_max_tokens = settings.wm_max_tokens
+    warn_threshold = settings.wm_warn_threshold
+    block_threshold = settings.wm_block_threshold
+    min_recent_turns = settings.min_recent_turns
+    graph_search_depth = settings.graph_search_depth
+    graph_top_k = settings.graph_top_k
+    skill_top_k = settings.skill_top_k
     session_store = _create_session_store(settings)
     graph_store = _create_graph_store(settings, embedder=embedder)
     skill_store = _create_skill_store(settings, embedding_dim=embedding_dim)
@@ -121,7 +117,7 @@ def create_pipeline(
     # 压缩器
     compressor = WorkingMemoryCompressor(
         llm=llm,
-        max_tokens=max_tokens,
+        max_tokens=wm_max_tokens,
         warn_threshold=warn_threshold,
         block_threshold=block_threshold,
         min_recent_turns=min_recent_turns,
@@ -172,28 +168,19 @@ def create_pipeline(
                 vector_dim=vector_dim,
             )
 
-        # Optional: Gemini cross-encoder rerank (paper-parity)
+        # Optional: cross-encoder rerank (paper-parity, via main LLM adapter)
         cross_encoder = None
         cross_encoder_enabled = bool(getattr(settings, "graphiti_cross_encoder_enabled", False))
         if cross_encoder_enabled:
-            gemini_key = str(getattr(settings, "gemini_api_key", "") or "").strip()
-            if not gemini_key:
+            if llm is None:
                 if strict:
-                    raise RuntimeError(
-                        "Graphiti strict cross-encoder enabled but gemini_api_key is empty"
-                    )
+                    raise RuntimeError("Graphiti strict cross-encoder enabled but llm is missing")
             else:
-                from src.memory.graph.gemini_cross_encoder import (  # noqa: PLC0415
-                    GeminiCrossEncoderReranker,
+                from src.memory.graph.cross_encoder import (  # noqa: PLC0415
+                    LLMCrossEncoderReranker,
                 )
 
-                cross_encoder = GeminiCrossEncoderReranker(
-                    api_key=gemini_key,
-                    model=str(
-                        getattr(settings, "graphiti_cross_encoder_model", "")
-                        or "gemini-3.1-flash-lite-preview"
-                    ),
-                )
+                cross_encoder = LLMCrossEncoderReranker(llm=llm)
 
         graphiti_engine = GraphitiEngine(
             store=graphiti_store,
@@ -217,6 +204,7 @@ def create_pipeline(
         skill_store=skill_store,
         graphiti_engine=graphiti_engine,
         graph_search_depth=graph_search_depth,
+        graph_top_k=graph_top_k,
         skill_top_k=skill_top_k,
     )
     synthesizer = SynthesizerAgent(llm=llm)

@@ -53,6 +53,12 @@ class InMemorySessionStore:
         log = self.get_or_create(session_id)
         log.summaries.append({"boundary_index": boundary_index, "content": summary_text})
 
+    def mark_turns_deleted(self, session_id: str, boundary_index: int) -> None:
+        """将 boundary_index 之前的 turns 软删除标记（保留数据，后端忽略，前端可渲染）。"""
+        log = self.get_or_create(session_id)
+        for i in range(min(boundary_index, len(log.turns))):
+            log.turns[i]["deleted"] = True
+
     def delete_session(self, session_id: str) -> None:
         self._store.pop(session_id, None)
 
@@ -70,11 +76,14 @@ class InMemorySessionStore:
         """返回所有会话的摘要列表，按最新活动倒序，支持分页。"""
         result = []
         for session_id, log in self._store.items():
-            last_user = next((t["content"] for t in reversed(log.turns) if t["role"] == "user"), "")
+            active_turns = [t for t in log.turns if not t.get("deleted", False)]
+            last_user = next(
+                (t["content"] for t in reversed(active_turns) if t["role"] == "user"), ""
+            )
             result.append(
                 {
                     "session_id": session_id,
-                    "turn_count": len(log.turns),
+                    "turn_count": len(active_turns),
                     "last_message": last_user[:120],
                     "topic": log.topic,
                     "tags": log.tags,

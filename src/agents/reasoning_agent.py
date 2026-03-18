@@ -16,6 +16,8 @@ from src.llm.base import BaseLLM
 REASONING_SYSTEM_PROMPT = """\
 你是一个智能助手，拥有丰富的背景知识和记忆能力。
 
+{history_section}
+
 {background_section}
 
 {skill_plan_section}
@@ -55,37 +57,55 @@ class ReasoningAgent(BaseAgent):
         Returns:
             dict 包含：final_response (str)
         """
-        # 构建 system prompt
+        # ── 从 compressed_history 中分离 system 摘要与对话轮次 ──
+        # 压缩后 render_context 会将历史摘要作为 role="system" 消息写入
+        # compressed_history。如果将其作为独立的 system message 发送，
+        # 会被模型优先关注而「挤掉」background_context（Lost-in-the-Middle）。
+        # 因此这里提取摘要文本合并进统一的 system prompt，
+        # 仅保留 user/assistant 轮次作为对话历史。
+        history_summary_parts: list[str] = []
+        conversation_turns: list[dict[str, str]] = []
+        if compressed_history:
+            for msg in compressed_history:
+                if msg["role"] == "system":
+                    history_summary_parts.append(msg["content"])
+                else:
+                    conversation_turns.append(
+                        {"role": msg["role"], "content": msg["content"]}
+                    )
+
+        # ── 构建统一 system prompt ──
+        if history_summary_parts:
+            history_section = (
+                "以下是之前对话的压缩摘要：\n\n" + "\n\n".join(history_summary_parts)
+            )
+        else:
+            history_section = ""
+
         if background_context:
-            background_section = f"以下是从你的记忆中检索到的相关背景知识：\n\n{background_context}"
+            background_section = (
+                "以下是从你的记忆中检索到的相关背景知识：\n\n" + background_context
+            )
         else:
             background_section = "当前没有检索到相关的背景记忆。"
 
-        # 构建技能复用计划部分
         skill_plan_section = self._format_skill_plan(skill_reuse_plan)
 
         system_prompt = self.prompt_template.format(
+            history_section=history_section,
             background_section=background_section,
             skill_plan_section=skill_plan_section,
         )
 
         system_prompt = self._append_time_basis(system_prompt)
 
-        # 构建完整消息列表
-        messages = [{"role": "system", "content": system_prompt}]
+        # ── 构建完整消息列表（单一 system + 对话轮次）──
+        messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
 
-        # 加入对话历史（已经压缩过的）
-        if compressed_history:
-            for msg in compressed_history:
-                # 跳过系统消息（摘要已在 system prompt 之外）
-                if msg["role"] != "system":
-                    messages.append(msg)
-                else:
-                    # 历史摘要作为额外的 system 信息
-                    messages.append({"role": "system", "content": msg["content"]})
+        for msg in conversation_turns:
+            messages.append(msg)
 
         # 用户当前查询（确保在末尾）
-        # 检查最后一条是否就是用户当前查询（避免重复）
         if not messages or messages[-1].get("content") != user_query:
             messages.append({"role": "user", "content": user_query})
 

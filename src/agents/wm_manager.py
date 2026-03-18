@@ -114,6 +114,7 @@ class WMManager:
                     summary_text, boundary = future.result()
                     if summary_text and boundary > 0:
                         self.session_store.add_summary(session_id, boundary, summary_text)
+                        self.session_store.mark_turns_deleted(session_id, boundary)
                         logger.info(
                             "session=%s 复用后台预压缩摘要 (boundary=%d)", session_id, boundary
                         )
@@ -126,10 +127,12 @@ class WMManager:
                 future.cancel()
 
         # 同步压缩
+        log = self.session_store.get_or_create(session_id)
         boundary = self.compressor.find_compression_boundary(turns)
         if boundary > 0:
-            summary_text = self.compressor.compress(turns, boundary)
+            summary_text = self.compressor.compress(turns, boundary, log.summaries)
             self.session_store.add_summary(session_id, boundary, summary_text)
+            self.session_store.mark_turns_deleted(session_id, boundary)
             logger.info("session=%s 同步压缩完成 (boundary=%d)", session_id, boundary)
 
     def _start_background_compression(self, session_id: str, turns: list[dict]) -> None:
@@ -142,12 +145,15 @@ class WMManager:
         if boundary <= 0:
             return
 
-        # 快照对话列表，避免线程安全问题
+        # 快照对话列表和摘要，避免线程安全问题
         turns_snapshot = list(turns)
+        log = self.session_store.get_or_create(session_id)
+        summaries_snapshot = list(log.summaries)
         future = self._executor.submit(
             self._do_background_compress,
             turns_snapshot,
             boundary,
+            summaries_snapshot,
         )
         with self._lock:
             self._pending[session_id] = future
@@ -157,9 +163,10 @@ class WMManager:
         self,
         turns: list[dict],
         boundary: int,
+        summaries: list[dict],
     ) -> tuple[str, int]:
         """在后台线程中执行压缩。"""
-        summary_text = self.compressor.compress(turns, boundary)
+        summary_text = self.compressor.compress(turns, boundary, summaries)
         return (summary_text, boundary)
 
     # ── 公共方法 ──

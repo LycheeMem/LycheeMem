@@ -114,6 +114,7 @@ export interface SkillItem {
 export interface Turn {
   role: string;
   content: string;
+  deleted?: boolean;
 }
 
 // ── Graph Transform ──

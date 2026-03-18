@@ -36,7 +36,6 @@ from src.api.routers.chat import router as chat_router
 from src.api.routers.memory import router as memory_router
 from src.api.routers.pipeline import router as pipeline_router
 from src.api.routers.session import router as session_router
-from src.core.config import settings
 
 logger = logging.getLogger("src.api")
 
@@ -100,7 +99,7 @@ def create_app(pipeline=None) -> FastAPI:
 
     @app.get("/health", response_model=HealthResponse)
     async def health():
-        return HealthResponse(status="ok", version="0.1.0", wm_max_tokens=settings.wm_max_tokens)
+        return HealthResponse(status="ok", version="0.1.0")
 
     # ── Routers ──
     app.include_router(chat_router)

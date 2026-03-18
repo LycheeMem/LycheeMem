@@ -33,11 +33,13 @@ async def list_sessions(
 async def get_session(session_id: str, pipeline=Depends(get_pipeline)):
     session_store = pipeline.wm_manager.session_store
     log = session_store.get_or_create(session_id)
+    wm_max_tokens = pipeline.wm_manager.compressor.max_tokens
     return SessionResponse(
         session_id=session_id,
         turns=log.turns,
         turn_count=len(log.turns),
         summaries=log.summaries,
+        wm_max_tokens=wm_max_tokens,
     )
 
 

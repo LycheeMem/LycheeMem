@@ -1,13 +1,13 @@
 import type {
-    ConsolidatorTrace,
-    GraphData,
-    GraphEdge,
-    GraphNode,
-    PipelineStatus,
-    PipelineTrace,
-    SessionInfo,
-    SkillItem,
-    Turn,
+  ConsolidatorTrace,
+  GraphData,
+  GraphEdge,
+  GraphNode,
+  PipelineStatus,
+  PipelineTrace,
+  SessionInfo,
+  SkillItem,
+  Turn,
 } from "./types";
 
 const API = "";
@@ -20,7 +20,10 @@ export async function fetchSessions(): Promise<SessionInfo[]> {
 
 export async function fetchSessionTurns(
   sessionId: string
-): Promise<Turn[]> {
+): Promise<{
+  turns: Turn[];
+  wm_max_tokens: number;
+}> {
   const r = await fetch(
     `${API}/memory/session/${encodeURIComponent(sessionId)}`
   );
@@ -32,22 +35,24 @@ export async function fetchSessionTurns(
         a.boundary_index - b.boundary_index
     );
 
-  if (summaries.length === 0) return turns;
+  let mergedTurns = turns;
+  if (summaries.length > 0) {
+    // 只保留最新摘要（最大 boundary_index），因为它代表全部已压缩历史
+    const latest = summaries[summaries.length - 1];
+    // 返回：[摘要卡片] + 摘要边界之后的原始对话轮次
+    mergedTurns = [
+      { role: "summary", content: latest.content },
+      ...turns.slice(latest.boundary_index),
+    ];
+  }
 
-  // 只保留最新摘要（最大 boundary_index），因为它代表全部已压缩历史
-  const latest = summaries[summaries.length - 1];
-  // 返回：[摘要卡片] + 摘要边界之后的原始对话轮次
-  return [
-    { role: "summary", content: latest.content },
-    ...turns.slice(latest.boundary_index),
-  ];
+  return {
+    turns: mergedTurns,
+    wm_max_tokens: data.wm_max_tokens ?? 128000,
+  };
 }
 
-export async function fetchHealth(): Promise<{ wm_max_tokens: number }> {
-  const r = await fetch(`${API}/health`);
-  const data = await r.json();
-  return { wm_max_tokens: data.wm_max_tokens ?? 128000 };
-}
+
 
 export async function sendChatMessage(
   sessionId: string,

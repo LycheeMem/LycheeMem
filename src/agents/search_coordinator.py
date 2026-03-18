@@ -47,14 +47,18 @@ RETRIEVAL_PLAN_PROMPT = """\
 你的任务是：将粗粒度的用户查询，转化为面向不同记忆源的 **多路子查询（Multi-Query）** 检索计划。
 
 针对图谱和技能库两个记忆源，请：
-1. 将复杂问题拆解为 1-3 个更具体、可直接检索的子查询；
+1. 将复杂问题拆解为 1-5 个更具体、可直接检索的子查询；
 2. 子查询应比原问题更聚焦，明确实体、时间、任务目标等关键信息；
-3. 避免重复或语义等价的子查询。
+3. 避免重复或语义等价的子查询；
+4. **关键规则：如果用户消息涉及多个不同主题或实体，必须为每个主题/实体分别生成独立的 graph 子查询**。
+   例如用户同时问"车库门密码"和"猫能不能吃虾"，你必须生成两条 graph 子查询，
+   否则检索系统只能召回其中一个主题的记忆，导致另一个主题的信息丢失。
 
 以 JSON 格式回复（保持字段名与下方完全一致）：
 {
     "sub_queries": [
-        {"source": "graph", "query": "针对知识图谱的子查询"},
+        {"source": "graph", "query": "针对知识图谱的子查询A"},
+        {"source": "graph", "query": "针对知识图谱的子查询B"},
         {"source": "skill", "query": "针对技能库的子查询"}
     ],
     "reasoning": "用一两句话解释你为何这样拆分"
@@ -62,11 +66,32 @@ RETRIEVAL_PLAN_PROMPT = """\
 
 规则：
 - source 只能是 "graph" 或 "skill"；
+- 同一 source 可以出现多次——对于包含多个主题的查询，必须为每个主题生成独立的 graph 子查询；
 - 如果查询简单不需要分解，可以只返回 1 个子查询；
 - 每个子查询应该比原查询更具体，便于检索；
 - 不要输出任何 JSON 以外的文字。
 
-示例（仅用于你在脑中参考，不要原样抄写）：
+示例1（多主题查询——最常见的需要拆分场景）：
+
+用户查询：
+    "我刚回家，车库门密码是多少？另外我的猫今晚能不能吃虾？"
+
+期望 JSON 输出示例：
+{
+    "sub_queries": [
+        {
+            "source": "graph",
+            "query": "车库门 密码"
+        },
+        {
+            "source": "graph",
+            "query": "猫 能否吃虾 饮食禁忌"
+        }
+    ],
+    "reasoning": "该查询包含两个完全独立的主题：车库门密码和猫的饮食，需要分别检索图谱以确保两方面信息都被召回。"
+}
+
+示例2（跨源查询）：
 
 用户查询：
     "回顾一下上次我们部署订单服务的流程，然后看看知识图谱里有没有和支付相关的错误模式。"
@@ -99,6 +124,7 @@ class SearchCoordinator(BaseAgent):
         skill_store: InMemorySkillStore,
         graphiti_engine: GraphitiEngine | None = None,
         graph_search_depth: int = 1,
+        graph_top_k: int = 3,
         skill_top_k: int = 3,
         skill_reuse_threshold: float = 0.85,
     ):
@@ -108,6 +134,7 @@ class SearchCoordinator(BaseAgent):
         self.skill_store = skill_store
         self.graphiti_engine = graphiti_engine
         self.graph_search_depth = graph_search_depth
+        self.graph_top_k = graph_top_k
         self.skill_top_k = skill_top_k
         self.skill_reuse_threshold = skill_reuse_threshold
 
@@ -131,23 +158,26 @@ class SearchCoordinator(BaseAgent):
         """
         sub_queries = self._plan_retrieval(user_query)
 
-        graph_query = sub_queries.get("graph", user_query)
-        skill_query = sub_queries.get("skill", user_query)
+        graph_queries = sub_queries.get("graph") or [user_query]
+        skill_queries = sub_queries.get("skill") or [user_query]
 
         session_id = kwargs.get("session_id")
         if session_id is not None:
             session_id = str(session_id)
 
         return {
-            "retrieved_graph_memories": self._search_graph(graph_query, session_id=session_id),
-            "retrieved_skills": self._search_skills(skill_query),
+            "retrieved_graph_memories": self._search_graph(
+                graph_queries, session_id=session_id
+            ),
+            "retrieved_skills": self._search_skills(skill_queries[0]),
         }
 
-    def _plan_retrieval(self, query: str) -> dict[str, str]:
+    def _plan_retrieval(self, query: str) -> dict[str, list[str]]:
         """LLM 驱动的检索规划：将复杂查询分解为面向不同源的子查询。
 
         Returns:
-            dict 映射 source → refined_query（如 {"graph": "...", "skill": "..."}）。
+            dict 映射 source → [refined_query, ...]。
+            同一 source 可对应多条子查询（多主题场景）。
             解析失败时返回空 dict（退回到原始查询）。
         """
         try:
@@ -158,9 +188,10 @@ class SearchCoordinator(BaseAgent):
             )
             parsed = self._parse_json(response)
             sub_queries = parsed.get("sub_queries", [])
-            result = {
-                sq["source"]: sq["query"] for sq in sub_queries if "source" in sq and "query" in sq
-            }
+            result: dict[str, list[str]] = {}
+            for sq in sub_queries:
+                if "source" in sq and "query" in sq:
+                    result.setdefault(sq["source"], []).append(sq["query"])
             if result:
                 return result
         except Exception:
@@ -168,29 +199,49 @@ class SearchCoordinator(BaseAgent):
 
         return {}
 
-    def _search_graph(self, query: str, *, session_id: str | None = None) -> list[dict[str, Any]]:
-        """在知识图谱中检索相关节点和邻居。"""
+    def _search_graph(
+        self, queries: list[str], *, session_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """在知识图谱中检索相关节点和邻居。
+
+        支持多条子查询（multi-query）：对列表中每条查询独立检索，
+        然后合并去重，确保多主题场景下各主题的记忆都能被召回。
+        """
         strict = bool(getattr(self.graphiti_engine, "strict", False))
 
-        query_embedding = None
-        if strict:
-            query_embedding = self.embedder.embed_query(query)
-        else:
+        def _embed(text: str) -> list[float] | None:
+            if strict:
+                return self.embedder.embed_query(text)
             try:
-                query_embedding = self.embedder.embed_query(query)
+                return self.embedder.embed_query(text)
             except Exception:
-                query_embedding = None
+                return None
 
-        # Graphiti-only when injected: no fallback to legacy graph_store.
+        # ── Graphiti 路径：每条子查询独立检索，合并 context 与 provenance ──
         if self.graphiti_engine is not None:
-            r = self.graphiti_engine.search(
-                query=query,
-                session_id=session_id,
-                top_k=3,
-                query_embedding=query_embedding,
-                include_communities=True,
-            )
-            if not r.context.strip():
+            all_contexts: list[str] = []
+            all_provenance: list[dict[str, Any]] = []
+            seen_fact_ids: set[str] = set()
+
+            for query in queries:
+                query_embedding = _embed(query)
+                r = self.graphiti_engine.search(
+                    query=query,
+                    session_id=session_id,
+                    top_k=self.graph_top_k,
+                    query_embedding=query_embedding,
+                    include_communities=True,
+                )
+                if r.context.strip():
+                    all_contexts.append(r.context.strip())
+                for p in r.provenance:
+                    fid = p.get("fact_id", "")
+                    if fid not in seen_fact_ids:
+                        seen_fact_ids.add(fid)
+                        all_provenance.append(p)
+
+            merged_context = "\n\n".join(all_contexts)
+            if not merged_context.strip():
                 return []
             return [
                 {
@@ -201,29 +252,33 @@ class SearchCoordinator(BaseAgent):
                         "score": 1.0,
                     },
                     "subgraph": {"nodes": [], "edges": []},
-                    "constructed_context": r.context,
-                    "provenance": r.provenance,
+                    "constructed_context": merged_context,
+                    "provenance": all_provenance,
                 }
             ]
 
-        hits = self.graph_store.search(query, top_k=3, query_embedding=query_embedding)
-        if not hits:
-            return []
-
-        results = []
-        seen_ids = set()
-        for hit in hits:
-            node_id = hit.get("node_id", hit.get("id", ""))
-            if node_id in seen_ids:
-                continue
-            seen_ids.add(node_id)
-            subgraph = self.graph_store.get_neighbors(node_id, depth=self.graph_search_depth)
-            results.append(
-                {
-                    "anchor": hit,
-                    "subgraph": subgraph,
-                }
+        # ── Legacy 路径：每条子查询独立检索，按 node_id 去重 ──
+        results: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for query in queries:
+            query_embedding = _embed(query)
+            hits = self.graph_store.search(
+                query, top_k=self.graph_top_k, query_embedding=query_embedding
             )
+            for hit in hits:
+                node_id = hit.get("node_id", hit.get("id", ""))
+                if node_id in seen_ids:
+                    continue
+                seen_ids.add(node_id)
+                subgraph = self.graph_store.get_neighbors(
+                    node_id, depth=self.graph_search_depth
+                )
+                results.append(
+                    {
+                        "anchor": hit,
+                        "subgraph": subgraph,
+                    }
+                )
         return results
 
     def _search_skills(self, query: str) -> list[dict[str, Any]]:

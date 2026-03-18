@@ -44,6 +44,7 @@ class SQLiteSessionStore:
                 session_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
+                deleted INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id);
@@ -65,7 +66,12 @@ class SQLiteSessionStore:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
-        conn.commit()
+        # 当字段已存在时 ALTER TABLE 会抛异常，捕获就进行迁移
+        try:
+            conn.execute("ALTER TABLE turns ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+            conn.commit()
+        except Exception:
+            pass  # 列已存在
 
     def get_or_create(self, session_id: str) -> SessionLog:
         """获取完整会话日志，不存在则返回空日志。"""
@@ -75,9 +81,10 @@ class SQLiteSessionStore:
                 "role": row["role"],
                 "content": row["content"],
                 "created_at": row["created_at"],
+                "deleted": bool(row["deleted"]),
             }
             for row in conn.execute(
-                "SELECT role, content, created_at FROM turns WHERE session_id = ? ORDER BY id",
+                "SELECT role, content, created_at, deleted FROM turns WHERE session_id = ? ORDER BY id",
                 (session_id,),
             )
         ]
@@ -113,9 +120,10 @@ class SQLiteSessionStore:
                 "role": row["role"],
                 "content": row["content"],
                 "created_at": row["created_at"],
+                "deleted": bool(row["deleted"]),
             }
             for row in conn.execute(
-                "SELECT role, content, created_at FROM turns WHERE session_id = ? ORDER BY id",
+                "SELECT role, content, created_at, deleted FROM turns WHERE session_id = ? ORDER BY id",
                 (session_id,),
             )
         ]
@@ -127,6 +135,21 @@ class SQLiteSessionStore:
             (session_id, boundary_index, summary_text),
         )
         conn.commit()
+
+    def mark_turns_deleted(self, session_id: str, boundary_index: int) -> None:
+        """将 boundary_index 之前的 turns 软删除标记（幂等，重复标记无副作用）。"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT id FROM turns WHERE session_id = ? ORDER BY id LIMIT ?",
+            (session_id, boundary_index),
+        ).fetchall()
+        ids = [row["id"] for row in rows]
+        if ids:
+            conn.execute(
+                f"UPDATE turns SET deleted=1 WHERE id IN ({','.join('?' * len(ids))})",
+                ids,
+            )
+            conn.commit()
 
     def delete_session(self, session_id: str) -> None:
         conn = self._get_conn()
@@ -159,9 +182,9 @@ class SQLiteSessionStore:
             """
             SELECT
                 t.session_id,
-                COUNT(*) AS turn_count,
+                SUM(CASE WHEN t.deleted=0 THEN 1 ELSE 0 END) AS turn_count,
                 (SELECT t2.content FROM turns t2
-                 WHERE t2.session_id = t.session_id AND t2.role = 'user'
+                 WHERE t2.session_id = t.session_id AND t2.role = 'user' AND t2.deleted=0
                  ORDER BY t2.id DESC LIMIT 1) AS last_message,
                 MAX(t.created_at) AS updated_at,
                 COALESCE(m.topic, '') AS topic,

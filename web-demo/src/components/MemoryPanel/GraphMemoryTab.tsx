@@ -73,11 +73,11 @@ export default function GraphMemoryTab() {
                 "?"
             )}
           </div>
-          {activeEdge.evidence && (
+          {/* {activeEdge.evidence && (
             <div className="mem-meta">
               证据: {escapeHtml(activeEdge.evidence.slice(0, 200))}
             </div>
-          )}
+          )} */}
           {(activeEdge.confidence != null || activeEdge.timestamp || activeEdge.source_session) && (
             <div className="mem-meta">
               {activeEdge.confidence != null &&
@@ -127,11 +127,11 @@ export default function GraphMemoryTab() {
                   {escapeHtml(srcLabel as string)} --[{escapeHtml(e.relation || "?")}]--&gt;{" "}
                   {escapeHtml(tgtLabel as string)}
                 </div>
-                {e.evidence && (
+                {/* {e.evidence && (
                   <div className="mem-meta">
                     证据: {escapeHtml(e.evidence.slice(0, 200))}
                   </div>
-                )}
+                )} */}
                 {(e.confidence != null || e.timestamp) && (
                   <div className="mem-meta">
                     {e.confidence != null &&

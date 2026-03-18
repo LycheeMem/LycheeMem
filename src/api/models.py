@@ -176,11 +176,21 @@ class SkillsResponse(BaseModel):
 # ─── Session ───
 
 
+class TurnItem(BaseModel):
+    """单个会话轮次的数据模型。"""
+
+    role: str  # 'user' | 'assistant'
+    content: str
+    created_at: str | None = None
+    deleted: bool = False
+
+
 class SessionResponse(BaseModel):
     session_id: str
-    turns: list[dict[str, str]]
+    turns: list[TurnItem]
     turn_count: int
     summaries: list[dict[str, Any]] = []
+    wm_max_tokens: int = 128000
 
 
 class DeleteResponse(BaseModel):
@@ -251,7 +261,6 @@ class GraphEdgeAddRequest(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     version: str
-    wm_max_tokens: int
 
 
 # ─── Pipeline Status ───

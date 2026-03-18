@@ -151,7 +151,6 @@ class EntityExtractor:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text},
             ],
-            temperature=0.1,  # 低温度保证一致性
         )
 
         triples = self._parse_triples(response)

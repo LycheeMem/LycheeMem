@@ -11,7 +11,6 @@ class BaseLLM(ABC):
     def generate(
         self,
         messages: list[dict[str, str]],
-        temperature: float = 0.7,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
@@ -21,7 +20,6 @@ class BaseLLM(ABC):
     async def agenerate(
         self,
         messages: list[dict[str, str]],
-        temperature: float = 0.7,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:

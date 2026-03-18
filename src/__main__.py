@@ -17,7 +17,7 @@ def main():
     parser.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
     parser.add_argument(
         "--llm",
-        default="gemini",
+        default="openai",
         choices=["openai", "gemini", "ollama"],
         help="LLM backend (default: openai)",
     )

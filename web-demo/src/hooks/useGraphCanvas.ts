@@ -217,7 +217,7 @@ export function useGraphCanvas({
         ctx.fillStyle = "#4b5563";
         ctx.globalAlpha = hasAny ? (isActive ? 0.95 : 0.06) : 0.5;
         ctx.textAlign = "center";
-        ctx.fillText(e.relation, mx, my - 4);
+        // ctx.fillText(e.relation, mx, my - 4);
         ctx.globalAlpha = 1;
       }
     });
@@ -432,8 +432,12 @@ export function useGraphCanvas({
               tooltip.innerHTML = `
                 <strong>关系</strong><br>
                 ${escapeHtml(fact.slice(0, 180))}
-                ${evidence ? `<br><span style="opacity:0.75">证据: ${escapeHtml(evidence.slice(0, 120))}</span>` : ""}
               `;
+              // tooltip.innerHTML = `
+              //   <strong>关系</strong><br>
+              //   ${escapeHtml(fact.slice(0, 180))}
+              //   ${evidence ? `<br><span style="opacity:0.75">证据: ${escapeHtml(evidence.slice(0, 120))}</span>` : ""}
+              // `;
             }
             if (!selectedEdgeRef.current) onEdgeHover?.(edgeHit as unknown as GraphEdge);
           } else {

@@ -30,9 +30,10 @@ class Settings(BaseSettings):
     gemini_embedding_dim: int | None = None  # None = 默认 3072, 可选 768/1536
 
     # ─── 工作记忆预算 ───
-    wm_max_tokens: int = 128_000
+    wm_max_tokens: int = 128000
     wm_warn_threshold: float = 0.7
     wm_block_threshold: float = 0.9
+    min_recent_turns: int = 4
 
     # ─── 存储后端选择 ───
     session_backend: str = "sqlite"  # "memory" | "sqlite"
@@ -46,6 +47,8 @@ class Settings(BaseSettings):
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = ""
+
+    graph_search_depth: int = 1
 
     # ─── Graphiti(论文) 图谱引擎 ───
     graphiti_enabled: bool = True
@@ -79,8 +82,9 @@ class Settings(BaseSettings):
     # ─── Graphiti MMR (Maximal Marginal Relevance) ───
     graphiti_mmr_lambda: float = 0.5  # 1.0 = pure relevance, 0.0 = pure diversity
 
-    # ─── Graphiti Cross-Encoder Rerank (Gemini) ───
+    # ─── Graphiti Cross-Encoder Rerank (复用主 LLM 适配器) ───
     graphiti_cross_encoder_enabled: bool = True
+    # 该字段保留兼容历史配置，当前实现由主流程 llm 决定具体模型。
     graphiti_cross_encoder_model: str = "gemini-3.1-flash-lite-preview"
     graphiti_cross_encoder_top_n: int = 20
     graphiti_cross_encoder_weight: float = 1.0
@@ -97,6 +101,10 @@ class Settings(BaseSettings):
 
     # ─── File Skill Store (轻量级向量持久化) ───
     skill_file_path: str = "lychee_memos_skills.json"
+    skill_top_k: int = 3
+
+    # ─── 图谱检索 ───
+    graph_top_k: int = 5  # 图谱记忆检索返回条数（Graphiti 与 legacy 共用）
 
     # ─── API ───
     api_host: str = "0.0.0.0"

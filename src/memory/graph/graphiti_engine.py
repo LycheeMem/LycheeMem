@@ -929,7 +929,6 @@ class GraphitiEngine:
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": "Return JSON only."},
                 ],
-                temperature=0.0,
             )
             data = self._safe_json_loads(raw)
             if isinstance(data, dict) and str(data.get("summary") or "").strip():
@@ -943,7 +942,6 @@ class GraphitiEngine:
                 {"role": "system", "content": reduce_prompt},
                 {"role": "user", "content": "Return JSON only."},
             ],
-            temperature=0.0,
         )
         data = self._safe_json_loads(raw)
         if not isinstance(data, dict):

@@ -1,12 +1,12 @@
 import { FileTextOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { useCallback, useEffect } from "react";
 import {
-    fetchGraphData,
-    fetchGraphEdges,
-    fetchPipelineStatus,
-    fetchSessions,
-    fetchSessionTurns,
-    fetchSkills,
+  fetchGraphData,
+  fetchGraphEdges,
+  fetchPipelineStatus,
+  fetchSessions,
+  fetchSessionTurns,
+  fetchSkills,
 } from "../api";
 import { useStore } from "../state";
 
@@ -23,6 +23,7 @@ export default function Header() {
   const setSkills = useStore((s) => s.setSkills);
   const setPipelineStatus = useStore((s) => s.setPipelineStatus);
   const setWmTurns = useStore((s) => s.setWmTurns);
+  const setWmMaxTokens = useStore((s) => s.setWmMaxTokens);
   const newSession = useStore((s) => s.newSession);
 
   const loadAll = useCallback(async () => {
@@ -53,7 +54,7 @@ export default function Header() {
     resetAgents();
 
     try {
-      const turns = await fetchSessionTurns(sid);
+      const { turns, wm_max_tokens } = await fetchSessionTurns(sid);
       setMessages(
         turns
           .filter((t) => t.role === "user" || t.role === "assistant")
@@ -64,6 +65,7 @@ export default function Header() {
           }))
       );
       setWmTurns(turns);
+      setWmMaxTokens(wm_max_tokens);
     } catch {
       /* ignore */
     }

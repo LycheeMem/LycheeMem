@@ -25,14 +25,12 @@ class OpenAILLM(BaseLLM):
     def generate(
         self,
         messages: list[dict[str, str]],
-        temperature: float = 0.7,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "temperature": temperature,
         }
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
@@ -45,14 +43,12 @@ class OpenAILLM(BaseLLM):
     async def agenerate(
         self,
         messages: list[dict[str, str]],
-        temperature: float = 0.7,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "temperature": temperature,
         }
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens

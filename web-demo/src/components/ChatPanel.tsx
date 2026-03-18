@@ -1,6 +1,6 @@
 import { AppstoreOutlined, BarChartOutlined, MessageOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useRef } from "react";
-import { fetchGraphData, fetchGraphEdges, fetchHealth, fetchPipelineStatus, fetchSessionTurns, fetchSessions, fetchSkills, streamChatMessage } from "../api";
+import { fetchGraphData, fetchGraphEdges, fetchPipelineStatus, fetchSessionTurns, fetchSessions, fetchSkills, streamChatMessage } from "../api";
 import { useStore } from "../state";
 import { formatContent } from "../utils";
 
@@ -108,8 +108,11 @@ export default function ChatPanel() {
         try { setSkills(await fetchSkills()); } catch { /* */ }
         try { setPipelineStatus(await fetchPipelineStatus()); } catch { /* */ }
         try { setSessions(await fetchSessions()); } catch { /* */ }
-        try { setWmTurns(await fetchSessionTurns(sessionId)); } catch { /* */ }
-        try { const h = await fetchHealth(); setWmMaxTokens(h.wm_max_tokens); } catch { /* */ }
+        try { 
+          const { turns, wm_max_tokens } = await fetchSessionTurns(sessionId);
+          setWmTurns(turns);
+          setWmMaxTokens(wm_max_tokens);
+        } catch { /* */ }
       }, 500);
     },
     [

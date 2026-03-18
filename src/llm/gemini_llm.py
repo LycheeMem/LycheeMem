@@ -42,14 +42,12 @@ class GeminiLLM(BaseLLM):
     def generate(
         self,
         messages: list[dict[str, str]],
-        temperature: float = 0.7,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
         system_instruction, contents = self._convert_messages(messages)
 
         config = genai.types.GenerateContentConfig(
-            temperature=temperature,
             max_output_tokens=max_tokens,
             system_instruction=system_instruction,
         )
@@ -64,14 +62,12 @@ class GeminiLLM(BaseLLM):
     async def agenerate(
         self,
         messages: list[dict[str, str]],
-        temperature: float = 0.7,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
         system_instruction, contents = self._convert_messages(messages)
 
         config = genai.types.GenerateContentConfig(
-            temperature=temperature,
             max_output_tokens=max_tokens,
             system_instruction=system_instruction,
         )
