@@ -251,6 +251,7 @@ class GraphEdgeAddRequest(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     version: str
+    wm_max_tokens: int
 
 
 # ─── Pipeline Status ───

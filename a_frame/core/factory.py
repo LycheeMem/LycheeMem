@@ -11,7 +11,7 @@ from a_frame.agents.reasoning_agent import ReasoningAgent
 from a_frame.agents.search_coordinator import SearchCoordinator
 from a_frame.agents.synthesizer_agent import SynthesizerAgent
 from a_frame.agents.wm_manager import WMManager
-from a_frame.core.graph import AFramePipeline
+from a_frame.core.graph import LycheePipeline
 from a_frame.embedder.base import BaseEmbedder
 from a_frame.llm.base import BaseLLM
 from a_frame.memory.graph.entity_extractor import EntityExtractor
@@ -94,7 +94,7 @@ def create_pipeline(
     min_recent_turns: int = 4,
     graph_search_depth: int = 1,
     skill_top_k: int = 3,
-) -> AFramePipeline:
+) -> LycheePipeline:
     """一键组装 A-Frame Pipeline。
 
     传入 settings 时使用配置指定的存储后端（SQLite/Neo4j/LanceDB）。
@@ -110,7 +110,7 @@ def create_pipeline(
         min_recent_turns: 压缩时保留的最近轮数。
 
     Returns:
-        组装好的 AFramePipeline 实例。
+        组装好的 LycheePipeline 实例。
     """
     # 根据 settings 选择存储后端
     embedding_dim = getattr(settings, "embedding_dim", 768) if settings else 768
@@ -232,7 +232,7 @@ def create_pipeline(
         community_refresh_every=settings.graphiti_community_refresh_every,
     )
 
-    return AFramePipeline(
+    return LycheePipeline(
         wm_manager=wm_manager,
         search_coordinator=search_coordinator,
         synthesizer=synthesizer,

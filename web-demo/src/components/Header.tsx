@@ -55,11 +55,13 @@ export default function Header() {
     try {
       const turns = await fetchSessionTurns(sid);
       setMessages(
-        turns.map((t) => ({
-          role: t.role as "user" | "assistant",
-          content: t.content,
-          meta: null,
-        }))
+        turns
+          .filter((t) => t.role === "user" || t.role === "assistant")
+          .map((t) => ({
+            role: t.role as "user" | "assistant",
+            content: t.content,
+            meta: null,
+          }))
       );
       setWmTurns(turns);
     } catch {

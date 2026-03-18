@@ -53,8 +53,8 @@ After each interaction, `ConsolidatorAgent` runs in a background thread to extra
 **`a_frame/core/`** — Pipeline orchestration and configuration
 - `config.py`: `Settings` class (pydantic-settings), singleton `settings`. All env vars map here.
 - `state.py`: `PipelineState` TypedDict — the LangGraph shared state schema.
-- `factory.py`: `create_pipeline()` — dependency injection hub. Creates storage backends and agents based on settings, returns `AFramePipeline`.
-- `graph.py`: `AFramePipeline` — wraps the LangGraph `StateGraph`, provides `run()`/`arun()` methods.
+- `factory.py`: `create_pipeline()` — dependency injection hub. Creates storage backends and agents based on settings, returns `LycheePipeline`.
+- `graph.py`: `LycheePipeline` — wraps the LangGraph `StateGraph`, provides `run()`/`arun()` methods.
 
 **`a_frame/agents/`** — Six cognitive agents
 - `base_agent.py`: ABC with `_call_llm()` and `_parse_json()` helpers. All agents except WMManager inherit from this.

@@ -1,4 +1,4 @@
-import { RobotOutlined, UserOutlined } from "@ant-design/icons";
+import { CompressOutlined, RobotOutlined, UserOutlined } from "@ant-design/icons";
 import { useStore } from "../../state";
 import { escapeHtml } from "../../utils";
 
@@ -29,7 +29,13 @@ export default function WorkingMemoryTab() {
         {wmTurns.slice(-20).map((t, i) => (
           <div key={i} className="memory-item">
             <div className="mem-label turn">
-              {t.role === "user" ? <><UserOutlined /> USER</> : <><RobotOutlined /> ASSISTANT</>}
+              {t.role === "user" ? (
+                <><UserOutlined /> USER</>
+              ) : t.role === "assistant" ? (
+                <><RobotOutlined /> ASSISTANT</>
+              ) : (
+                <><CompressOutlined /> 压缩上下文</>
+              )}
             </div>
             <div className="mem-content">
               {escapeHtml((t.content || "").slice(0, 200))}

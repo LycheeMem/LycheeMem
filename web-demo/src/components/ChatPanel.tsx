@@ -1,6 +1,6 @@
 import { AppstoreOutlined, BarChartOutlined, MessageOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useRef } from "react";
-import { fetchGraphData, fetchGraphEdges, fetchPipelineStatus, fetchSessions, fetchSkills, streamChatMessage } from "../api";
+import { fetchGraphData, fetchGraphEdges, fetchHealth, fetchPipelineStatus, fetchSessionTurns, fetchSessions, fetchSkills, streamChatMessage } from "../api";
 import { useStore } from "../state";
 import { formatContent } from "../utils";
 
@@ -14,6 +14,8 @@ export default function ChatPanel() {
   const setIsStreaming = useStore((s) => s.setIsStreaming);
   const setIsTyping = useStore((s) => s.setIsTyping);
   const setWmTokenUsage = useStore((s) => s.setWmTokenUsage);
+  const setWmMaxTokens = useStore((s) => s.setWmMaxTokens);
+  const setWmTurns = useStore((s) => s.setWmTurns);
   const setGraphData = useStore((s) => s.setGraphData);
   const setGraphEdges = useStore((s) => s.setGraphEdges);
   const setSkills = useStore((s) => s.setSkills);
@@ -106,6 +108,8 @@ export default function ChatPanel() {
         try { setSkills(await fetchSkills()); } catch { /* */ }
         try { setPipelineStatus(await fetchPipelineStatus()); } catch { /* */ }
         try { setSessions(await fetchSessions()); } catch { /* */ }
+        try { setWmTurns(await fetchSessionTurns(sessionId)); } catch { /* */ }
+        try { const h = await fetchHealth(); setWmMaxTokens(h.wm_max_tokens); } catch { /* */ }
       }, 500);
     },
     [
@@ -115,6 +119,8 @@ export default function ChatPanel() {
       setIsTyping,
       setIsStreaming,
       setWmTokenUsage,
+      setWmMaxTokens,
+      setWmTurns,
       setCurrentTrace,
       setPartialTrace,
       mergePartialTrace,

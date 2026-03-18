@@ -25,7 +25,28 @@ export async function fetchSessionTurns(
     `${API}/memory/session/${encodeURIComponent(sessionId)}`
   );
   const data = await r.json();
-  return data.turns || [];
+  const turns: Turn[] = data.turns || [];
+  const summaries: Array<{ boundary_index: number; content: string }> =
+    (data.summaries || []).sort(
+      (a: { boundary_index: number }, b: { boundary_index: number }) =>
+        a.boundary_index - b.boundary_index
+    );
+
+  if (summaries.length === 0) return turns;
+
+  // 只保留最新摘要（最大 boundary_index），因为它代表全部已压缩历史
+  const latest = summaries[summaries.length - 1];
+  // 返回：[摘要卡片] + 摘要边界之后的原始对话轮次
+  return [
+    { role: "summary", content: latest.content },
+    ...turns.slice(latest.boundary_index),
+  ];
+}
+
+export async function fetchHealth(): Promise<{ wm_max_tokens: number }> {
+  const r = await fetch(`${API}/health`);
+  const data = await r.json();
+  return { wm_max_tokens: data.wm_max_tokens ?? 128000 };
 }
 
 export async function sendChatMessage(

@@ -36,6 +36,7 @@ from a_frame.api.routers.chat import router as chat_router
 from a_frame.api.routers.memory import router as memory_router
 from a_frame.api.routers.pipeline import router as pipeline_router
 from a_frame.api.routers.session import router as session_router
+from a_frame.core.config import settings
 
 logger = logging.getLogger("a_frame.api")
 
@@ -48,7 +49,7 @@ def create_app(pipeline=None) -> FastAPI:
     """创建 FastAPI 应用。
 
     Args:
-        pipeline: AFramePipeline 实例。传 None 时可用于测试（需后续赋值 app.state.pipeline）。
+        pipeline: LycheePipeline 实例。传 None 时可用于测试（需后续赋值 app.state.pipeline）。
     """
     app = FastAPI(
         title="A-Frame Cognitive Memory API",
@@ -99,7 +100,7 @@ def create_app(pipeline=None) -> FastAPI:
 
     @app.get("/health", response_model=HealthResponse)
     async def health():
-        return HealthResponse(status="ok", version="0.1.0")
+        return HealthResponse(status="ok", version="0.1.0", wm_max_tokens=settings.wm_max_tokens)
 
     # ── Routers ──
     app.include_router(chat_router)

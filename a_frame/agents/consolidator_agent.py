@@ -25,6 +25,37 @@ from a_frame.memory.procedural.skill_store import InMemorySkillStore
 if TYPE_CHECKING:
     from a_frame.memory.graph.graphiti_engine import GraphitiEngine
 
+NOVELTY_CHECK_SYSTEM_PROMPT = """\
+你是一个「记忆新颖性评估器（Memory Novelty Assessor）」。
+你的任务：判断本轮对话是否引入了**新的、尚未被已有记忆覆盖**的信息。
+
+你将收到两部分内容：
+1. <EXISTING_MEMORY>：系统在回答前检索到的已有记忆上下文（包括图谱事实、实体、社区摘要等）。
+   如果为空，说明系统当前没有与本轮对话相关的记忆——此时对话中的任何实质内容都算新信息。
+2. <CONVERSATION>：本轮完整对话日志。
+
+你需要判断对话中是否存在以下任意一种「新信息」：
+- 用户透露了新的个人偏好、习惯、计划、项目信息、人际关系等事实
+- 用户纠正或更新了已有记忆中的某个事实（例如"我换工作了""地址改了"）
+- 对话中出现了新的实体、新的关系、新的技能/工作流
+- 助手在回答中产出了用户确认正确的新知识
+- 时间信息有变化（例如某事的截止日期更新了）
+
+注意：以下情况**不算**新信息：
+- 用户仅仅在查询/提问已有记忆中已存储的内容（纯检索型对话）
+- 用户重复了已知事实但没有补充任何新细节
+- 纯寒暄、闲聊、情绪表达，没有任何可沉淀的事实
+
+**重要：倾向于判定"有新信息"。只有当你非常确信对话中完全没有任何新的、值得记录的事实时，才输出 has_novelty=false。如果有任何疑问，宁可误判为有新信息。**
+
+请以 JSON 格式回复（不要代码块）：
+{
+    "has_novelty": true/false,
+    "reason": "简要说明判断理由（1-2 句话）"
+}
+"""
+
+
 CONSOLIDATION_SYSTEM_PROMPT = """\
 你是一个「记忆固化专家（Memory Consolidator）」。
 你需要审查刚刚结束的完整对话日志，从中判断是否有值得沉淀为长期记忆的内容。
@@ -157,22 +188,57 @@ class ConsolidatorAgent(BaseAgent):
         raw = f"{session_id}|{turn_index}|{role}|{content}".encode("utf-8")
         return hashlib.sha1(raw).hexdigest()
 
+    def _check_has_novelty(
+        self,
+        turns: list[dict[str, Any]],
+        retrieved_context: str,
+    ) -> bool:
+        """判断本轮对话相对于已检索记忆是否引入了新信息。
+
+        偏向保守：只有非常确信没有新信息时才返回 False。
+        """
+        conversation_text = "\n".join(
+            f"{t.get('role', '')}: {t.get('content', '')}" for t in turns
+        )
+        user_content = (
+            f"<EXISTING_MEMORY>\n{retrieved_context or '（无已有记忆）'}\n</EXISTING_MEMORY>\n\n"
+            f"<CONVERSATION>\n{conversation_text}\n</CONVERSATION>"
+        )
+        response = self._call_llm(
+            user_content,
+            system_content=NOVELTY_CHECK_SYSTEM_PROMPT,
+        )
+        try:
+            result = self._parse_json(response)
+            return bool(result.get("has_novelty", True))
+        except (ValueError, KeyError):
+            # 解析失败 → 保守地认为有新信息，继续固化
+            return True
+
     def run(
         self,
         turns: list[dict[str, Any]],
         session_id: str | None = None,
+        retrieved_context: str = "",
         **kwargs,
     ) -> dict[str, Any]:
         """分析对话并固化到长期记忆。
 
         Args:
             turns: 完整的对话轮次列表。
+            session_id: 会话 ID。
+            retrieved_context: Pipeline 检索阶段合成的已有记忆上下文，
+                用于与本轮对话比对，判断是否有新信息需要固化。
 
         Returns:
             dict 包含：entities_added (int), skills_added (int)
         """
         if not turns:
             return {"entities_added": 0, "skills_added": 0}
+
+        # ── 新颖性检查：对话是否引入了已有记忆未覆盖的新信息 ──
+        if not self._check_has_novelty(turns, retrieved_context):
+            return {"entities_added": 0, "skills_added": 0, "skipped_reason": "no_novelty"}
 
         # 0. Graphiti: Episode raw ingestion + Semantic build（可选；不影响现有检索/回答）
         graphiti_entities_added = 0

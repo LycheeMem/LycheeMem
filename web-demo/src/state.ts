@@ -70,6 +70,7 @@ export interface AppState {
   resetAgents: () => void;
   setShowTimeline: (v: boolean) => void;
   setWmTokenUsage: (v: number) => void;
+  setWmMaxTokens: (v: number) => void;
   setWmTurns: (turns: Turn[]) => void;
   setGraphEdges: (edges: GraphEdge[]) => void;
   setSkills: (skills: SkillItem[]) => void;
@@ -134,6 +135,7 @@ export const useStore = create<AppState>((set) => ({
   resetAgents: () => set({ agents: makeInitialAgents() }),
   setShowTimeline: (v) => set({ showTimeline: v }),
   setWmTokenUsage: (v) => set({ wmTokenUsage: v }),
+  setWmMaxTokens: (v) => set({ wmMaxTokens: v }),
   setWmTurns: (turns) => set({ wmTurns: turns }),
   setGraphEdges: (edges) => set({ graphEdges: edges }),
   setSkills: (skills) => set({ skills }),

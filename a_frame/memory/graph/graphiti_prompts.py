@@ -34,7 +34,7 @@ Guidelines:
 Return STRICT JSON as a list of objects, each with:
 - name: string
 - type_label: string (optional)
-- summary: string (optional)
+- summary: string
 - aliases: list[string] (optional)
 """
 

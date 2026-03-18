@@ -28,7 +28,7 @@ from a_frame.core.state import PipelineState
 logger = logging.getLogger("a_frame.pipeline")
 
 
-class AFramePipeline:
+class LycheePipeline:
     """A-Frame 认知记忆 Pipeline。
 
     封装 LangGraph StateGraph 的构建与运行。
@@ -155,7 +155,10 @@ class AFramePipeline:
 
         # 后台线程触发固化（fire-and-forget，不阻塞响应返回）
         if result.get("consolidation_pending"):
-            self._trigger_consolidation_bg(session_id)
+            self._trigger_consolidation_bg(
+                session_id,
+                retrieved_context=str(result.get("background_context") or ""),
+            )
 
         return result
 
@@ -169,7 +172,12 @@ class AFramePipeline:
 
         # 异步触发固化
         if result.get("consolidation_pending"):
-            asyncio.create_task(self._aconsolidate(session_id))
+            asyncio.create_task(
+                self._aconsolidate(
+                    session_id,
+                    retrieved_context=str(result.get("background_context") or ""),
+                )
+            )
 
         return result
 
@@ -207,40 +215,59 @@ class AFramePipeline:
         yield {"type": "step", "step": "reason", "status": "done", "patch": patch}
 
         if state.get("consolidation_pending"):
-            asyncio.create_task(self._aconsolidate(session_id))
+            asyncio.create_task(
+                self._aconsolidate(
+                    session_id,
+                    retrieved_context=str(state.get("background_context") or ""),
+                )
+            )
 
         yield {"type": "done", "result": dict(state)}
 
-    def consolidate(self, session_id: str) -> dict[str, Any]:
+    def consolidate(
+        self, session_id: str, retrieved_context: str = ""
+    ) -> dict[str, Any]:
         """手动触发固化（公共方法，可由 API BackgroundTasks 调用）。
+
+        Args:
+            session_id: 会话 ID。
+            retrieved_context: Pipeline 检索阶段合成的已有记忆上下文，
+                用于新颖性判断，避免重复固化纯查询型对话。
 
         Returns:
             dict 包含：entities_added, skills_added
         """
         turns = self.wm_manager.session_store.get_turns(session_id)
         if turns:
-            return self.consolidator.run(turns=turns, session_id=session_id)
+            return self.consolidator.run(
+                turns=turns, session_id=session_id, retrieved_context=retrieved_context
+            )
         return {"entities_added": 0, "skills_added": 0}
 
-    def _trigger_consolidation_bg(self, session_id: str) -> None:
+    def _trigger_consolidation_bg(
+        self, session_id: str, retrieved_context: str = ""
+    ) -> None:
         """在守护线程中触发固化（fire-and-forget）。"""
         thread = threading.Thread(
             target=self._safe_consolidate,
-            args=(session_id,),
+            args=(session_id, retrieved_context),
             daemon=True,
         )
         thread.start()
 
-    def _safe_consolidate(self, session_id: str) -> None:
+    def _safe_consolidate(
+        self, session_id: str, retrieved_context: str = ""
+    ) -> None:
         """安全执行固化，异常不影响主流程。"""
         graphiti = getattr(self.consolidator, "graphiti_engine", None)
         strict = bool(getattr(graphiti, "strict", False))
         try:
-            result = self.consolidate(session_id)
+            result = self.consolidate(session_id, retrieved_context=retrieved_context)
             self._last_consolidation = {
                 "session_id": session_id,
                 "entities_added": result.get("entities_added", 0),
                 "skills_added": result.get("skills_added", 0),
+                "skipped_reason": result.get("skipped_reason"),
             }
         except Exception as exc:
             logger.exception("固化失败 session=%s", session_id)
@@ -253,13 +280,21 @@ class AFramePipeline:
             if strict:
                 raise
 
-    async def _aconsolidate(self, session_id: str) -> None:
+    async def _aconsolidate(
+        self, session_id: str, retrieved_context: str = ""
+    ) -> None:
         """异步场景下的后台固化。"""
         turns = self.wm_manager.session_store.get_turns(session_id)
         if turns:
-            # 在线程池中运行（因为 consolidator.run 是同步的）
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self.consolidator.run, turns, session_id)
+            await loop.run_in_executor(
+                None,
+                lambda: self.consolidator.run(
+                    turns=turns,
+                    session_id=session_id,
+                    retrieved_context=retrieved_context,
+                ),
+            )
 
     @property
     def graph(self):
