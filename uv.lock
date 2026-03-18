@@ -9,7 +9,7 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "a-frame-memory"
+name = "lychee-memory"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

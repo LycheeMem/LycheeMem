@@ -1,9 +1,9 @@
 """测试记忆固化 Agent。"""
 
-from a_frame.agents.consolidator_agent import ConsolidatorAgent
-from a_frame.memory.graph.entity_extractor import EntityExtractor
-from a_frame.memory.graph.graph_store import NetworkXGraphStore
-from a_frame.memory.procedural.skill_store import InMemorySkillStore
+from src.agents.consolidator_agent import ConsolidatorAgent
+from src.memory.graph.entity_extractor import EntityExtractor
+from src.memory.graph.graph_store import NetworkXGraphStore
+from src.memory.procedural.skill_store import InMemorySkillStore
 
 
 class FakeLLMConsolidate:

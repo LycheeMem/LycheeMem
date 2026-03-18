@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from a_frame.memory.procedural.file_skill_store import FileSkillStore
+from src.memory.procedural.file_skill_store import FileSkillStore
 
 
 class TestFileSkillStore:

@@ -5,8 +5,8 @@
 
 from fastapi.testclient import TestClient
 
-from a_frame.api.server import create_app
-from a_frame.core.factory import create_pipeline
+from src.api.server import create_app
+from src.core.factory import create_pipeline
 
 
 # ─── Fakes ───
@@ -36,7 +36,7 @@ class FakeLLM:
             return "## Summary\ntest"
         if "固化" in system_msg or "new_skills" in system_msg:
             return '{"new_skills": [], "should_extract_entities": false}'
-        return "Hello from A-Frame!"
+        return "Hello from LycheeMemOS!"
 
     async def agenerate(self, messages, **kwargs):
         return self.generate(messages, **kwargs)

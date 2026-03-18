@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A-Frame is a training-free agentic cognitive memory framework. It implements four cognitive memory types (Working, Graph/Semantic, Procedural, Sensory) orchestrated through six cognitive agents via a LangGraph pipeline, exposed as a FastAPI service. The project documentation and LLM prompts are primarily in Chinese.
+LycheeMemOS is a training-free agentic cognitive memory framework. It implements four cognitive memory types (Working, Graph/Semantic, Procedural, Sensory) orchestrated through six cognitive agents via a LangGraph pipeline, exposed as a FastAPI service. The project documentation and LLM prompts are primarily in Chinese.
 
 ## Commands
 
@@ -13,9 +13,9 @@ A-Frame is a training-free agentic cognitive memory framework. It implements fou
 pip install -e ".[dev]"
 
 # Run server
-python -m a_frame --llm openai          # OpenAI backend
-python -m a_frame --llm ollama          # Ollama local
-python -m a_frame --reload              # Dev mode with hot reload
+python -m lychee_memos --llm openai          # OpenAI backend
+python -m lychee_memos --llm ollama          # Ollama local
+python -m lychee_memos --reload              # Dev mode with hot reload
 
 # Tests
 pytest tests/ -v                        # All tests
@@ -23,8 +23,8 @@ pytest tests/test_graph_store.py -v     # Single test file
 pytest tests/test_graph_store.py::test_name -v  # Single test
 
 # Lint
-ruff check a_frame/
-ruff format a_frame/
+ruff check src/
+ruff format src/
 ```
 
 ## Configuration
@@ -50,13 +50,13 @@ After each interaction, `ConsolidatorAgent` runs in a background thread to extra
 
 ### Key Layers
 
-**`a_frame/core/`** — Pipeline orchestration and configuration
+**`src/core/`** — Pipeline orchestration and configuration
 - `config.py`: `Settings` class (pydantic-settings), singleton `settings`. All env vars map here.
 - `state.py`: `PipelineState` TypedDict — the LangGraph shared state schema.
 - `factory.py`: `create_pipeline()` — dependency injection hub. Creates storage backends and agents based on settings, returns `LycheePipeline`.
 - `graph.py`: `LycheePipeline` — wraps the LangGraph `StateGraph`, provides `run()`/`arun()` methods.
 
-**`a_frame/agents/`** — Six cognitive agents
+**`src/agents/`** — Six cognitive agents
 - `base_agent.py`: ABC with `_call_llm()` and `_parse_json()` helpers. All agents except WMManager inherit from this.
 - `wm_manager.py`: Rule-based (not LLM). Dual-threshold compression: warn at 70% token budget triggers async pre-compression, block at 90% forces sync compression.
 - `router_agent.py`: Decides which memory modules to activate (`need_graph`, `need_skills`, `need_sensory`).
@@ -65,20 +65,20 @@ After each interaction, `ConsolidatorAgent` runs in a background thread to extra
 - `reasoning_agent.py`: Generates the user-facing response from compressed history + background context.
 - `consolidator_agent.py`: Background entity extraction → graph store, skill extraction → skill store.
 
-**`a_frame/memory/`** — Four memory substrates, each with swappable backends
+**`src/memory/`** — Four memory substrates, each with swappable backends
 - `working/`: Session stores (InMemory, SQLite) + `WorkingMemoryCompressor` (tiktoken-based token counting, LLM-driven summarization).
 - `graph/`: `NetworkXGraphStore` (in-memory) / `Neo4jGraphStore` (persistent). Embedding-based semantic search, keyword fallback, N-hop expansion, semantic entity merge.
 - `procedural/`: Skill stores (InMemory, FileSkillStore, LanceDB). Each skill has intent embedding, doc_markdown, success_count.
 - `sensory/`: `SensoryBuffer` — FIFO deque of recent inputs (text/image/audio).
 
-**`a_frame/llm/`** and **`a_frame/embedder/`** — Adapter pattern for LLM and embedding providers (OpenAI, Gemini, Ollama). All implement a common base interface (`BaseLLM`, `BaseEmbedder`).
+**`src/llm/`** and **`src/embedder/`** — Adapter pattern for LLM and embedding providers (OpenAI, Gemini, Ollama). All implement a common base interface (`BaseLLM`, `BaseEmbedder`).
 
-**`a_frame/api/server.py`** — FastAPI app factory. SSE streaming at `/chat`, non-streaming at `/chat/complete`. Full CRUD for graph nodes/edges, skills, sessions. Demo UI at `/demo`.
+**`src/api/server.py`** — FastAPI app factory. SSE streaming at `/chat`, non-streaming at `/chat/complete`. Full CRUD for graph nodes/edges, skills, sessions. Demo UI at `/demo`.
 
 ### Programmatic Usage
 
 ```python
-from a_frame.core.factory import create_pipeline
+from src.core.factory import create_pipeline
 pipeline = create_pipeline(llm=my_llm, embedder=my_embedder)
 result = pipeline.run(user_query="hello", session_id="s1")
 print(result["final_response"])

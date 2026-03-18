@@ -1,8 +1,8 @@
 """测试工作记忆管理器。"""
 
-from a_frame.agents.wm_manager import WMManager
-from a_frame.memory.working.compressor import WorkingMemoryCompressor
-from a_frame.memory.working.session_store import InMemorySessionStore
+from src.agents.wm_manager import WMManager
+from src.memory.working.compressor import WorkingMemoryCompressor
+from src.memory.working.session_store import InMemorySessionStore
 
 
 class FakeLLM:

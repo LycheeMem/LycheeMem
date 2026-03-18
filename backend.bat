@@ -1,1 +1,1 @@
-python a_frame\__main__.py
+python src\__main__.py

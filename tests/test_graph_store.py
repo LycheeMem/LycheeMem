@@ -1,6 +1,6 @@
 """测试图谱存储。"""
 
-from a_frame.memory.graph.graph_store import NetworkXGraphStore
+from src.memory.graph.graph_store import NetworkXGraphStore
 
 
 class TestGraphStore:

@@ -10,10 +10,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from a_frame.agents.consolidator_agent import ConsolidatorAgent
-from a_frame.memory.graph.entity_extractor import EntityExtractor
-from a_frame.memory.graph.graph_store import NetworkXGraphStore
-from a_frame.memory.procedural.skill_store import InMemorySkillStore
+from src.agents.consolidator_agent import ConsolidatorAgent
+from src.memory.graph.entity_extractor import EntityExtractor
+from src.memory.graph.graph_store import NetworkXGraphStore
+from src.memory.procedural.skill_store import InMemorySkillStore
 
 
 def _extract_current_message(system_prompt: str) -> str:

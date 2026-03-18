@@ -3,11 +3,11 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from a_frame.agents.search_coordinator import SearchCoordinator
-from a_frame.api.server import create_app
-from a_frame.core.factory import create_pipeline
-from a_frame.memory.graph.graph_store import NetworkXGraphStore
-from a_frame.memory.procedural.skill_store import InMemorySkillStore
+from src.agents.search_coordinator import SearchCoordinator
+from src.api.server import create_app
+from src.core.factory import create_pipeline
+from src.memory.graph.graph_store import NetworkXGraphStore
+from src.memory.procedural.skill_store import InMemorySkillStore
 
 
 class FakeLLM:

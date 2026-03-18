@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from a_frame.memory.graph.graphiti_schema import schema_statements
-from a_frame.memory.graph.graphiti_neo4j_store import GraphitiNeo4jStore
+from src.memory.graph.graphiti_schema import schema_statements
+from src.memory.graph.graphiti_neo4j_store import GraphitiNeo4jStore
 
 
 def test_graphiti_schema_has_core_constraints_and_fulltext_indexes() -> None:

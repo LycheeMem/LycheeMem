@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from a_frame.memory.graph.graphiti_engine import GraphitiEngine
+from src.memory.graph.graphiti_engine import GraphitiEngine
 
 
 def test_graphiti_engine_community_dynamic_extension_fills_pool() -> None:

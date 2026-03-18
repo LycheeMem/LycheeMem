@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from a_frame.memory.graph.neo4j_graph_store import Neo4jGraphStore
+from src.memory.graph.neo4j_graph_store import Neo4jGraphStore
 
 
 def test_neo4j_add_passes_fact_evidence_and_metadata() -> None:

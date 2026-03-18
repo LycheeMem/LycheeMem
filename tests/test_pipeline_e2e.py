@@ -4,8 +4,8 @@
 流水线拓扑：wm_manager → search → synthesize → reason
 """
 
-from a_frame.core.factory import create_pipeline
-from a_frame.memory.graph.graphiti_engine import GraphitiSearchResult
+from src.core.factory import create_pipeline
+from src.memory.graph.graphiti_engine import GraphitiSearchResult
 
 
 class FakeLLMForPipeline:

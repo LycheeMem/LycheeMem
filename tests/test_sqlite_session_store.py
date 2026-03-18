@@ -6,7 +6,7 @@
 import os
 import tempfile
 
-from a_frame.memory.working.sqlite_session_store import SQLiteSessionStore
+from src.memory.working.sqlite_session_store import SQLiteSessionStore
 
 
 class TestSQLiteSessionStore:

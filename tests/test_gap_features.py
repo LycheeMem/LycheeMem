@@ -16,17 +16,17 @@ import time
 
 from fastapi.testclient import TestClient
 
-from a_frame.agents.reasoning_agent import ReasoningAgent
-from a_frame.agents.search_coordinator import SearchCoordinator
-from a_frame.agents.synthesizer_agent import SynthesizerAgent
-from a_frame.agents.wm_manager import WMManager
-from a_frame.api.server import create_app
-from a_frame.core.factory import create_pipeline
-from a_frame.memory.graph.entity_extractor import EntityExtractor
-from a_frame.memory.graph.graph_store import NetworkXGraphStore
-from a_frame.memory.procedural.skill_store import InMemorySkillStore, SkillEntry
-from a_frame.memory.working.compressor import WorkingMemoryCompressor
-from a_frame.memory.working.session_store import InMemorySessionStore
+from src.agents.reasoning_agent import ReasoningAgent
+from src.agents.search_coordinator import SearchCoordinator
+from src.agents.synthesizer_agent import SynthesizerAgent
+from src.agents.wm_manager import WMManager
+from src.api.server import create_app
+from src.core.factory import create_pipeline
+from src.memory.graph.entity_extractor import EntityExtractor
+from src.memory.graph.graph_store import NetworkXGraphStore
+from src.memory.procedural.skill_store import InMemorySkillStore, SkillEntry
+from src.memory.working.compressor import WorkingMemoryCompressor
+from src.memory.working.session_store import InMemorySessionStore
 
 
 # ─── Fakes ───
@@ -59,7 +59,7 @@ class FakeLLM:
             return '{"new_skills": [], "should_extract_entities": false}'
         if "知识图谱实体抽取" in system_msg:
             return "[]"
-        return "Hello from A-Frame!"
+        return "Hello from LycheeMemOS!"
 
     async def agenerate(self, messages, **kwargs):
         return self.generate(messages, **kwargs)
@@ -674,14 +674,14 @@ class TestOperationalAPI:
 class TestPipelineStateFields:
     def test_state_has_skill_reuse_plan(self):
         """PipelineState 应包含 skill_reuse_plan。"""
-        from a_frame.core.state import PipelineState
+        from src.core.state import PipelineState
 
         state: PipelineState = {"user_query": "test", "session_id": "s1", "skill_reuse_plan": []}
         assert state["skill_reuse_plan"] == []
 
     def test_state_has_provenance(self):
         """PipelineState 应包含 provenance。"""
-        from a_frame.core.state import PipelineState
+        from src.core.state import PipelineState
 
         state: PipelineState = {
             "user_query": "test",

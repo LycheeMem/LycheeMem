@@ -4,7 +4,7 @@ Avoid real Neo4j by using a FakeStore; ensure label-propagation communities are 
 and linked when no communities exist for the query.
 """
 
-from a_frame.memory.graph.graphiti_engine import GraphitiEngine
+from src.memory.graph.graphiti_engine import GraphitiEngine
 
 
 def test_search_builds_communities_when_none_exist():

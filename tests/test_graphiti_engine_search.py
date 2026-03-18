@@ -3,7 +3,7 @@
 These tests avoid real Neo4j by using a FakeStore that mimics the store API.
 """
 
-from a_frame.memory.graph.graphiti_engine import GraphitiEngine
+from src.memory.graph.graphiti_engine import GraphitiEngine
 
 
 def test_graphiti_engine_search_constructs_context_and_provenance():

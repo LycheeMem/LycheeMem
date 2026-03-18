@@ -5,7 +5,7 @@ __pycache__
 *.pyc
 .env
 uv.lock
-a_frame_sessions.db
+lychee_memos_sessions.db
 .pytest_cache
 node_modules
 .next

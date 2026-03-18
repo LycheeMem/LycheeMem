@@ -1,6 +1,6 @@
 """测试整合排序器。"""
 
-from a_frame.agents.synthesizer_agent import SynthesizerAgent
+from src.agents.synthesizer_agent import SynthesizerAgent
 
 
 class FakeLLMSynthesizer:

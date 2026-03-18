@@ -1,6 +1,6 @@
 """测试上下文压缩器。"""
 
-from a_frame.memory.working.compressor import WorkingMemoryCompressor
+from src.memory.working.compressor import WorkingMemoryCompressor
 
 
 class FakeLLM:

@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from a_frame.memory.graph.graphiti_semantic import GraphitiSemanticBuilder
+from src.memory.graph.graphiti_semantic import GraphitiSemanticBuilder
 
 
 class FakeEmbedder:

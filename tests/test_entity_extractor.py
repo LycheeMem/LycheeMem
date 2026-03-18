@@ -1,6 +1,6 @@
 """测试实体抽取器。"""
 
-from a_frame.memory.graph.entity_extractor import EntityExtractor
+from src.memory.graph.entity_extractor import EntityExtractor
 
 
 class FakeLLMForExtraction:

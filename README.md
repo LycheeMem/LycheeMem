@@ -1,4 +1,4 @@
-# A-Frame: Training-free Agentic Cognitive Memory Framework
+# LycheeMemOS: Training-free Agentic Cognitive Memory Framework
 
 无需训练的智能体认知记忆框架。基于认知科学四类记忆分层 + 六个认知角色 Agent + LangGraph Pipeline 编排。
 
@@ -27,7 +27,7 @@ Memory Substrate Layer
 ### 安装
 
 ```bash
-cd a_frame
+cd src
 pip install -e ".[dev]"
 ```
 
@@ -35,13 +35,13 @@ pip install -e ".[dev]"
 
 ```bash
 # 使用 OpenAI 后端
-python -m a_frame --llm openai
+python -m lychee_memos --llm openai
 
 # 使用 Ollama 本地模型
-python -m a_frame --llm ollama --port 8080
+python -m lychee_memos --llm ollama --port 8080
 
 # 开发模式
-python -m a_frame --reload
+python -m lychee_memos --reload
 ```
 
 服务启动后访问 `http://localhost:8000/docs` 查看 API 文档。
@@ -60,11 +60,11 @@ OPENAI_MODEL=gpt-4o-mini
 ```bash
 # 默认：单文件落盘（无需额外依赖）
 SKILL_BACKEND=file
-SKILL_FILE_PATH=a_frame_skills.json
+SKILL_FILE_PATH=lychee_memos_skills.json
 
 # 可选：LanceDB（需要安装 lancedb/pyarrow）
 # SKILL_BACKEND=lancedb
-# LANCEDB_PATH=a_frame_lancedb
+# LANCEDB_PATH=lychee_memos_lancedb
 ```
 
 ## API 端点
@@ -98,7 +98,7 @@ curl -N http://localhost:8000/chat \
 ## 代码中使用
 
 ```python
-from a_frame.core.factory import create_pipeline
+from src.core.factory import create_pipeline
 
 pipeline = create_pipeline(llm=my_llm, embedder=my_embedder)
 result = pipeline.run(user_query="你好", session_id="s1")
@@ -114,7 +114,7 @@ pytest tests/ -v
 ## 项目结构
 
 ```
-a_frame/
+src/
 ├── agents/          # 6 个认知 Agent
 ├── api/             # FastAPI 服务
 ├── core/            # Pipeline 编排 + 配置 + 状态

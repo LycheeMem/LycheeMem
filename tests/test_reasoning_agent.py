@@ -1,6 +1,6 @@
 """测试核心推理器。"""
 
-from a_frame.agents.reasoning_agent import ReasoningAgent
+from src.agents.reasoning_agent import ReasoningAgent
 
 
 class FakeLLMReasoner:

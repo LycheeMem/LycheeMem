@@ -1,9 +1,9 @@
 """测试检索协调器。"""
 
-from a_frame.agents.search_coordinator import SearchCoordinator
-from a_frame.memory.graph.graph_store import NetworkXGraphStore
-from a_frame.memory.graph.graphiti_engine import GraphitiSearchResult
-from a_frame.memory.procedural.skill_store import InMemorySkillStore
+from src.agents.search_coordinator import SearchCoordinator
+from src.memory.graph.graph_store import NetworkXGraphStore
+from src.memory.graph.graphiti_engine import GraphitiSearchResult
+from src.memory.procedural.skill_store import InMemorySkillStore
 
 
 class FakeLLM:

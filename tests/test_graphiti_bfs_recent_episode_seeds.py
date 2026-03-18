@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from a_frame.memory.graph.graphiti_engine import GraphitiEngine
+from src.memory.graph.graphiti_engine import GraphitiEngine
 
 
 class FakeStore:

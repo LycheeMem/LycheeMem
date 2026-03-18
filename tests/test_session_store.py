@@ -1,6 +1,6 @@
 """测试会话存储。"""
 
-from a_frame.memory.working.session_store import InMemorySessionStore
+from src.memory.working.session_store import InMemorySessionStore
 
 
 class TestSessionStore:

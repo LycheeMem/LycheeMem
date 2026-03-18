@@ -5,12 +5,12 @@
 - 验证 Engine/Consolidator 的调用链在启用时会写入 Episode
 """
 
-from a_frame.agents.consolidator_agent import ConsolidatorAgent
-from a_frame.memory.graph.entity_extractor import EntityExtractor
-from a_frame.memory.graph.graph_store import NetworkXGraphStore
-from a_frame.memory.graph.graphiti_engine import GraphitiEngine
-from a_frame.memory.graph.graphiti_neo4j_store import GraphitiNeo4jStore
-from a_frame.memory.procedural.skill_store import InMemorySkillStore
+from src.agents.consolidator_agent import ConsolidatorAgent
+from src.memory.graph.entity_extractor import EntityExtractor
+from src.memory.graph.graph_store import NetworkXGraphStore
+from src.memory.graph.graphiti_engine import GraphitiEngine
+from src.memory.graph.graphiti_neo4j_store import GraphitiNeo4jStore
+from src.memory.procedural.skill_store import InMemorySkillStore
 
 
 class FakeLLMNoAction:

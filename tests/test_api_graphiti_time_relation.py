@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from a_frame.api.server import create_app
-from a_frame.core.factory import create_pipeline
+from src.api.server import create_app
+from src.core.factory import create_pipeline
 
 
 class FakeLLM:

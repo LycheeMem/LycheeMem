@@ -7,7 +7,7 @@
 说明：这里用一个可控的 FakeEmbedder，让同义词映射到同一向量。
 """
 
-from a_frame.memory.graph.graph_store import NetworkXGraphStore
+from src.memory.graph.graph_store import NetworkXGraphStore
 
 
 class FakeEmbedder:
