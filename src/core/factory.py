@@ -139,13 +139,9 @@ def create_pipeline(
         # Infer vector dim for Neo4j vector indexes.
         vector_dim = int(getattr(settings, "graphiti_vector_dim", 0) or 0)
         if vector_dim <= 0:
-            # Prefer Gemini explicit dim when using Gemini embedder; else fall back to embedding_dim.
-            if getattr(settings, "embedding_backend", "").lower() == "gemini":
-                gem_dim = getattr(settings, "gemini_embedding_dim", None)
-                if gem_dim is not None:
-                    vector_dim = int(gem_dim)
-            if vector_dim <= 0:
-                vector_dim = int(embedding_dim)
+            # For Gemini embedders the actual dim may differ from the default;
+            # trust embedding_dim which the user should set correctly in .env.
+            vector_dim = int(embedding_dim)
 
         vector_similarity = str(
             getattr(settings, "graphiti_vector_similarity_function", "cosine") or "cosine"

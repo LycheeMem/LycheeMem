@@ -22,6 +22,9 @@ export async function fetchSessionTurns(
   sessionId: string
 ): Promise<{
   turns: Turn[];
+  summaries: Array<{ boundary_index: number; content: string }>;
+  boundary_index: number;
+  wm_current_tokens: number;
   wm_max_tokens: number;
 }> {
   const r = await fetch(
@@ -29,25 +32,20 @@ export async function fetchSessionTurns(
   );
   const data = await r.json();
   const turns: Turn[] = data.turns || [];
-  const summaries: Array<{ boundary_index: number; content: string }> =
+  const summaries: Array<{ boundary_index: number; content: string; token_count?: number }> =
     (data.summaries || []).sort(
       (a: { boundary_index: number }, b: { boundary_index: number }) =>
         a.boundary_index - b.boundary_index
     );
 
-  let mergedTurns = turns;
-  if (summaries.length > 0) {
-    // 只保留最新摘要（最大 boundary_index），因为它代表全部已压缩历史
-    const latest = summaries[summaries.length - 1];
-    // 返回：[摘要卡片] + 摘要边界之后的原始对话轮次
-    mergedTurns = [
-      { role: "summary", content: latest.content },
-      ...turns.slice(latest.boundary_index),
-    ];
-  }
+  // 获取最新的 boundary_index（如果有压缩）
+  const boundaryIndex = summaries.length > 0 ? summaries[summaries.length - 1].boundary_index : -1;
 
   return {
-    turns: mergedTurns,
+    turns,  // 返回完整的 turns（包括被软删除的原始对话）
+    summaries,
+    boundary_index: boundaryIndex,
+    wm_current_tokens: data.wm_current_tokens ?? 0,
     wm_max_tokens: data.wm_max_tokens ?? 128000,
   };
 }

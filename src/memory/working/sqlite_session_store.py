@@ -54,6 +54,7 @@ class SQLiteSessionStore:
                 session_id TEXT NOT NULL,
                 boundary_index INTEGER NOT NULL,
                 content TEXT NOT NULL,
+                token_count INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX IF NOT EXISTS idx_summaries_session ON summaries(session_id);
@@ -72,6 +73,16 @@ class SQLiteSessionStore:
             conn.commit()
         except Exception:
             pass  # 列已存在
+        try:
+            conn.execute("ALTER TABLE turns ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0")
+            conn.commit()
+        except Exception:
+            pass  # 列已存在
+        try:
+            conn.execute("ALTER TABLE summaries ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0")
+            conn.commit()
+        except Exception:
+            pass  # 列已存在
 
     def get_or_create(self, session_id: str) -> SessionLog:
         """获取完整会话日志，不存在则返回空日志。"""
@@ -82,16 +93,17 @@ class SQLiteSessionStore:
                 "content": row["content"],
                 "created_at": row["created_at"],
                 "deleted": bool(row["deleted"]),
+                "token_count": row["token_count"] if "token_count" in row.keys() else 0,
             }
             for row in conn.execute(
-                "SELECT role, content, created_at, deleted FROM turns WHERE session_id = ? ORDER BY id",
+                "SELECT role, content, created_at, deleted, token_count FROM turns WHERE session_id = ? ORDER BY id",
                 (session_id,),
             )
         ]
         summaries = [
-            {"boundary_index": row["boundary_index"], "content": row["content"]}
+            {"boundary_index": row["boundary_index"], "content": row["content"], "token_count": row["token_count"] if "token_count" in row.keys() else 0}
             for row in conn.execute(
-                "SELECT boundary_index, content FROM summaries WHERE session_id = ? ORDER BY id",
+                "SELECT boundary_index, content, token_count FROM summaries WHERE session_id = ? ORDER BY id",
                 (session_id,),
             )
         ]
@@ -100,11 +112,11 @@ class SQLiteSessionStore:
         log.summaries = summaries
         return log
 
-    def append_turn(self, session_id: str, role: str, content: str) -> None:
+    def append_turn(self, session_id: str, role: str, content: str, token_count: int = 0) -> None:
         conn = self._get_conn()
         conn.execute(
-            "INSERT INTO turns (session_id, role, content) VALUES (?, ?, ?)",
-            (session_id, role, content),
+            "INSERT INTO turns (session_id, role, content, token_count) VALUES (?, ?, ?, ?)",
+            (session_id, role, content, token_count),
         )
         # upsert session_meta 的 updated_at
         conn.execute(
@@ -121,18 +133,19 @@ class SQLiteSessionStore:
                 "content": row["content"],
                 "created_at": row["created_at"],
                 "deleted": bool(row["deleted"]),
+                "token_count": row["token_count"] if "token_count" in row.keys() else 0,
             }
             for row in conn.execute(
-                "SELECT role, content, created_at, deleted FROM turns WHERE session_id = ? ORDER BY id",
+                "SELECT role, content, created_at, deleted, token_count FROM turns WHERE session_id = ? ORDER BY id",
                 (session_id,),
             )
         ]
 
-    def add_summary(self, session_id: str, boundary_index: int, summary_text: str) -> None:
+    def add_summary(self, session_id: str, boundary_index: int, summary_text: str, token_count: int = 0) -> None:
         conn = self._get_conn()
         conn.execute(
-            "INSERT INTO summaries (session_id, boundary_index, content) VALUES (?, ?, ?)",
-            (session_id, boundary_index, summary_text),
+            "INSERT INTO summaries (session_id, boundary_index, content, token_count) VALUES (?, ?, ?, ?)",
+            (session_id, boundary_index, summary_text, token_count),
         )
         conn.commit()
 

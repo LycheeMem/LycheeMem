@@ -11,23 +11,24 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """统一配置，所有字段直接从环境变量读取。"""
 
-    # ─── LLM ───
-    openai_api_key: str = ""
-    openai_api_base: str = "https://api.openai.com/v1"
-    openai_model: str = "gpt-4o-mini"
+    # ─── LLM（litellm 统一入口）───
+    # model 使用完整 litellm 模型字符串，provider 前缀决定供应商：
+    #   OpenAI / 兼容代理：openai/<model>，例如 openai/gpt-4o-mini
+    #   Gemini：           gemini/<model>，例如 gemini/gemini-2.0-flash
+    #   Ollama：           ollama_chat/<model>，例如 ollama_chat/qwen2.5
+    llm_model: str = "openai/gpt-4o-mini"
+    llm_api_key: str = ""   # 可选；空时 litellm 自动从 OPENAI_API_KEY 等 env var 读取
+    llm_api_base: str = ""  # 可选；用于自定义代理或 Ollama 地址
 
-    gemini_api_key: str = ""
-    gemini_model: str = "gemini-3.1-flash-lite-preview"
-
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "qwen2.5"
-
-    # ─── Embedder ───
-    embedding_backend: str = "gemini"  # "openai" or "gemini"
-    embedding_model: str = "text-embedding-3-small"
+    # ─── Embedder（litellm 统一入口）───
+    # model 同样使用完整 litellm 模型字符串，例如：
+    #   openai/text-embedding-3-small
+    #   openai/<custom-model>（配合 embedding_api_base 使用）
+    #   gemini/gemini-embedding-001
+    embedding_model: str = "openai/text-embedding-3-small"
     embedding_dim: int = 1536
-    gemini_embedding_model: str = "gemini-embedding-2-preview"
-    gemini_embedding_dim: int | None = None  # None = 默认 3072, 可选 768/1536
+    embedding_api_key: str = ""   # 可选
+    embedding_api_base: str = ""  # 可选
 
     # ─── 工作记忆预算 ───
     wm_max_tokens: int = 128000
@@ -84,8 +85,6 @@ class Settings(BaseSettings):
 
     # ─── Graphiti Cross-Encoder Rerank (复用主 LLM 适配器) ───
     graphiti_cross_encoder_enabled: bool = True
-    # 该字段保留兼容历史配置，当前实现由主流程 llm 决定具体模型。
-    graphiti_cross_encoder_model: str = "gemini-3.1-flash-lite-preview"
     graphiti_cross_encoder_top_n: int = 20
     graphiti_cross_encoder_weight: float = 1.0
 

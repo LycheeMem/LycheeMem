@@ -743,6 +743,13 @@ html, body {
   font-size: 12px;
 }
 
+.memory-item .mem-token-count {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
 .memory-item .mem-meta {
   margin-top: 4px;
   font-size: 10px;

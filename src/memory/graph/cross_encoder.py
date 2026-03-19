@@ -6,44 +6,92 @@ relevance scoring for (query, passage) and returns scores in [0, 1].
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import json
+import logging
 import re
 from typing import Any
 
 from src.llm.base import BaseLLM
 
+logger = logging.getLogger(__name__)
 
-_JSON_ARRAY_RE = re.compile(r"\[[\s\S]*\]")
+# 匹配 JSON 数组，允许前后有任意内容（含 markdown 代码块）
+_JSON_ARRAY_RE = re.compile(r"\[[\s\S]*?\](?=\s*(?:```|$|,|\}))", re.DOTALL)
+_JSON_ARRAY_RE_GREEDY = re.compile(r"\[[\s\S]*\]", re.DOTALL)
+
+
+def _try_parse_list(text: str) -> list[Any] | None:
+    """尝试从字符串中提取 JSON 数组，支持多种包装形式。"""
+    text = text.strip()
+
+    # 1. 整体直接是合法 JSON array
+    try:
+        data = json.loads(text)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+
+    # 2. markdown 代码块：```json [...] ``` 或 ``` [...] ```
+    code_block = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if code_block:
+        try:
+            data = json.loads(code_block.group(1).strip())
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+
+    # 3. 整体是 JSON object，其中某个 value 是 list（如 {"scores":[...]}）
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            for v in obj.values():
+                if isinstance(v, list):
+                    return v
+    except Exception:
+        pass
+
+    # 4. 从 object 内部提取嵌套数组（先贪婪找 object，再找其中的 array）
+    obj_match = re.search(r"\{[\s\S]*\}", text, re.DOTALL)
+    if obj_match:
+        try:
+            obj = json.loads(obj_match.group(0))
+            if isinstance(obj, dict):
+                for v in obj.values():
+                    if isinstance(v, list):
+                        return v
+        except Exception:
+            pass
+
+    # 5. 正则提取裸数组（贪婪）
+    for pattern in (_JSON_ARRAY_RE, _JSON_ARRAY_RE_GREEDY):
+        for m in pattern.finditer(text):
+            try:
+                data = json.loads(m.group(0))
+                if isinstance(data, list):
+                    return data
+            except Exception:
+                continue
+
+    return None
 
 
 def _extract_json_array(text: str) -> list[dict[str, Any]]:
-    match = _JSON_ARRAY_RE.search(text or "")
-    if not match:
+    result = _try_parse_list(text or "")
+    if result is None:
         raise ValueError("Cross-encoder did not return a JSON array")
-    payload = match.group(0)
-    data = json.loads(payload)
-    if not isinstance(data, list):
-        raise ValueError("Cross-encoder JSON is not a list")
-    out: list[dict[str, Any]] = []
-    for item in data:
-        if isinstance(item, dict):
-            out.append(item)
-    return out
+    return [item for item in result if isinstance(item, dict)]
 
 
 @dataclass(slots=True)
 class LLMCrossEncoderReranker:
     llm: BaseLLM
 
-    _response_format: dict[str, str] = field(init=False, repr=False)
-
     def __post_init__(self) -> None:
         if self.llm is None or not hasattr(self.llm, "generate"):
             raise ValueError("LLMCrossEncoderReranker requires an llm with generate()")
-
-        # OpenAI-compatible providers can honor this directly; others ignore it safely.
-        self._response_format = {"type": "json_object"}
 
     def score(self, *, query: str, passages: list[dict[str, str]]) -> dict[str, float]:
         """Return a mapping id -> score in [0, 1].
@@ -65,35 +113,32 @@ class LLMCrossEncoderReranker:
         if not cleaned:
             return {}
 
-        system = """You are a precise cross-encoder reranker.
-Given a query and multiple passages, output ONLY a JSON array.
-Each array item must have fields:
-- id: string
-- score: number in [0,1]
-Do not include explanation, markdown, or extra fields.
-"""
+        system = (
+            "You are a cross-encoder reranker. "
+            "Output ONLY a raw JSON array (no markdown, no wrapping object, no explanation). "
+            "Each element: {\"id\": <string>, \"score\": <float 0-1>}. "
+            "Example: [{\"id\": \"abc\", \"score\": 0.85}]"
+        )
         user = json.dumps(
             {
                 "query": query,
                 "passages": cleaned,
-                "scoring": {
-                    "range": "[0,1]",
-                    "interpretation": "1=highly relevant, 0=irrelevant",
-                },
-                "output": "json_array_only",
             },
             ensure_ascii=False,
         )
-        text = self.llm.generate(
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            max_tokens=2048,
-            response_format=self._response_format,
-        )
+        try:
+            text = self.llm.generate(
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                max_tokens=2048,
+            )
+            items = _extract_json_array(text)
+        except Exception as exc:
+            logger.warning("Cross-encoder scoring failed (%s), falling back to 0.0 scores", exc)
+            return {p["id"]: 0.0 for p in cleaned}
 
-        items = _extract_json_array(text)
         scores: dict[str, float] = {}
         for it in items:
             pid = str(it.get("id") or it.get("fact_id") or "").strip()
@@ -103,16 +148,11 @@ Do not include explanation, markdown, or extra fields.
                 s = float(it.get("score"))
             except Exception:
                 continue
-            if s < 0.0:
-                s = 0.0
-            if s > 1.0:
-                s = 1.0
-            scores[pid] = s
+            scores[pid] = max(0.0, min(1.0, s))
 
         # Ensure all requested ids exist (default 0.0)
         for p in cleaned:
-            pid = p["id"]
-            scores.setdefault(pid, 0.0)
+            scores.setdefault(p["id"], 0.0)
         return scores
 
 

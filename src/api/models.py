@@ -181,6 +181,7 @@ class TurnItem(BaseModel):
 
     role: str  # 'user' | 'assistant'
     content: str
+    token_count: int = 0
     created_at: str | None = None
     deleted: bool = False
 
@@ -191,6 +192,7 @@ class SessionResponse(BaseModel):
     turn_count: int
     summaries: list[dict[str, Any]] = []
     wm_max_tokens: int = 128000
+    wm_current_tokens: int = 0  # 当前实际工作记忆 token 占用（摘要 + 近期轮次）
 
 
 class DeleteResponse(BaseModel):

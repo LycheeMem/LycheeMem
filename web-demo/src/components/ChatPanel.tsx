@@ -16,6 +16,8 @@ export default function ChatPanel() {
   const setWmTokenUsage = useStore((s) => s.setWmTokenUsage);
   const setWmMaxTokens = useStore((s) => s.setWmMaxTokens);
   const setWmTurns = useStore((s) => s.setWmTurns);
+  const setWmSummaries = useStore((s) => s.setWmSummaries);
+  const setWmBoundaryIndex = useStore((s) => s.setWmBoundaryIndex);
   const setGraphData = useStore((s) => s.setGraphData);
   const setGraphEdges = useStore((s) => s.setGraphEdges);
   const setSkills = useStore((s) => s.setSkills);
@@ -109,8 +111,11 @@ export default function ChatPanel() {
         try { setPipelineStatus(await fetchPipelineStatus()); } catch { /* */ }
         try { setSessions(await fetchSessions()); } catch { /* */ }
         try { 
-          const { turns, wm_max_tokens } = await fetchSessionTurns(sessionId);
+          const { turns, summaries, boundary_index, wm_current_tokens, wm_max_tokens } = await fetchSessionTurns(sessionId);
           setWmTurns(turns);
+          setWmSummaries(summaries);
+          setWmBoundaryIndex(boundary_index);
+          setWmTokenUsage(wm_current_tokens);
           setWmMaxTokens(wm_max_tokens);
         } catch { /* */ }
       }, 500);
@@ -124,6 +129,8 @@ export default function ChatPanel() {
       setWmTokenUsage,
       setWmMaxTokens,
       setWmTurns,
+      setWmSummaries,
+      setWmBoundaryIndex,
       setCurrentTrace,
       setPartialTrace,
       mergePartialTrace,
@@ -163,14 +170,14 @@ export default function ChatPanel() {
             <span
               dangerouslySetInnerHTML={{ __html: formatContent(msg.content) }}
             />
-            {msg.role === "assistant" && msg.meta && (
+            {/* {msg.role === "assistant" && msg.meta && (
               <div className="msg-meta">
                 <span><AppstoreOutlined /> {msg.meta.memories_retrieved} 条记忆</span>
                 <span>
                   <BarChartOutlined /> {(msg.meta.wm_token_usage || 0).toLocaleString()} tokens
                 </span>
               </div>
-            )}
+            )} */}
           </div>
         ))}
         {isTyping && (

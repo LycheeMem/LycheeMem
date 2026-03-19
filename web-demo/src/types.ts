@@ -114,6 +114,7 @@ export interface SkillItem {
 export interface Turn {
   role: string;
   content: string;
+  token_count?: number;
   deleted?: boolean;
 }
 

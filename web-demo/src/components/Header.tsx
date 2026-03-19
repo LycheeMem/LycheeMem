@@ -23,7 +23,10 @@ export default function Header() {
   const setSkills = useStore((s) => s.setSkills);
   const setPipelineStatus = useStore((s) => s.setPipelineStatus);
   const setWmTurns = useStore((s) => s.setWmTurns);
+  const setWmTokenUsage = useStore((s) => s.setWmTokenUsage);
   const setWmMaxTokens = useStore((s) => s.setWmMaxTokens);
+  const setWmSummaries = useStore((s) => s.setWmSummaries);
+  const setWmBoundaryIndex = useStore((s) => s.setWmBoundaryIndex);
   const newSession = useStore((s) => s.newSession);
 
   const loadAll = useCallback(async () => {
@@ -54,7 +57,7 @@ export default function Header() {
     resetAgents();
 
     try {
-      const { turns, wm_max_tokens } = await fetchSessionTurns(sid);
+      const { turns, summaries, boundary_index, wm_current_tokens, wm_max_tokens } = await fetchSessionTurns(sid);
       setMessages(
         turns
           .filter((t) => t.role === "user" || t.role === "assistant")
@@ -65,6 +68,9 @@ export default function Header() {
           }))
       );
       setWmTurns(turns);
+      setWmSummaries(summaries);
+      setWmBoundaryIndex(boundary_index);
+      setWmTokenUsage(wm_current_tokens);
       setWmMaxTokens(wm_max_tokens);
     } catch {
       /* ignore */

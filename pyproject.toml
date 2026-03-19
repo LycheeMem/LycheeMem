@@ -8,6 +8,7 @@ dependencies = [
     "langgraph>=0.4.0",
     "langchain-core>=0.3.0",
     "fastapi[all]>=0.115.0",
+    "litellm>=1.0.0",
     "openai>=1.77.0",
     "google-genai>=1.0.0",
     "pydantic-settings>=2.0.0",
@@ -15,18 +16,14 @@ dependencies = [
     "tiktoken>=0.9.0",
     "pyyaml>=6.0",
     "httpx>=0.28.0",
-]
-
-[project.optional-dependencies]
-production = [
+    "numpy>=2.0",
     "neo4j>=5.20.0",
     "lancedb>=0.20.0",
-]
-dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "ruff>=0.8.0",
 ]
+
 
 [build-system]
 requires = ["hatchling"]

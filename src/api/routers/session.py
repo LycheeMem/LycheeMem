@@ -32,14 +32,19 @@ async def list_sessions(
 @router.get("/memory/session/{session_id}", response_model=SessionResponse)
 async def get_session(session_id: str, pipeline=Depends(get_pipeline)):
     session_store = pipeline.wm_manager.session_store
+    compressor = pipeline.wm_manager.compressor
     log = session_store.get_or_create(session_id)
-    wm_max_tokens = pipeline.wm_manager.compressor.max_tokens
+    wm_max_tokens = compressor.max_tokens
+    # 计算当前工作记忆实际 token 占用（摘要 + 近期轮次）
+    rendered = compressor.render_context(log.turns, log.summaries)
+    wm_current_tokens = compressor.count_tokens(rendered)
     return SessionResponse(
         session_id=session_id,
         turns=log.turns,
         turn_count=len(log.turns),
         summaries=log.summaries,
         wm_max_tokens=wm_max_tokens,
+        wm_current_tokens=wm_current_tokens,
     )
 
 

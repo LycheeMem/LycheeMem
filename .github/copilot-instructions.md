@@ -1,92 +1,151 @@
-# LycheeMemOS 工作区 Copilot 指南
+﻿# LycheeMemOS 工作区 Copilot 指南
 
 你正在协助开发 **LycheeMemOS：Training-free Agentic Cognitive Memory Framework**（Python + FastAPI + LangGraph + 可选 Neo4j/LanceDB，另含一个 React/Vite Web Demo）。
 
-目标：在不破坏既有架构的前提下，快速定位代码入口、按项目约定实现改动，并用现有测试与 Ruff 校验。
+目标：在不破坏既有架构的前提下，快速定位代码入口、按项目约定实现改动，并通过 Ruff 校验。
+
+---
 
 ## 快速命令（Backend）
 
-- 安装（开发依赖）：
-  - `pip install -e ".[dev]"`
-- 启动服务：
-  - `python -m lychee_memos --llm openai`
-  - `python -m lychee_memos --llm gemini`
-  - `python -m lychee_memos --llm ollama`
-  - 开发热重载：`python -m lychee_memos --reload`
-- 测试：
-  - 全量：`pytest tests/ -v`
-  - 单测：`pytest tests/test_graph_store.py -v`
-  - 单用例：`pytest tests/test_graph_store.py::test_name -v`
-- 代码风格：
-  - `ruff check src/`
-  - `ruff format src/`
+- 安装（开发依赖）：`pip install -e ".[dev]"`
+- 启动服务（根目录的 `main.py`）：
+  - `python main.py`
+  - 开发热重载：`python main.py --reload`
+- 代码风格：只格式化改动的文件，避免大范围 diff：
+  - `ruff check src/path/to/changed.py`
+  - `ruff format src/path/to/changed.py`
 
 ## 快速命令（Web Demo）
 
-在 `web-demo/` 目录：
+在 `web-demo/` 目录：`npm install`  `npm run dev`
 
-- 安装：`npm install`
-- 开发：`npm run dev`
-- 构建：`npm run build`
-- 预览：`npm run preview`
+---
 
-## 配置与环境变量（务必注意默认值陷阱）
+## 实际 Pipeline 拓扑（以 `src/core/graph.py` 为准）
 
-- 所有配置由 `src/core/config.py` 的 Pydantic Settings 读取，来源：环境变量或 `.env`（参考 `.env.example`）。
-- `.env` 已在 `.gitignore` 中忽略；不要把真实密钥提交到仓库。
+```
+__start__  wm_manager  search  synthesize  reason  __end__
+                                                    （reason 节点完成后）
+                                             asyncio.create_task(consolidator)
+```
 
-常用配置项（以 `.env.example` 为准）：
+**重要**：`ConsolidatorAgent` **不是 LangGraph 节点**，而是在 `reason` 节点结束后通过 `asyncio.create_task`（异步）或 `threading.Thread`（同步路径）触发的后台任务。它的错误不传播到主流程。
 
-- LLM：`OPENAI_API_KEY` / `GEMINI_API_KEY` / `OLLAMA_BASE_URL`，以及对应 `*_MODEL`
-- Embedder：`EMBEDDING_BACKEND`（`openai` 或 `gemini`）
-- 存储后端：
-  - `SESSION_BACKEND=memory|sqlite`
-  - `GRAPH_BACKEND=memory|neo4j`
-  - `SKILL_BACKEND=memory|file|lancedb`
+> CLAUDE.md 中描述的 Router 条件分支（`need_retrieval` vs `direct_answer`）是早期设计文档，**当前实现为线性拓扑，无条件分支**，Router 职能已内化到 `SearchCoordinator` 的多路子查询逻辑中。
 
-重要提醒：
+### Agent 执行顺序与职责
 
-- `src/core/config.py` 里存在“可运行但不适合默认使用”的硬编码默认值（例如第三方 API key、Neo4j 密码、以及默认启用的后端选择）。开发/部署时应通过 `.env` 明确覆盖这些值。
-- 如果你本地没有 Neo4j，先在 `.env` 里设置 `GRAPH_BACKEND=memory`，否则启动时可能会尝试连接 Neo4j。
+| 顺序 | 类 | 文件 | 继承 | 说明 |
+|------|----|------|------|------|
+| 1 | `WMManager` | `agents/wm_manager.py` | 无（规则型） | token 双阈值压缩；70% 预压缩，90% 阻塞 |
+| 2 | `SearchCoordinator` | `agents/search_coordinator.py` | `BaseAgent` | 多路子查询；skill 搜索用 HyDE embedding |
+| 3 | `SynthesizerAgent` | `agents/synthesizer_agent.py` | `BaseAgent` | LLM-as-Judge（阈值 0.6）；融合 background_context |
+| 4 | `ReasoningAgent` | `agents/reasoning_agent.py` | `BaseAgent` | 生成 final_response；追加 assistant turn |
+| BG | `ConsolidatorAgent` | `agents/consolidator_agent.py` | `BaseAgent` | 图谱实体抽取 + 技能提取（后台，不阻塞） |
+
+`BaseAgent` 提供：`_call_llm()`、`_parse_json()`、`_append_time_basis()`。
+
+### PipelineState 关键字段（`src/core/state.py`）
+
+```python
+user_query, session_id                      # 输入
+compressed_history, raw_recent_turns        # WMManager 输出
+retrieved_graph_memories, retrieved_skills  # SearchCoordinator 输出
+background_context, skill_reuse_plan        # SynthesizerAgent 输出
+final_response                              # ReasoningAgent 输出
+consolidation_pending                       # 触发固化的标志
+```
+
+---
+
+## 配置与环境变量（必读：危险默认值）
+
+所有配置由 `src/core/config.py` 的 `Settings`（pydantic-settings）读取，来源 `.env` 或环境变量。
+
+### 启动即崩的默认值组合（本地无 Neo4j 时）
+
+| 字段 | 硬编码默认 | 后果 |
+|------|-----------|------|
+| `graph_backend` | `"neo4j"` | 启动时连接失败 |
+| `graphiti_enabled` | `True` | 要求 `graph_backend=neo4j` |
+| `graphiti_strict` | `True` | `preflight()` 检测 GDS/向量索引缺失  `RuntimeError` |
+| `graphiti_require_gds` | `True` | GDS 插件未安装  启动崩溃 |
+| `graphiti_require_vector_index` | `True` | 向量索引缺失  启动崩溃 |
+| `session_backend` | `"sqlite"` | 在当前目录创建 `.db` 文件 |
+| `skill_backend` | `"file"` | 在当前目录创建 `.json` 文件 |
+
+**本地纯内存开发配置（`.env`）**：
+
+```dotenv
+GRAPH_BACKEND=memory
+GRAPHITI_ENABLED=false
+SESSION_BACKEND=memory
+SKILL_BACKEND=memory
+```
+
+### 常用配置分组
+
+- LLM：`LLM_MODEL`（litellm 完整格式，如 `openai/gpt-4o-mini`）、`LLM_API_KEY`、`LLM_API_BASE`
+- Embedder：`EMBEDDING_MODEL`（如 `openai/text-embedding-3-small`）、`EMBEDDING_DIM`（默认 1536；Gemini 等非 1536 维模型**必须**显式设置）
+- Neo4j：`NEO4J_URI`、`NEO4J_USER`、`NEO4J_PASSWORD`
+- 其他：`API_PORT`（默认 8000，端口冲突时覆盖）、`SQLITE_DB_PATH`、`SKILL_FILE_PATH`
+- `.env` 已在 `.gitignore`；不要把真实密钥提交到仓库
+
+---
 
 ## 代码入口与结构导航
 
-建议按以下顺序定位问题：
-
-- CLI/启动入口：`src/__main__.py`
-- FastAPI：`src/api/server.py`
-- Pipeline DI 工厂：`src/core/factory.py`（`create_pipeline()`）
-- LangGraph 封装：`src/core/graph.py`
-- 共享状态结构：`src/core/state.py`（`PipelineState`）
+| 要找什么 | 从哪里看 |
+|----------|---------|
+| CLI 启动 | 根目录 `main.py` |
+| FastAPI 路由注册 | `src/api/server.py`（`create_app()`） |
+| 组件依赖注入 | `src/core/factory.py`（`create_pipeline()`） |
+| LangGraph 节点定义 | `src/core/graph.py`（`LycheePipeline`） |
+| 共享状态结构 | `src/core/state.py`（`PipelineState`） |
+| 所有请求/响应模型 | `src/api/models.py` |
+| SSE trace 构建 | `src/api/trace_builders.py` |
 
 核心分层：
 
 - `src/agents/`：认知 Agent（多数继承 `base_agent.py`；`WMManager` 为规则型）
-- `src/memory/`：四类记忆基质
-  - `working/`：会话存储 + 压缩器
-  - `graph/`：NetworkX/Neo4j 图谱 + 实体抽取
-  - `procedural/`：技能库（memory/file/lancedb）
-  - `sensory/`：感官缓冲
-- `src/llm/` 与 `src/embedder/`：OpenAI/Gemini/Ollama 适配器
+- `src/memory/`：
+  - `working/`：会话存储 + `WorkingMemoryCompressor`（tiktoken 双阈值）
+  - `graph/`：`NetworkXGraphStore`（memory）/ `Neo4jGraphStore`（legacy）/ `GraphitiEngine`+`GraphitiNeo4jStore`（生产）
+  - `procedural/`：技能库（`InMemorySkillStore` / `FileSkillStore` / `LanceDBSkillStore`）
+- `src/llm/` & `src/embedder/`：litellm 统一适配器（`BaseLLM` / `BaseEmbedder`）
+- 生产依赖（Neo4j/LanceDB）：`pip install -e ".[production]"` 
 
-说明：README 中的“Router”概念在实现上主要体现在 `SearchCoordinator` 的检索编排逻辑里，不一定有独立的 `router_agent.py`。
+---
 
-## 贡献时的约定（请遵守）
+## Graphiti 开发约定（严格对齐论文，不得违反）
 
-- 优先做“根因修复”，避免只加表面补丁。
-- 保持改动小而聚焦：不要引入与需求无关的重构、不要新增不必要依赖。
-- 新增功能或修复 bug 时：
-  - 优先补充/更新对应 `tests/` 用例（项目大量使用 `FakeLLM` / `FakeEmbedder` 来避免真实 API 调用）。
-  - 运行 `ruff check src/`、`ruff format src/`、`pytest tests/ -v`。
-- FastAPI 接口：保持请求/响应模型在 `src/api/models.py` 中集中定义，SSE 与非流式端点行为要一致。
+1. **双时态字段命名**：统一使用 `t_valid_from`、`t_valid_to`、`t_tx_created`、`t_tx_expired`。旧名称（`t_valid`/`t_invalid`/`t_expired`）已废弃，Cypher 查询和 schema 索引必须用新名称。
 
-## 常见坑位（尤其在 Windows）
+2. **失效条件**：仅当两个 Fact 的有效区间存在**交叠**时，新 Fact 才能使旧 Fact 失效。有效区间不重叠的矛盾 Fact **不得**触发失效。
 
-- 端口冲突：默认 8000，被占用时使用 `--port`。
-- 路径：优先用 `pathlib`/相对路径，避免硬编码反斜杠。
-- 可选生产依赖：Neo4j/LanceDB 相关功能需要 `pip install -e ".[production]"`。
+3. **GDS 结果映射**：从流式结果（stream）回映射 domain id 时，使用 `gds.util.asNode(nodeId).entity_id`，**不要**假设 `nodeId == id(node)`（跨 projection 不成立）。
+
+4. **Cross-Encoder Reranker**：必须复用 pipeline 注入的 `BaseLLM` 适配器（`cross_encoder.py` 中的 `llm` 参数），**不要**在内部直接调用特定供应商的 SDK（如 Gemini SDK），否则将破坏后端选择的统一性。
+
+5. **Episode-only 引擎**（无 `.store`）：`ConsolidatorAgent` 应在 `graphiti_engine` + `session_id` 均存在时即执行 episode ingest；仅当 `.store` 存在时才调用语义构建器（semantic builder）。
+
+6. **Strict 模式**：`GRAPHITI_STRICT=true`（默认）时，任何能力缺失应 **fail-fast**，不得静默回退到 legacy 实现。
+
+---
+
+## 贡献约定
+
+- **根因修复**优先，不加表面补丁。
+- 改动小而聚焦，不引入无关重构，不新增不必要依赖。
+- 不要编写或执行测试文件，由用户手动执行。
+- FastAPI 接口：请求/响应模型集中在 `src/api/models.py`；SSE 与非流式端点行为必须保持一致。
+- 路径：优先用 `pathlib`/相对路径，避免硬编码反斜杠（Windows 兼容）。
+
+---
 
 ## 需要更多上下文时
 
-- 先读：`README.md`（中文快速上手）与 `CLAUDE.md`（更偏工程约定/测试模式）。
-- 需要找“在哪里实现的”：优先使用全局搜索定位符号，再从 `src/core/factory.py` 追 DI 关系。
+- `README.md`：中文快速上手
+- `CLAUDE.md`：工程约定（注意其 Pipeline 拓扑图为早期版本，Router 条件分支已不存在）
+- 找实现位置：全局搜索符号  从 `src/core/factory.py` 追 DI 关系

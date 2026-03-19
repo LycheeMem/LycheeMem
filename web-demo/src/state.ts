@@ -34,6 +34,8 @@ export interface AppState {
   wmTokenUsage: number;
   wmMaxTokens: number;
   wmTurns: Turn[];
+  wmSummaries: Array<{ boundary_index: number; content: string; token_count?: number }>;
+  wmBoundaryIndex: number;  // Latest compression boundary (-1 if no compression)
 
   // Memory panels
   graphEdges: GraphEdge[];
@@ -72,6 +74,8 @@ export interface AppState {
   setWmTokenUsage: (v: number) => void;
   setWmMaxTokens: (v: number) => void;
   setWmTurns: (turns: Turn[]) => void;
+  setWmSummaries: (summaries: Array<{ boundary_index: number; content: string; token_count?: number }>) => void;
+  setWmBoundaryIndex: (index: number) => void;
   setGraphEdges: (edges: GraphEdge[]) => void;
   setSkills: (skills: SkillItem[]) => void;
   setPipelineStatus: (status: PipelineStatus) => void;
@@ -109,6 +113,8 @@ export const useStore = create<AppState>((set) => ({
   wmTokenUsage: 0,
   wmMaxTokens: 128000,
   wmTurns: [],
+  wmSummaries: [],
+  wmBoundaryIndex: -1,
   graphEdges: [],
   skills: [],
   pipelineStatus: {
@@ -137,6 +143,8 @@ export const useStore = create<AppState>((set) => ({
   setWmTokenUsage: (v) => set({ wmTokenUsage: v }),
   setWmMaxTokens: (v) => set({ wmMaxTokens: v }),
   setWmTurns: (turns) => set({ wmTurns: turns }),
+  setWmSummaries: (summaries) => set({ wmSummaries: summaries }),
+  setWmBoundaryIndex: (index) => set({ wmBoundaryIndex: index }),
   setGraphEdges: (edges) => set({ graphEdges: edges }),
   setSkills: (skills) => set({ skills }),
   setPipelineStatus: (status) => set({ pipelineStatus: status }),
@@ -157,6 +165,8 @@ export const useStore = create<AppState>((set) => ({
       agents: makeInitialAgents(),
       showTimeline: false,
       wmTurns: [],
+      wmSummaries: [],
+      wmBoundaryIndex: -1,
       hoveredEdge: null,
       selectedEdge: null,
       currentTrace: null,

@@ -65,8 +65,9 @@ class WMManager:
         Returns:
             dict 包含：compressed_history, raw_recent_turns, wm_token_usage
         """
-        # 1. 追加用户消息
-        self.session_store.append_turn(session_id, "user", user_query)
+        # 1. 追加用户消息（带 token 计数）
+        user_token_count = len(self.compressor._encoder.encode(user_query)) + 4
+        self.session_store.append_turn(session_id, "user", user_query, token_count=user_token_count)
         log = self.session_store.get_or_create(session_id)
         turns = log.turns
 
@@ -113,7 +114,8 @@ class WMManager:
                 try:
                     summary_text, boundary = future.result()
                     if summary_text and boundary > 0:
-                        self.session_store.add_summary(session_id, boundary, summary_text)
+                        summary_token_count = len(self.compressor._encoder.encode(summary_text)) + 4
+                        self.session_store.add_summary(session_id, boundary, summary_text, token_count=summary_token_count)
                         self.session_store.mark_turns_deleted(session_id, boundary)
                         logger.info(
                             "session=%s 复用后台预压缩摘要 (boundary=%d)", session_id, boundary
@@ -131,7 +133,8 @@ class WMManager:
         boundary = self.compressor.find_compression_boundary(turns)
         if boundary > 0:
             summary_text = self.compressor.compress(turns, boundary, log.summaries)
-            self.session_store.add_summary(session_id, boundary, summary_text)
+            summary_token_count = len(self.compressor._encoder.encode(summary_text)) + 4
+            self.session_store.add_summary(session_id, boundary, summary_text, token_count=summary_token_count)
             self.session_store.mark_turns_deleted(session_id, boundary)
             logger.info("session=%s 同步压缩完成 (boundary=%d)", session_id, boundary)
 
@@ -173,4 +176,5 @@ class WMManager:
 
     def append_assistant_turn(self, session_id: str, content: str) -> None:
         """在推理器回答后，将 assistant 回复追加到会话日志。"""
-        self.session_store.append_turn(session_id, "assistant", content)
+        token_count = len(self.compressor._encoder.encode(content)) + 4
+        self.session_store.append_turn(session_id, "assistant", content, token_count=token_count)

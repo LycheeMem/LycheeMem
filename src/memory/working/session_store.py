@@ -23,7 +23,7 @@ class SessionLog:
     session_id: str
     turns: list[dict[str, Any]] = field(default_factory=list)
     summaries: list[dict[str, Any]] = field(default_factory=list)
-    # summaries 结构：[{"boundary_index": int, "content": str}]
+    # summaries 结构：[{"boundary_index": int, "content": str, "token_count": int}]
     topic: str = ""
     tags: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=_now_iso)
@@ -41,17 +41,17 @@ class InMemorySessionStore:
             self._store[session_id] = SessionLog(session_id=session_id)
         return self._store[session_id]
 
-    def append_turn(self, session_id: str, role: str, content: str) -> None:
+    def append_turn(self, session_id: str, role: str, content: str, token_count: int = 0) -> None:
         log = self.get_or_create(session_id)
-        log.turns.append({"role": role, "content": content, "created_at": _now_iso()})
+        log.turns.append({"role": role, "content": content, "token_count": token_count, "created_at": _now_iso()})
         log.updated_at = _now_iso()
 
     def get_turns(self, session_id: str) -> list[dict[str, Any]]:
         return self.get_or_create(session_id).turns
 
-    def add_summary(self, session_id: str, boundary_index: int, summary_text: str) -> None:
+    def add_summary(self, session_id: str, boundary_index: int, summary_text: str, token_count: int = 0) -> None:
         log = self.get_or_create(session_id)
-        log.summaries.append({"boundary_index": boundary_index, "content": summary_text})
+        log.summaries.append({"boundary_index": boundary_index, "content": summary_text, "token_count": token_count})
 
     def mark_turns_deleted(self, session_id: str, boundary_index: int) -> None:
         """将 boundary_index 之前的 turns 软删除标记（保留数据，后端忽略，前端可渲染）。"""

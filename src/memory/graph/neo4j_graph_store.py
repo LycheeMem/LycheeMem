@@ -37,7 +37,7 @@ class Neo4jGraphStore(BaseMemoryStore):
         semantic_degeneracy_epsilon: float = 1e-3,
         semantic_scan_limit: int = 5000,
     ):
-        self._driver = GraphDatabase.driver(uri, auth=(user, password))
+        self._driver = GraphDatabase.driver(uri, auth=(user, password), notifications_min_severity="NONE")
         self._database = database
         self._embedder = embedder
         self.enable_semantic_search = enable_semantic_search
