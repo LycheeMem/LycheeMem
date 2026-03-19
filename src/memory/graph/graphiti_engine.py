@@ -314,10 +314,10 @@ class GraphitiEngine:
             # 1) query-time retrieval
             if hasattr(self.store, "fulltext_search_communities"):
                 if self.strict:
-                    communities = self.store.fulltext_search_communities(query=query, limit=5)
+                    communities = self.store.fulltext_search_communities(query=query, limit=5, user_id=user_id)
                 else:
                     try:
-                        communities = self.store.fulltext_search_communities(query=query, limit=5)
+                        communities = self.store.fulltext_search_communities(query=query, limit=5, user_id=user_id)
                     except Exception:
                         communities = []
 
@@ -328,6 +328,7 @@ class GraphitiEngine:
                             self.store.vector_search_communities(
                                 query_embedding=query_embedding,
                                 limit=5,
+                                user_id=user_id,
                             )
                         )
                     else:
@@ -336,6 +337,7 @@ class GraphitiEngine:
                                 self.store.vector_search_communities(
                                     query_embedding=query_embedding,
                                     limit=5,
+                                    user_id=user_id,
                                 )
                             )
                         except Exception:

@@ -306,13 +306,12 @@ class GraphitiNeo4jStore:
     @staticmethod
     def fulltext_search_entities_cypher() -> str:
         return (
+            "MATCH (f:Fact) "
+            "WHERE coalesce(f.user_id, '') = $user_id "
+            "WITH COLLECT(DISTINCT f.subject_entity_id) + COLLECT(DISTINCT f.object_entity_id) AS user_entity_ids "
             "CALL db.index.fulltext.queryNodes('entity_fulltext', $q) "
             "YIELD node, score "
-            "WHERE EXISTS { "
-            "  MATCH (f:Fact) "
-            "  WHERE (f.subject_entity_id = node.entity_id OR f.object_entity_id = node.entity_id) "
-            "    AND coalesce(f.user_id, '') = $user_id "
-            "} "
+            "WHERE node.entity_id IN user_entity_ids "
             "RETURN node.entity_id AS entity_id, node.name AS name, node.summary AS summary, "
             "node.aliases AS aliases, node.type_label AS type_label, score AS score "
             "ORDER BY score DESC "
@@ -322,13 +321,12 @@ class GraphitiNeo4jStore:
     @staticmethod
     def vector_search_entities_cypher() -> str:
         return (
+            "MATCH (f:Fact) "
+            "WHERE coalesce(f.user_id, '') = $user_id "
+            "WITH COLLECT(DISTINCT f.subject_entity_id) + COLLECT(DISTINCT f.object_entity_id) AS user_entity_ids "
             "MATCH (e:Entity) "
-            "WHERE e.embedding IS NOT NULL "
-            "  AND EXISTS { "
-            "    MATCH (f:Fact) "
-            "    WHERE (f.subject_entity_id = e.entity_id OR f.object_entity_id = e.entity_id) "
-            "      AND coalesce(f.user_id, '') = $user_id "
-            "  } "
+            "WHERE e.entity_id IN user_entity_ids "
+            "  AND e.embedding IS NOT NULL "
             "WITH e, vector.similarity.cosine(e.embedding, $embedding) AS score "
             "ORDER BY score DESC "
             "LIMIT $limit "
@@ -1122,8 +1120,12 @@ class GraphitiNeo4jStore:
     @staticmethod
     def fulltext_search_communities_cypher() -> str:
         return (
+            "MATCH (f:Fact) "
+            "WHERE coalesce(f.user_id, '') = $user_id "
+            "WITH COLLECT(DISTINCT f.subject_entity_id) + COLLECT(DISTINCT f.object_entity_id) AS user_entity_ids "
             "CALL db.index.fulltext.queryNodes('community_fulltext', $q) "
             "YIELD node, score "
+            "WHERE ANY(eid IN user_entity_ids WHERE EXISTS { MATCH (e:Entity {entity_id: eid})-[:IN_COMMUNITY]->(node) }) "
             "RETURN node.community_id AS community_id, coalesce(node.name, node.community_id) AS name, "
             "coalesce(node.summary, '') AS summary, score AS score "
             "ORDER BY score DESC "
@@ -1133,21 +1135,26 @@ class GraphitiNeo4jStore:
     @staticmethod
     def vector_search_communities_cypher() -> str:
         return (
-            "CALL db.index.vector.queryNodes('community_embedding', $k, $embedding) "
-            "YIELD node, score "
-            "RETURN node.community_id AS community_id, coalesce(node.name, node.community_id) AS name, "
-            "coalesce(node.summary, '') AS summary, score AS score "
+            "MATCH (f:Fact) "
+            "WHERE coalesce(f.user_id, '') = $user_id "
+            "WITH COLLECT(DISTINCT f.subject_entity_id) + COLLECT(DISTINCT f.object_entity_id) AS user_entity_ids "
+            "MATCH (e:Entity)-[:IN_COMMUNITY]->(c:Community) "
+            "WHERE e.entity_id IN user_entity_ids "
+            "  AND c.embedding IS NOT NULL "
+            "WITH DISTINCT c, vector.similarity.cosine(c.embedding, $embedding) AS score "
             "ORDER BY score DESC "
-            "LIMIT $k"
+            "LIMIT $limit "
+            "RETURN c.community_id AS community_id, coalesce(c.name, c.community_id) AS name, "
+            "coalesce(c.summary, '') AS summary, score AS score"
         )
 
-    def fulltext_search_communities(self, *, query: str, limit: int = 10) -> list[dict[str, Any]]:
+    def fulltext_search_communities(self, *, query: str, limit: int = 10, user_id: str = "") -> list[dict[str, Any]]:
         with self._driver.session(database=self._database) as session:
-            rs = session.run(self.fulltext_search_communities_cypher(), q=query, limit=limit)
+            rs = session.run(self.fulltext_search_communities_cypher(), q=query, limit=limit, user_id=user_id)
             return [dict(r) for r in rs]
 
     def vector_search_communities(
-        self, *, query_embedding: list[float], limit: int = 10
+        self, *, query_embedding: list[float], limit: int = 10, user_id: str = ""
     ) -> list[dict[str, Any]]:
         if not query_embedding:
             return []
@@ -1155,7 +1162,8 @@ class GraphitiNeo4jStore:
             rs = session.run(
                 self.vector_search_communities_cypher(),
                 embedding=list(query_embedding),
-                k=int(limit),
+                limit=limit,
+                user_id=user_id,
             )
             return [dict(r) for r in rs]
 
