@@ -220,6 +220,7 @@ class ConsolidatorAgent(BaseAgent):
         turns: list[dict[str, Any]],
         session_id: str | None = None,
         retrieved_context: str = "",
+        user_id: str = "",
         **kwargs,
     ) -> dict[str, Any]:
         """分析对话并固化到长期记忆。
@@ -271,6 +272,7 @@ class ConsolidatorAgent(BaseAgent):
                         content=content,
                     ),
                     episode_type=ep_type,
+                    user_id=user_id,
                 )
             self._graphiti_last_episode_ingested[session_id] = len(turns) - 1
 
@@ -304,6 +306,7 @@ class ConsolidatorAgent(BaseAgent):
                         current_turn=current_turn,
                         reference_timestamp=reference_timestamp,
                         episode_type=ep_type,
+                        user_id=user_id,
                     )
                     graphiti_entities_added += int(built.get("entities_added", 0))
                     graphiti_facts_added += int(built.get("facts_added", 0))
@@ -372,7 +375,7 @@ class ConsolidatorAgent(BaseAgent):
                 turns, source_session=session_id or ""
             )
             if triples:
-                self.graph_store.add(triples)
+                self.graph_store.add(triples, user_id=user_id)
                 entities_added = len(triples)
 
         # 3. 新技能 → 存入技能库
@@ -389,7 +392,8 @@ class ConsolidatorAgent(BaseAgent):
                             "embedding": embedding,
                             "doc_markdown": doc_markdown,
                         }
-                    ]
+                    ],
+                    user_id=user_id,
                 )
                 skills_added += 1
 

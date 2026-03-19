@@ -1,21 +1,83 @@
 import type {
-  ConsolidatorTrace,
-  GraphData,
-  GraphEdge,
-  GraphNode,
-  PipelineStatus,
-  PipelineTrace,
-  SessionInfo,
-  SkillItem,
-  Turn,
+    AuthUser,
+    ConsolidatorTrace,
+    GraphData,
+    GraphEdge,
+    GraphNode,
+    PipelineStatus,
+    PipelineTrace,
+    SessionInfo,
+    SkillItem,
+    Turn,
 } from "./types";
 
 const API = "";
 
+// ── Auth helpers ──
+
+const TOKEN_KEY = "lychee_token";
+const USER_KEY = "lychee_user";
+
+export function getStoredToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function getStoredUser(): AuthUser | null {
+  const raw = localStorage.getItem(USER_KEY);
+  if (!raw) return null;
+  try { return JSON.parse(raw) as AuthUser; } catch { return null; }
+}
+
+export function storeAuth(user: AuthUser): void {
+  localStorage.setItem(TOKEN_KEY, user.token);
+  localStorage.setItem(USER_KEY, JSON.stringify(user));
+}
+
+export function clearAuth(): void {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+}
+
+function authHeaders(): Record<string, string> {
+  const token = getStoredToken();
+  if (token) return { Authorization: `Bearer ${token}` };
+  return {};
+}
+
+export async function apiRegister(username: string, password: string, displayName?: string): Promise<AuthUser> {
+  const r = await fetch(`${API}/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password, display_name: displayName || username }),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+  return data as AuthUser;
+}
+
+export async function apiLogin(username: string, password: string): Promise<AuthUser> {
+  const r = await fetch(`${API}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+  return data as AuthUser;
+}
+
 export async function fetchSessions(): Promise<SessionInfo[]> {
-  const r = await fetch(`${API}/sessions?limit=50`);
+  const r = await fetch(`${API}/sessions?limit=100`, { headers: authHeaders() });
   const data = await r.json();
   return data.sessions || [];
+}
+
+export async function updateSessionMeta(sessionId: string, topic: string): Promise<void> {
+  await fetch(`${API}/memory/session/${encodeURIComponent(sessionId)}/meta`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ topic }),
+  });
 }
 
 export async function fetchSessionTurns(
@@ -28,7 +90,8 @@ export async function fetchSessionTurns(
   wm_max_tokens: number;
 }> {
   const r = await fetch(
-    `${API}/memory/session/${encodeURIComponent(sessionId)}`
+    `${API}/memory/session/${encodeURIComponent(sessionId)}`,
+    { headers: authHeaders() }
   );
   const data = await r.json();
   const turns: Turn[] = data.turns || [];
@@ -63,7 +126,7 @@ export async function sendChatMessage(
 }> {
   const r = await fetch(`${API}/chat/complete`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ session_id: sessionId, message }),
   });
   const data = await r.json().catch(() => ({}));
@@ -115,7 +178,7 @@ export async function streamChatMessage(
 ): Promise<void> {
   const r = await fetch(`${API}/chat`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ session_id: sessionId, message }),
   });
 
@@ -182,7 +245,7 @@ function getNodeTypeLabel(n: Record<string, unknown>): string {
 }
 
 export async function fetchGraphData(): Promise<GraphData> {
-  const r = await fetch(`${API}/memory/graph`);
+  const r = await fetch(`${API}/memory/graph`, { headers: authHeaders() });
   const data = await r.json();
   const nodes: GraphNode[] = ((data.nodes || []) as Record<string, unknown>[]).map(
     (n) => ({
@@ -208,7 +271,7 @@ export async function fetchGraphData(): Promise<GraphData> {
 }
 
 export async function fetchGraphEdges(): Promise<GraphEdge[]> {
-  const r = await fetch(`${API}/memory/graph`);
+  const r = await fetch(`${API}/memory/graph`, { headers: authHeaders() });
   const data = await r.json();
   const edges: GraphEdge[] = ((data.edges || []) as Record<string, unknown>[]).map(
     (e) => ({
@@ -229,13 +292,13 @@ export async function fetchGraphEdges(): Promise<GraphEdge[]> {
 }
 
 export async function fetchSkills(): Promise<SkillItem[]> {
-  const r = await fetch(`${API}/memory/skills`);
+  const r = await fetch(`${API}/memory/skills`, { headers: authHeaders() });
   const data = await r.json();
   return data.skills || [];
 }
 
 export async function fetchPipelineStatus(): Promise<PipelineStatus> {
-  const r = await fetch(`${API}/pipeline/status`);
+  const r = await fetch(`${API}/pipeline/status`, { headers: authHeaders() });
   const data = await r.json();
   return {
     session_count: data.session_count || 0,
@@ -245,7 +308,7 @@ export async function fetchPipelineStatus(): Promise<PipelineStatus> {
 }
 
 export async function fetchConsolidationResult(): Promise<ConsolidatorTrace> {
-  const r = await fetch(`${API}/pipeline/last-consolidation`);
+  const r = await fetch(`${API}/pipeline/last-consolidation`, { headers: authHeaders() });
   const data = await r.json();
   return {
     status: data.status === "done" ? "done" : "pending",

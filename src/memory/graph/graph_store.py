@@ -207,7 +207,7 @@ class NetworkXGraphStore(BaseMemoryStore):
         props.setdefault("source_session", "")
         self.graph.add_edge(source_id, target_id, relation=relation, **props)
 
-    def add(self, items: list[dict[str, Any]]) -> None:
+    def add(self, items: list[dict[str, Any]], *, user_id: str = "") -> None:
         """批量添加三元组 (subject, predicate, object)。"""
         for item in items:
             subj = item["subject"]
@@ -215,11 +215,16 @@ class NetworkXGraphStore(BaseMemoryStore):
             obj = item["object"]
             subj_id = subj.get("id", subj.get("name", ""))
             obj_id = obj.get("id", obj.get("name", ""))
-            subj_id = self._upsert_node(subj_id, label=subj.get("label", "Entity"), properties=subj)
-            obj_id = self._upsert_node(obj_id, label=obj.get("label", "Entity"), properties=obj)
+            subj_props = dict(subj)
+            obj_props = dict(obj)
+            subj_props.setdefault("user_id", user_id)
+            obj_props.setdefault("user_id", user_id)
+            subj_id = self._upsert_node(subj_id, label=subj.get("label", "Entity"), properties=subj_props)
+            obj_id = self._upsert_node(obj_id, label=obj.get("label", "Entity"), properties=obj_props)
             edge_props = dict(item.get("properties", {}))
             edge_props.setdefault("confidence", item.get("confidence", 1.0))
             edge_props.setdefault("source_session", item.get("source_session", ""))
+            edge_props.setdefault("user_id", user_id)
             edge_props.setdefault(
                 "fact",
                 item.get("fact") or f"{subj.get('name', subj_id)} {pred} {obj.get('name', obj_id)}",
@@ -232,12 +237,17 @@ class NetworkXGraphStore(BaseMemoryStore):
         query: str,
         top_k: int = 5,
         query_embedding: list[float] | None = None,
+        *,
+        user_id: str = "",
     ) -> list[dict[str, Any]]:
-        """双向关键词匹配搜索（开发用）。
+        """双向关键词匹配搜索（开发用）。指定 user_id 时只搜索该用户的节点。
 
         检查逻辑：查询词出现在节点文本中，或节点的 name/id 出现在查询中。
         生产环境应使用 Neo4j 全文索引 + embedding 相似度。
         """
+        def _user_match(data: dict) -> bool:
+            return not user_id or data.get("user_id", "") == user_id
+
         # 1) embedding 相似度优先（如果可用）
         if query_embedding is not None and self.enable_semantic_search:
             # 确保节点有 embedding（lazy）
@@ -250,6 +260,8 @@ class NetworkXGraphStore(BaseMemoryStore):
                 q_vec = np.array(query_embedding, dtype=np.float32)
                 sims: list[tuple[float, str]] = []
                 for node_id, vec in candidates:
+                    if not _user_match(self.graph.nodes[node_id]):
+                        continue
                     sims.append((self._cosine_similarity(q_vec, vec), node_id))
 
                 # degenerate embedding（例如测试用固定向量）时，改用字符重叠召回，避免无关命中
@@ -258,6 +270,8 @@ class NetworkXGraphStore(BaseMemoryStore):
                     if (max(sim_values) - min(sim_values)) < self.semantic_degeneracy_epsilon:
                         scored = []
                         for node_id, data in self.graph.nodes(data=True):
+                            if not _user_match(data):
+                                continue
                             lex = self._char_jaccard(query, self._node_display_text(node_id, data))
                             if lex > 0.0:
                                 scored.append((lex, node_id, data))
@@ -280,6 +294,8 @@ class NetworkXGraphStore(BaseMemoryStore):
         results: list[dict[str, Any]] = []
         query_lower = query.lower()
         for node_id, data in self.graph.nodes(data=True):
+            if not _user_match(data):
+                continue
             node_text = " ".join(str(v) for v in data.values()).lower()
             node_name = str(data.get("name", node_id)).lower()
             if node_name in query_lower or query_lower in node_text:
@@ -316,12 +332,20 @@ class NetworkXGraphStore(BaseMemoryStore):
             if node_id in self.graph:
                 self.graph.remove_node(node_id)
 
-    def get_all(self) -> list[dict[str, Any]]:
-        return [{"id": n, **d} for n, d in self.graph.nodes(data=True)]
+    def get_all(self, *, user_id: str = "") -> list[dict[str, Any]]:
+        return [
+            {"id": n, **d}
+            for n, d in self.graph.nodes(data=True)
+            if not user_id or d.get("user_id", "") == user_id
+        ]
 
-    def get_all_edges(self) -> list[dict[str, Any]]:
-        """返回所有边（含 relation, timestamp, confidence 等属性）。"""
-        return [{"source": u, "target": v, **d} for u, v, d in self.graph.edges(data=True)]
+    def get_all_edges(self, *, user_id: str = "") -> list[dict[str, Any]]:
+        """返回所有边（含 relation, timestamp, confidence 等属性）。指定 user_id 时只返回该用户的边。"""
+        return [
+            {"source": u, "target": v, **d}
+            for u, v, d in self.graph.edges(data=True)
+            if not user_id or d.get("user_id", "") == user_id
+        ]
 
     def search_by_relation(self, relation: str, top_k: int = 10) -> list[dict[str, Any]]:
         """按关系类型检索边。"""

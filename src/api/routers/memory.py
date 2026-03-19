@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from src.api.dependencies import get_pipeline
+from src.api.dependencies import get_optional_user, get_pipeline
 from src.api.models import (
     DeleteResponse,
     FactEdgesResponse,
@@ -71,18 +71,19 @@ def _fact_row_to_edge(row: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.post("/memory/search", response_model=MemorySearchResponse)
-async def memory_search(req: MemorySearchRequest, pipeline=Depends(get_pipeline)):
+async def memory_search(req: MemorySearchRequest, pipeline=Depends(get_pipeline), user=Depends(get_optional_user)):
     """统一记忆检索：同时查询图谱和技能库。"""
     sc = pipeline.search_coordinator
+    user_id = user.user_id if user else ""
 
     graph_results: list[dict[str, Any]] = []
     if req.include_graph:
-        graph_results = sc.graph_store.search(req.query, top_k=req.top_k)
+        graph_results = sc.graph_store.search(req.query, top_k=req.top_k, user_id=user_id)
 
     skill_results: list[dict[str, Any]] = []
     if req.include_skills:
         q_emb = sc.embedder.embed_query(req.query)
-        skill_results = sc.skill_store.search(req.query, top_k=req.top_k, query_embedding=q_emb)
+        skill_results = sc.skill_store.search(req.query, top_k=req.top_k, query_embedding=q_emb, user_id=user_id)
 
     total = len(graph_results) + len(skill_results)
     return MemorySearchResponse(
@@ -97,12 +98,13 @@ async def memory_search(req: MemorySearchRequest, pipeline=Depends(get_pipeline)
 
 
 @router.get("/memory/graph", response_model=GraphResponse)
-async def get_graph(pipeline=Depends(get_pipeline)):
+async def get_graph(pipeline=Depends(get_pipeline), user=Depends(get_optional_user)):
+    user_id = user.user_id if user else ""
     graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
     store = getattr(graphiti, "store", None) if graphiti is not None else None
     if store is not None and hasattr(store, "export_semantic_graph"):
         try:
-            data = store.export_semantic_graph()
+            data = store.export_semantic_graph(user_id=user_id)
             return GraphResponse(
                 nodes=_strip_node_embeddings(data.get("nodes", [])),
                 edges=data.get("edges", []),
@@ -112,13 +114,11 @@ async def get_graph(pipeline=Depends(get_pipeline)):
             raise HTTPException(status_code=500, detail=f"Graphiti export failed: {exc}")
 
     graph_store = pipeline.search_coordinator.graph_store
-    nodes = _strip_node_embeddings(graph_store.get_all())
+    nodes = _strip_node_embeddings(graph_store.get_all(user_id=user_id))
     if hasattr(graph_store, "get_all_edges"):
-        edges = graph_store.get_all_edges()
+        edges = graph_store.get_all_edges(user_id=user_id)
     else:
-        edges = [
-            {"source": u, "target": v, **d} for u, v, d in graph_store.graph.edges(data=True)
-        ]
+        edges = []
     return GraphResponse(nodes=nodes, edges=edges)
 
 
@@ -127,8 +127,10 @@ async def search_graph(
     q: str = Query(..., min_length=1, description="搜索关键词"),
     top_k: int = Query(default=10, ge=1, le=100),
     pipeline=Depends(get_pipeline),
+    user=Depends(get_optional_user),
 ):
     """按关键词搜索图谱节点，返回子图。"""
+    user_id = user.user_id if user else ""
     graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
     store = getattr(graphiti, "store", None) if graphiti is not None else None
     if store is not None and hasattr(store, "export_semantic_subgraph"):
@@ -152,6 +154,7 @@ async def search_graph(
             data = store.export_semantic_subgraph(
                 entity_ids=anchor_ids,
                 edge_limit=min(500, max(50, top_k * 50)),
+                user_id=user_id,
             )
 
             nodes = _strip_node_embeddings(data.get("nodes", []))
@@ -183,35 +186,45 @@ async def search_graph(
     except Exception:
         query_embedding = None
     matched_nodes = _strip_node_embeddings(
-        graph_store.search(q, top_k=top_k, query_embedding=query_embedding)
+        graph_store.search(q, top_k=top_k, query_embedding=query_embedding, user_id=user_id)
     )
     node_ids = {n["node_id"] for n in matched_nodes}
     if hasattr(graph_store, "get_all_edges"):
-        all_edges = graph_store.get_all_edges()
+        all_edges = graph_store.get_all_edges(user_id=user_id)
         edges = [e for e in all_edges if e["source"] in node_ids or e["target"] in node_ids]
     else:
-        edges = [
-            {"source": u, "target": v, **d}
-            for u, v, d in graph_store.graph.edges(data=True)
-            if u in node_ids or v in node_ids
-        ]
+        edges = []
     return GraphResponse(nodes=matched_nodes, edges=edges)
 
 
 @router.post("/memory/graph/nodes", response_model=DeleteResponse)
-async def add_graph_node(req: GraphNodeAddRequest, pipeline=Depends(get_pipeline)):
+async def add_graph_node(
+    req: GraphNodeAddRequest,
+    pipeline=Depends(get_pipeline),
+    user=Depends(get_optional_user),
+):
     """手动添加一个实体节点到知识图谱。"""
     graph_store = pipeline.search_coordinator.graph_store
-    graph_store.add_node(req.id, label=req.label, properties=req.properties)
+    props = dict(req.properties or {})
+    if user:
+        props["user_id"] = user.user_id
+    graph_store.add_node(req.id, label=req.label, properties=props)
     return DeleteResponse(message=f"Node '{req.id}' added.")
 
 
 @router.post("/memory/graph/edges", response_model=DeleteResponse)
-async def add_graph_edge(req: GraphEdgeAddRequest, pipeline=Depends(get_pipeline)):
+async def add_graph_edge(
+    req: GraphEdgeAddRequest,
+    pipeline=Depends(get_pipeline),
+    user=Depends(get_optional_user),
+):
     """手动添加一条关系边到知识图谱。"""
     graph_store = pipeline.search_coordinator.graph_store
+    props = dict(req.properties or {})
+    if user:
+        props["user_id"] = user.user_id
     graph_store.add_edge(
-        req.source, req.target, relation=req.relation, properties=req.properties
+        req.source, req.target, relation=req.relation, properties=props
     )
     return DeleteResponse(
         message=f"Edge '{req.source}' -{req.relation}-> '{req.target}' added."
@@ -230,9 +243,10 @@ async def delete_graph_node(node_id: str, pipeline=Depends(get_pipeline)):
 
 
 @router.get("/memory/skills", response_model=SkillsResponse)
-async def get_skills(pipeline=Depends(get_pipeline)):
+async def get_skills(pipeline=Depends(get_pipeline), user=Depends(get_optional_user)):
     skill_store = pipeline.search_coordinator.skill_store
-    skills = skill_store.get_all()
+    user_id = user.user_id if user else ""
+    skills = skill_store.get_all(user_id=user_id)
     return SkillsResponse(skills=skills, total=len(skills))
 
 

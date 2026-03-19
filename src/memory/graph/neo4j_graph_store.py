@@ -232,7 +232,7 @@ class Neo4jGraphStore(BaseMemoryStore):
                 props=clean_props,
             )
 
-    def add(self, items: list[dict[str, Any]]) -> None:
+    def add(self, items: list[dict[str, Any]], *, user_id: str = "") -> None:
         """批量添加三元组 (subject, predicate, object)。"""
         for item in items:
             subj = item["subject"]
@@ -240,8 +240,13 @@ class Neo4jGraphStore(BaseMemoryStore):
             obj = item["object"]
             subj_id = subj.get("id", subj.get("name", ""))
             obj_id = obj.get("id", obj.get("name", ""))
-            subj_id = self._upsert_node(subj_id, label=subj.get("label", "Entity"), properties=subj)
-            obj_id = self._upsert_node(obj_id, label=obj.get("label", "Entity"), properties=obj)
+            subj_props = dict(subj)
+            obj_props = dict(obj)
+            if user_id:
+                subj_props["user_id"] = user_id
+                obj_props["user_id"] = user_id
+            subj_id = self._upsert_node(subj_id, label=subj.get("label", "Entity"), properties=subj_props)
+            obj_id = self._upsert_node(obj_id, label=obj.get("label", "Entity"), properties=obj_props)
             edge_props = dict(item.get("properties", {}) or {})
             edge_props.setdefault(
                 "timestamp",
@@ -254,6 +259,8 @@ class Neo4jGraphStore(BaseMemoryStore):
                 item.get("fact") or f"{subj.get('name', subj_id)} {pred} {obj.get('name', obj_id)}",
             )
             edge_props.setdefault("evidence", item.get("evidence", ""))
+            if user_id:
+                edge_props["user_id"] = user_id
             self.add_edge(subj_id, obj_id, relation=pred, properties=edge_props)
 
     def search(
@@ -261,6 +268,8 @@ class Neo4jGraphStore(BaseMemoryStore):
         query: str,
         top_k: int = 5,
         query_embedding: list[float] | None = None,
+        *,
+        user_id: str = "",
     ) -> list[dict[str, Any]]:
         """优先 embedding 相似度检索，fallback 到双向关键词匹配。"""
 
@@ -311,27 +320,45 @@ class Neo4jGraphStore(BaseMemoryStore):
                         merged: list[dict[str, Any]] = []
                         for r in results:
                             node_id = r["node_id"]
+                            props = by_id.get(node_id, {})
+                            if user_id and props.get("user_id", "") != user_id:
+                                continue
                             merged.append(
                                 {
                                     "node_id": node_id,
-                                    **by_id.get(node_id, {}),
+                                    **props,
                                     "_score": r.get("_score"),
                                 }
                             )
                         return merged
 
         with self._driver.session(database=self._database) as session:
-            result = session.run(
-                """
-                MATCH (n:Entity)
-                WHERE toLower(n.name) CONTAINS toLower($search_term)
-                   OR toLower($search_term) CONTAINS toLower(n.name)
-                RETURN n
-                LIMIT $top_k
-                """,
-                search_term=query,
-                top_k=top_k,
-            )
+            if user_id:
+                result = session.run(
+                    """
+                    MATCH (n:Entity)
+                    WHERE (toLower(n.name) CONTAINS toLower($search_term)
+                       OR toLower($search_term) CONTAINS toLower(n.name))
+                      AND n.user_id = $user_id
+                    RETURN n
+                    LIMIT $top_k
+                    """,
+                    search_term=query,
+                    top_k=top_k,
+                    user_id=user_id,
+                )
+            else:
+                result = session.run(
+                    """
+                    MATCH (n:Entity)
+                    WHERE toLower(n.name) CONTAINS toLower($search_term)
+                       OR toLower($search_term) CONTAINS toLower(n.name)
+                    RETURN n
+                    LIMIT $top_k
+                    """,
+                    search_term=query,
+                    top_k=top_k,
+                )
             return [
                 {"node_id": record["n"].get("node_id", ""), **dict(record["n"])}
                 for record in result
@@ -388,30 +415,54 @@ class Neo4jGraphStore(BaseMemoryStore):
                 ids=ids,
             )
 
-    def get_all(self) -> list[dict[str, Any]]:
+    def get_all(self, *, user_id: str = "") -> list[dict[str, Any]]:
         with self._driver.session(database=self._database) as session:
-            result = session.run("MATCH (n:Entity) RETURN n")
+            if user_id:
+                result = session.run(
+                    "MATCH (n:Entity) WHERE n.user_id = $user_id RETURN n",
+                    user_id=user_id,
+                )
+            else:
+                result = session.run("MATCH (n:Entity) RETURN n")
             return [
                 {"id": record["n"].get("node_id", ""), **dict(record["n"])} for record in result
             ]
 
-    def get_all_edges(self) -> list[dict[str, Any]]:
+    def get_all_edges(self, *, user_id: str = "") -> list[dict[str, Any]]:
         """获取所有边（用于 API 的 /memory/graph 端点）。"""
         with self._driver.session(database=self._database) as session:
-            result = session.run(
-                """
-                MATCH (a:Entity)-[r:RELATES]->(b:Entity)
-                RETURN
-                    a.node_id AS source,
-                    b.node_id AS target,
-                    r.relation AS relation,
-                    r.timestamp AS timestamp,
-                    r.confidence AS confidence,
-                    r.source_session AS source_session,
-                    r.fact AS fact,
-                    r.evidence AS evidence
-                """
-            )
+            if user_id:
+                result = session.run(
+                    """
+                    MATCH (a:Entity)-[r:RELATES]->(b:Entity)
+                    WHERE r.user_id = $user_id
+                    RETURN
+                        a.node_id AS source,
+                        b.node_id AS target,
+                        r.relation AS relation,
+                        r.timestamp AS timestamp,
+                        r.confidence AS confidence,
+                        r.source_session AS source_session,
+                        r.fact AS fact,
+                        r.evidence AS evidence
+                    """,
+                    user_id=user_id,
+                )
+            else:
+                result = session.run(
+                    """
+                    MATCH (a:Entity)-[r:RELATES]->(b:Entity)
+                    RETURN
+                        a.node_id AS source,
+                        b.node_id AS target,
+                        r.relation AS relation,
+                        r.timestamp AS timestamp,
+                        r.confidence AS confidence,
+                        r.source_session AS source_session,
+                        r.fact AS fact,
+                        r.evidence AS evidence
+                    """
+                )
             return [
                 {
                     "source": record["source"],

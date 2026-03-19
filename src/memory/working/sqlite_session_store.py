@@ -68,23 +68,28 @@ class SQLiteSessionStore:
             );
         """)
         # 当字段已存在时 ALTER TABLE 会抛异常，捕获就进行迁移
+        for alter_sql in [
+            "ALTER TABLE turns ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE turns ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE turns ADD COLUMN user_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE summaries ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE summaries ADD COLUMN user_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE session_meta ADD COLUMN user_id TEXT NOT NULL DEFAULT ''",
+        ]:
+            try:
+                conn.execute(alter_sql)
+                conn.commit()
+            except Exception:
+                pass  # 列已存在
+        # user_id 索引
         try:
-            conn.execute("ALTER TABLE turns ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_user ON turns(user_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_session_meta_user ON session_meta(user_id)")
             conn.commit()
         except Exception:
-            pass  # 列已存在
-        try:
-            conn.execute("ALTER TABLE turns ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0")
-            conn.commit()
-        except Exception:
-            pass  # 列已存在
-        try:
-            conn.execute("ALTER TABLE summaries ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0")
-            conn.commit()
-        except Exception:
-            pass  # 列已存在
+            pass
 
-    def get_or_create(self, session_id: str) -> SessionLog:
+    def get_or_create(self, session_id: str, *, user_id: str = "") -> SessionLog:
         """获取完整会话日志，不存在则返回空日志。"""
         conn = self._get_conn()
         turns = [
@@ -107,21 +112,26 @@ class SQLiteSessionStore:
                 (session_id,),
             )
         ]
-        log = SessionLog(session_id=session_id)
+        # 从 session_meta 读取 user_id（如果已有记录）
+        meta_row = conn.execute(
+            "SELECT user_id FROM session_meta WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        stored_user_id = (meta_row["user_id"] if meta_row and "user_id" in meta_row.keys() else "") or user_id
+        log = SessionLog(session_id=session_id, user_id=stored_user_id)
         log.turns = turns
         log.summaries = summaries
         return log
 
-    def append_turn(self, session_id: str, role: str, content: str, token_count: int = 0) -> None:
+    def append_turn(self, session_id: str, role: str, content: str, token_count: int = 0, *, user_id: str = "") -> None:
         conn = self._get_conn()
         conn.execute(
-            "INSERT INTO turns (session_id, role, content, token_count) VALUES (?, ?, ?, ?)",
-            (session_id, role, content, token_count),
+            "INSERT INTO turns (session_id, role, content, token_count, user_id) VALUES (?, ?, ?, ?, ?)",
+            (session_id, role, content, token_count, user_id),
         )
-        # upsert session_meta 的 updated_at
+        # upsert session_meta 的 updated_at 和 user_id
         conn.execute(
-            "INSERT INTO session_meta (session_id) VALUES (?) ON CONFLICT(session_id) DO UPDATE SET updated_at=CURRENT_TIMESTAMP",
-            (session_id,),
+            "INSERT INTO session_meta (session_id, user_id) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET updated_at=CURRENT_TIMESTAMP",
+            (session_id, user_id),
         )
         conn.commit()
 
@@ -188,29 +198,58 @@ class SQLiteSessionStore:
             )
         conn.commit()
 
-    def list_sessions(self, offset: int = 0, limit: int = 50) -> list[dict]:
-        """返回所有会话的摘要列表，按最新活动倒序，支持分页。"""
+    def list_sessions(self, offset: int = 0, limit: int = 50, *, user_id: str = "") -> list[dict]:
+        """返回会话的摘要列表，按最新活动倒序，支持分页。指定 user_id 时只返回该用户的会话。"""
         conn = self._get_conn()
-        rows = conn.execute(
-            """
-            SELECT
-                t.session_id,
-                SUM(CASE WHEN t.deleted=0 THEN 1 ELSE 0 END) AS turn_count,
-                (SELECT t2.content FROM turns t2
-                 WHERE t2.session_id = t.session_id AND t2.role = 'user' AND t2.deleted=0
-                 ORDER BY t2.id DESC LIMIT 1) AS last_message,
-                MAX(t.created_at) AS updated_at,
-                COALESCE(m.topic, '') AS topic,
-                COALESCE(m.tags, '[]') AS tags,
-                COALESCE(m.created_at, MIN(t.created_at)) AS session_created_at
-            FROM turns t
-            LEFT JOIN session_meta m ON m.session_id = t.session_id
-            GROUP BY t.session_id
-            ORDER BY updated_at DESC
-            LIMIT ? OFFSET ?
-        """,
-            (limit, offset),
-        ).fetchall()
+        if user_id:
+            rows = conn.execute(
+                """
+                SELECT
+                    t.session_id,
+                    SUM(CASE WHEN t.deleted=0 THEN 1 ELSE 0 END) AS turn_count,
+                    (SELECT t2.content FROM turns t2
+                     WHERE t2.session_id = t.session_id AND t2.role = 'user' AND t2.deleted=0
+                     ORDER BY t2.id DESC LIMIT 1) AS last_message,
+                    (SELECT t2.content FROM turns t2
+                     WHERE t2.session_id = t.session_id AND t2.role = 'user' AND t2.deleted=0
+                     ORDER BY t2.id ASC LIMIT 1) AS first_message,
+                    MAX(t.created_at) AS updated_at,
+                    COALESCE(m.topic, '') AS topic,
+                    COALESCE(m.tags, '[]') AS tags,
+                    COALESCE(m.created_at, MIN(t.created_at)) AS session_created_at
+                FROM turns t
+                LEFT JOIN session_meta m ON m.session_id = t.session_id
+                WHERE m.user_id = ?
+                GROUP BY t.session_id
+                ORDER BY updated_at DESC
+                LIMIT ? OFFSET ?
+            """,
+                (user_id, limit, offset),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT
+                    t.session_id,
+                    SUM(CASE WHEN t.deleted=0 THEN 1 ELSE 0 END) AS turn_count,
+                    (SELECT t2.content FROM turns t2
+                     WHERE t2.session_id = t.session_id AND t2.role = 'user' AND t2.deleted=0
+                     ORDER BY t2.id DESC LIMIT 1) AS last_message,
+                    (SELECT t2.content FROM turns t2
+                     WHERE t2.session_id = t.session_id AND t2.role = 'user' AND t2.deleted=0
+                     ORDER BY t2.id ASC LIMIT 1) AS first_message,
+                    MAX(t.created_at) AS updated_at,
+                    COALESCE(m.topic, '') AS topic,
+                    COALESCE(m.tags, '[]') AS tags,
+                    COALESCE(m.created_at, MIN(t.created_at)) AS session_created_at
+                FROM turns t
+                LEFT JOIN session_meta m ON m.session_id = t.session_id
+                GROUP BY t.session_id
+                ORDER BY updated_at DESC
+                LIMIT ? OFFSET ?
+            """,
+                (limit, offset),
+            ).fetchall()
         result = []
         for row in rows:
             try:
@@ -222,6 +261,7 @@ class SQLiteSessionStore:
                     "session_id": row["session_id"],
                     "turn_count": row["turn_count"],
                     "last_message": (row["last_message"] or "")[:120],
+                    "title": row["topic"] if row["topic"] else (row["first_message"] or "")[:40],
                     "topic": row["topic"],
                     "tags": tags,
                     "created_at": row["session_created_at"],

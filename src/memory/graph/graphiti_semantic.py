@@ -735,6 +735,7 @@ class GraphitiSemanticBuilder:
         current_turn: dict[str, Any],
         reference_timestamp: str,
         episode_type: str = "message",
+        user_id: str = "",
     ) -> dict[str, int]:
         """从单个 Episode 里抽取 Entity/Fact 并写入 store。
 
@@ -1023,6 +1024,7 @@ class GraphitiSemanticBuilder:
                 embedding=fact_embedding,
                 confidence=float(resolved_fact.get("confidence") or 1.0),
                 source_session=session_id,
+                user_id=user_id,
                 canonical_fact_hash=canonical_fact_hash,
                 t_created=reference_timestamp,
                 t_valid_from=t_valid_from,

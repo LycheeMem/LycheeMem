@@ -18,6 +18,7 @@ class PipelineState(TypedDict, total=False):
     # ─── 输入 ───
     user_query: str
     session_id: str
+    user_id: str  # 当前用户 ID（用于多用户隔离）
 
     # ─── 工作记忆管理器输出 ───
     compressed_history: list[dict[str, str]]  # 压缩后的对话上下文

@@ -109,6 +109,11 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
+    # ─── 用户认证 ───
+    jwt_secret_key: str = "lychee-dev-secret-change-me"
+    jwt_expire_hours: int = 168  # 7 天
+    user_db_path: str = "lychee_memos_users.db"
+
     model_config = SettingsConfigDict(extra="ignore", env_file=".env", env_file_encoding="utf-8")
 
 

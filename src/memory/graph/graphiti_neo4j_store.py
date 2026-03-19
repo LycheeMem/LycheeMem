@@ -169,6 +169,7 @@ class GraphitiNeo4jStore:
             "    e.turn_index = $turn_index, "
             "    e.t_ref = $t_ref, "
             "    e.episode_type = $episode_type, "
+            "    e.user_id = $user_id, "
             "    e.t_created = coalesce(e.t_created, $t_created), "
             "    e.t_updated = $t_updated "
             "RETURN e.episode_id AS episode_id"
@@ -184,6 +185,7 @@ class GraphitiNeo4jStore:
         turn_index: int,
         t_ref: str,
         episode_type: str = "message",
+        user_id: str = "",
         t_created: str | None = None,
     ) -> str:
         """写入/更新一个 Episode（幂等）。
@@ -208,6 +210,7 @@ class GraphitiNeo4jStore:
                 turn_index=turn_index,
                 t_ref=t_ref,
                 episode_type=str(episode_type or "message"),
+                user_id=user_id,
                 t_created=t_created,
                 t_updated=t_updated,
             )
@@ -518,6 +521,7 @@ class GraphitiNeo4jStore:
         *,
         entity_ids: list[str],
         edge_limit: int = 200,
+        user_id: str = "",
     ) -> dict[str, list[dict[str, Any]]]:
         """导出以给定实体为锚点的语义子图。
 
@@ -527,17 +531,45 @@ class GraphitiNeo4jStore:
         Notes:
         - 当前仅返回 Entity 作为 nodes，Fact 映射为 edges。
         - edges 额外返回 `episode_ids`（如果存在 Episode→Fact 证据关系）。
+        - 当 user_id 非空时，只返回归属于该用户的 Fact 作为 edges。
         """
 
         entity_ids = [str(e).strip() for e in (entity_ids or []) if str(e).strip()]
         if not entity_ids:
             return {"nodes": [], "edges": []}
 
+        # Build user_id-aware fact edge query inline; $user_id='' means no filter.
+        fact_edge_cypher = (
+            "MATCH (f:Fact) "
+            "WHERE f.subject_entity_id IS NOT NULL AND f.object_entity_id IS NOT NULL "
+            "  AND (f.subject_entity_id IN $entity_ids OR f.object_entity_id IN $entity_ids) "
+            "  AND f.t_tx_expired IS NULL "
+            "  AND ($user_id = '' OR coalesce(f.user_id, '') = $user_id) "
+            "OPTIONAL MATCH (e:Episode)-[:EVIDENCE_FOR]->(f) "
+            "WITH f, collect(e.episode_id) AS episode_ids "
+            "RETURN "
+            "f.fact_id AS fact_id, "
+            "f.subject_entity_id AS source, "
+            "f.object_entity_id AS target, "
+            "coalesce(f.relation_type, '') AS relation, "
+            "coalesce(f.confidence, 1.0) AS confidence, "
+            "coalesce(f.fact_text, '') AS fact, "
+            "coalesce(f.evidence_text, '') AS evidence, "
+            "coalesce(f.source_session, '') AS source_session, "
+            "coalesce(f.t_valid_from, f.t_created, '') AS timestamp, "
+            "coalesce(f.t_valid_from, '') AS t_valid_from, "
+            "coalesce(f.t_valid_to, '') AS t_valid_to, "
+            "episode_ids AS episode_ids "
+            "ORDER BY f.t_created DESC "
+            "LIMIT $edge_limit"
+        )
+
         with self._driver.session(database=self._database) as session:
             edges_rs = session.run(
-                self.fact_edges_incident_to_entities_cypher(),
+                fact_edge_cypher,
                 entity_ids=entity_ids,
                 edge_limit=int(edge_limit),
+                user_id=user_id,
             )
             edges = [dict(r) for r in edges_rs]
 
@@ -605,6 +637,7 @@ class GraphitiNeo4jStore:
             "    f.embedding = CASE WHEN $embedding IS NULL THEN f.embedding ELSE $embedding END, "
             "    f.confidence = $confidence, "
             "    f.source_session = $source_session, "
+            "    f.user_id = $user_id, "
             "    f.canonical_fact_hash = CASE WHEN $canonical_fact_hash IS NULL THEN f.canonical_fact_hash ELSE $canonical_fact_hash END, "
             "    f.t_created = coalesce(f.t_created, $t_created), "
             "    f.t_valid_from = coalesce(f.t_valid_from, $t_valid_from), "
@@ -631,6 +664,7 @@ class GraphitiNeo4jStore:
         embedding: list[float] | None = None,
         confidence: float = 1.0,
         source_session: str = "",
+        user_id: str = "",
         canonical_fact_hash: str | None = None,
         t_created: str | None = None,
         t_valid_from: str | None = None,
@@ -657,6 +691,7 @@ class GraphitiNeo4jStore:
                 embedding=embedding,
                 confidence=float(confidence),
                 source_session=source_session,
+                user_id=user_id,
                 canonical_fact_hash=canonical_fact_hash,
                 t_created=t_created,
                 t_valid_from=t_valid_from,
@@ -955,10 +990,12 @@ class GraphitiNeo4jStore:
 
     @staticmethod
     def fulltext_search_facts_cypher() -> str:
+        # $user_id = '' means no filter; non-empty means filter to that user only.
         return (
             "CALL db.index.fulltext.queryNodes('fact_fulltext', $q) "
             "YIELD node, score "
             "WHERE node.t_tx_expired IS NULL "
+            "  AND ($user_id = '' OR coalesce(node.user_id, '') = $user_id) "
             "RETURN node.fact_id AS fact_id, node.subject_entity_id AS source, node.object_entity_id AS target, "
             "coalesce(node.relation_type, '') AS relation, coalesce(node.fact_text, '') AS fact, "
             "coalesce(node.evidence_text, '') AS evidence, coalesce(node.confidence, 1.0) AS confidence, "
@@ -987,9 +1024,13 @@ class GraphitiNeo4jStore:
             "LIMIT $k"
         )
 
-    def fulltext_search_facts(self, *, query: str, limit: int = 10) -> list[dict[str, Any]]:
+    def fulltext_search_facts(
+        self, *, query: str, limit: int = 10, user_id: str = ""
+    ) -> list[dict[str, Any]]:
         with self._driver.session(database=self._database) as session:
-            rs = session.run(self.fulltext_search_facts_cypher(), q=query, limit=limit)
+            rs = session.run(
+                self.fulltext_search_facts_cypher(), q=query, limit=limit, user_id=user_id
+            )
             return [dict(r) for r in rs]
 
     def vector_search_facts(
@@ -1417,22 +1458,58 @@ class GraphitiNeo4jStore:
             edges_cypher=edges_cypher,
         )
 
-    def export_semantic_graph(self) -> dict[str, list[dict[str, Any]]]:
+    def export_semantic_graph(
+        self, *, user_id: str = ""
+    ) -> dict[str, list[dict[str, Any]]]:
         """导出“语义图视图”。
 
         返回结构与 `/memory/graph` 的 GraphResponse 兼容：
         `{ "nodes": [...], "edges": [...] }`
-        """
-        q = self.semantic_graph_export_query()
-        with self._driver.session(database=self._database) as session:
-            nodes_rs = session.run(q.nodes_cypher)
-            edges_rs = session.run(q.edges_cypher)
 
-            nodes = [dict(r) for r in nodes_rs]
-            edges = [dict(r) for r in edges_rs]
+        当 user_id 非空时，只返回归属于该用户的 Fact 作为 edges，
+        以及通过这些 Fact 的 subject/object 确定的 Entity 作为 nodes。
+        """
+        if user_id:
+            edges_cypher = (
+                "MATCH (f:Fact) "
+                "WHERE f.subject_entity_id IS NOT NULL AND f.object_entity_id IS NOT NULL "
+                "  AND coalesce(f.user_id, '') = $user_id "
+                "RETURN "
+                "f.subject_entity_id AS source, "
+                "f.object_entity_id AS target, "
+                "coalesce(f.relation_type, '') AS relation, "
+                "coalesce(f.confidence, 1.0) AS confidence, "
+                "coalesce(f.fact_text, '') AS fact, "
+                "coalesce(f.evidence_text, '') AS evidence, "
+                "coalesce(f.source_session, '') AS source_session, "
+                "coalesce(f.t_valid_from, f.t_created, '') AS timestamp, "
+                "coalesce(f.t_valid_from, '') AS t_valid_from, "
+                "coalesce(f.t_valid_to, '') AS t_valid_to"
+            )
+            nodes_cypher = (
+                "MATCH (f:Fact) "
+                "WHERE coalesce(f.user_id, '') = $user_id "
+                "  AND f.subject_entity_id IS NOT NULL AND f.object_entity_id IS NOT NULL "
+                "WITH collect(DISTINCT f.subject_entity_id) + collect(DISTINCT f.object_entity_id) AS eids "
+                "UNWIND eids AS eid "
+                "MATCH (e:Entity {entity_id: eid}) "
+                "RETURN DISTINCT e.entity_id AS id, coalesce(e.name, e.entity_id) AS name, "
+                "coalesce(e.type_label, e.label, '') AS label, properties(e) AS properties"
+            )
+            with self._driver.session(database=self._database) as session:
+                nodes_rs = session.run(nodes_cypher, user_id=user_id)
+                edges_rs = session.run(edges_cypher, user_id=user_id)
+                nodes = [dict(r) for r in nodes_rs]
+                edges = [dict(r) for r in edges_rs]
+        else:
+            q = self.semantic_graph_export_query()
+            with self._driver.session(database=self._database) as session:
+                nodes_rs = session.run(q.nodes_cypher)
+                edges_rs = session.run(q.edges_cypher)
+                nodes = [dict(r) for r in nodes_rs]
+                edges = [dict(r) for r in edges_rs]
 
         return {"nodes": nodes, "edges": edges}
-
     # ──────────────────────────────────────
     # Neighbor community survey (paper §2.3: ingestion-time dynamic extension)
     # ──────────────────────────────────────

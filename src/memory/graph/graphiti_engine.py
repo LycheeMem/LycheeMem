@@ -72,6 +72,7 @@ class GraphitiEngine:
         t_ref: str | None = None,
         episode_id: str | None = None,
         episode_type: str = "message",
+        user_id: str = "",
     ) -> str:
         """写入一个 Episode（幂等）。
 
@@ -97,6 +98,7 @@ class GraphitiEngine:
             turn_index=turn_index,
             t_ref=t_ref,
             episode_type=str(episode_type or "message"),
+            user_id=user_id,
         )
 
     def search(
@@ -107,6 +109,7 @@ class GraphitiEngine:
         top_k: int = 10,
         query_embedding: list[float] | None = None,
         include_communities: bool = True,
+        user_id: str = "",
     ) -> GraphitiSearchResult:
         """论文式检索：Search→Rerank→Constructor。
 
@@ -127,11 +130,13 @@ class GraphitiEngine:
         bm25_facts: list[dict[str, Any]] = []
         if hasattr(self.store, "fulltext_search_facts"):
             if self.strict:
-                bm25_facts = self.store.fulltext_search_facts(query=query, limit=max(30, top_k * 6))
+                bm25_facts = self.store.fulltext_search_facts(
+                    query=query, limit=max(30, top_k * 6), user_id=user_id
+                )
             else:
                 try:
                     bm25_facts = self.store.fulltext_search_facts(
-                        query=query, limit=max(30, top_k * 6)
+                        query=query, limit=max(30, top_k * 6), user_id=user_id
                     )
                 except Exception:
                     bm25_facts = []
@@ -245,11 +250,13 @@ class GraphitiEngine:
             if not frontier:
                 break
             if self.strict:
-                subgraph = self.store.export_semantic_subgraph(entity_ids=frontier, edge_limit=600)
+                subgraph = self.store.export_semantic_subgraph(
+                    entity_ids=frontier, edge_limit=600, user_id=user_id
+                )
             else:
                 try:
                     subgraph = self.store.export_semantic_subgraph(
-                        entity_ids=frontier, edge_limit=600
+                        entity_ids=frontier, edge_limit=600, user_id=user_id
                     )
                 except Exception:
                     break

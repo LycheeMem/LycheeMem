@@ -30,6 +30,7 @@ class SkillEntry:
     success_count: int = 0  # 成功使用次数
     last_used: str | None = None  # 最后使用时间 (ISO 格式)
     conditions: str = ""  # 适用条件描述
+    user_id: str = ""  # 所属用户（空串表示全局/兼容旧数据）
 
 
 class InMemorySkillStore(BaseMemoryStore):
@@ -38,7 +39,7 @@ class InMemorySkillStore(BaseMemoryStore):
     def __init__(self):
         self._skills: dict[str, SkillEntry] = {}
 
-    def add(self, items: list[dict[str, Any]]) -> None:
+    def add(self, items: list[dict[str, Any]], *, user_id: str = "") -> None:
         for item in items:
             skill = SkillEntry(
                 id=item.get("id", str(uuid.uuid4())),
@@ -49,6 +50,7 @@ class InMemorySkillStore(BaseMemoryStore):
                 success_count=item.get("success_count", 0),
                 last_used=item.get("last_used"),
                 conditions=item.get("conditions", ""),
+                user_id=item.get("user_id", "") or user_id,
             )
             self._skills[skill.id] = skill
 
@@ -63,15 +65,17 @@ class InMemorySkillStore(BaseMemoryStore):
             ).isoformat()
 
     def search(
-        self, query: str, top_k: int = 5, query_embedding: list[float] | None = None
+        self, query: str, top_k: int = 5, query_embedding: list[float] | None = None, *, user_id: str = ""
     ) -> list[dict[str, Any]]:
-        """向量相似度检索。需要传入 query_embedding。"""
+        """向量相似度检索。需要传入 query_embedding。指定 user_id 时只搜索该用户的技能。"""
         if query_embedding is None or not self._skills:
             return []
 
         q_vec = np.array(query_embedding, dtype=np.float32)
         scored = []
         for skill in self._skills.values():
+            if user_id and skill.user_id != user_id:
+                continue
             s_vec = np.array(skill.embedding, dtype=np.float32)
             # cosine similarity
             cos_sim = float(
@@ -97,7 +101,8 @@ class InMemorySkillStore(BaseMemoryStore):
         for skill_id in ids:
             self._skills.pop(skill_id, None)
 
-    def get_all(self) -> list[dict[str, Any]]:
+    def get_all(self, *, user_id: str = "") -> list[dict[str, Any]]:
+        """获取所有技能。指定 user_id 时只返回该用户的技能。"""
         return [
             {
                 "id": s.id,
@@ -109,4 +114,5 @@ class InMemorySkillStore(BaseMemoryStore):
                 "conditions": s.conditions,
             }
             for s in self._skills.values()
+            if not user_id or s.user_id == user_id
         ]

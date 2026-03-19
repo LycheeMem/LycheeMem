@@ -61,6 +61,7 @@ class LycheePipeline:
         result = self.wm_manager.run(
             session_id=state["session_id"],
             user_query=state["user_query"],
+            user_id=state.get("user_id", ""),
         )
         return {
             "compressed_history": result["compressed_history"],
@@ -73,6 +74,7 @@ class LycheePipeline:
         result = self.search_coordinator.run(
             user_query=state["user_query"],
             session_id=state.get("session_id"),
+            user_id=state.get("user_id", ""),
         )
         return {
             "retrieved_graph_memories": result["retrieved_graph_memories"],
@@ -102,7 +104,10 @@ class LycheePipeline:
         )
 
         # 将 assistant 回复写回会话日志
-        self.wm_manager.append_assistant_turn(state["session_id"], result["final_response"])
+        self.wm_manager.append_assistant_turn(
+            state["session_id"], result["final_response"],
+            user_id=state.get("user_id", ""),
+        )
 
         # 标记固化待处理
         return {
@@ -137,12 +142,13 @@ class LycheePipeline:
     # Public API
     # ──────────────────────────────────────
 
-    def run(self, user_query: str, session_id: str) -> dict[str, Any]:
+    def run(self, user_query: str, session_id: str, user_id: str = "") -> dict[str, Any]:
         """同步运行 Pipeline。
 
         Args:
             user_query: 用户输入。
             session_id: 会话 ID。
+            user_id: 用户 ID（用于多用户隔离）。
 
         Returns:
             完整的 PipelineState（包含 final_response 等所有字段）。
@@ -150,6 +156,7 @@ class LycheePipeline:
         initial_state: dict[str, Any] = {
             "user_query": user_query,
             "session_id": session_id,
+            "user_id": user_id,
         }
         result = self._graph.invoke(initial_state)
 
@@ -158,15 +165,17 @@ class LycheePipeline:
             self._trigger_consolidation_bg(
                 session_id,
                 retrieved_context=str(result.get("background_context") or ""),
+                user_id=user_id,
             )
 
         return result
 
-    async def arun(self, user_query: str, session_id: str) -> dict[str, Any]:
+    async def arun(self, user_query: str, session_id: str, user_id: str = "") -> dict[str, Any]:
         """异步运行 Pipeline。"""
         initial_state: dict[str, Any] = {
             "user_query": user_query,
             "session_id": session_id,
+            "user_id": user_id,
         }
         result = await self._graph.ainvoke(initial_state)
 
@@ -176,13 +185,14 @@ class LycheePipeline:
                 self._aconsolidate(
                     session_id,
                     retrieved_context=str(result.get("background_context") or ""),
+                    user_id=user_id,
                 )
             )
 
         return result
 
     async def astream_steps(
-        self, user_query: str, session_id: str
+        self, user_query: str, session_id: str, user_id: str = ""
     ) -> AsyncIterator[dict[str, Any]]:
         """逐节点执行 Pipeline，每步完成后 yield 进度事件。
 
@@ -190,7 +200,7 @@ class LycheePipeline:
           {"type": "step", "step": <node_name>, "status": "done", ...extra}
           {"type": "done", "result": <full_state>}
         """
-        state: dict[str, Any] = {"user_query": user_query, "session_id": session_id}
+        state: dict[str, Any] = {"user_query": user_query, "session_id": session_id, "user_id": user_id}
 
         patch = await asyncio.to_thread(self._wm_manager_node, state)
         state.update(patch)
@@ -219,13 +229,14 @@ class LycheePipeline:
                 self._aconsolidate(
                     session_id,
                     retrieved_context=str(state.get("background_context") or ""),
+                    user_id=user_id,
                 )
             )
 
         yield {"type": "done", "result": dict(state)}
 
     def consolidate(
-        self, session_id: str, retrieved_context: str = ""
+        self, session_id: str, retrieved_context: str = "", user_id: str = ""
     ) -> dict[str, Any]:
         """手动触发固化（公共方法，可由 API BackgroundTasks 调用）。
 
@@ -240,29 +251,30 @@ class LycheePipeline:
         turns = self.wm_manager.session_store.get_turns(session_id)
         if turns:
             return self.consolidator.run(
-                turns=turns, session_id=session_id, retrieved_context=retrieved_context
+                turns=turns, session_id=session_id, retrieved_context=retrieved_context,
+                user_id=user_id,
             )
         return {"entities_added": 0, "skills_added": 0}
 
     def _trigger_consolidation_bg(
-        self, session_id: str, retrieved_context: str = ""
+        self, session_id: str, retrieved_context: str = "", user_id: str = ""
     ) -> None:
         """在守护线程中触发固化（fire-and-forget）。"""
         thread = threading.Thread(
             target=self._safe_consolidate,
-            args=(session_id, retrieved_context),
+            args=(session_id, retrieved_context, user_id),
             daemon=True,
         )
         thread.start()
 
     def _safe_consolidate(
-        self, session_id: str, retrieved_context: str = ""
+        self, session_id: str, retrieved_context: str = "", user_id: str = ""
     ) -> None:
         """安全执行固化，异常不影响主流程。"""
         graphiti = getattr(self.consolidator, "graphiti_engine", None)
         strict = bool(getattr(graphiti, "strict", False))
         try:
-            result = self.consolidate(session_id, retrieved_context=retrieved_context)
+            result = self.consolidate(session_id, retrieved_context=retrieved_context, user_id=user_id)
             self._last_consolidation = {
                 "session_id": session_id,
                 "entities_added": result.get("entities_added", 0),
@@ -281,7 +293,7 @@ class LycheePipeline:
                 raise
 
     async def _aconsolidate(
-        self, session_id: str, retrieved_context: str = ""
+        self, session_id: str, retrieved_context: str = "", user_id: str = ""
     ) -> None:
         """异步场景下的后台固化。"""
         turns = self.wm_manager.session_store.get_turns(session_id)
@@ -293,6 +305,7 @@ class LycheePipeline:
                     turns=turns,
                     session_id=session_id,
                     retrieved_context=retrieved_context,
+                    user_id=user_id,
                 ),
             )
 

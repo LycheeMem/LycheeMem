@@ -7,6 +7,7 @@ export default defineConfig({
     port: 55555,
     host: "0.0.0.0",
     proxy: {
+      "/auth": "http://localhost:8000",
       "/chat": "http://localhost:8000",
       "/sessions": "http://localhost:8000",
       "/memory": "http://localhost:8000",

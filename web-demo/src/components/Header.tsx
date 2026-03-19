@@ -1,101 +1,25 @@
-import { FileTextOutlined, ThunderboltOutlined } from "@ant-design/icons";
+import { FileTextOutlined, LogoutOutlined, ThunderboltOutlined, UserOutlined } from "@ant-design/icons";
 import { useCallback, useEffect } from "react";
-import {
-  fetchGraphData,
-  fetchGraphEdges,
-  fetchPipelineStatus,
-  fetchSessions,
-  fetchSessionTurns,
-  fetchSkills,
-} from "../api";
+import { fetchPipelineStatus } from "../api";
 import { useStore } from "../state";
 
 export default function Header() {
-  const sessionId = useStore((s) => s.sessionId);
-  const sessions = useStore((s) => s.sessions);
+  const user = useStore((s) => s.user);
+  const logout = useStore((s) => s.logout);
   const pipelineStatus = useStore((s) => s.pipelineStatus);
-  const setSessions = useStore((s) => s.setSessions);
-  const setSessionId = useStore((s) => s.setSessionId);
-  const setMessages = useStore((s) => s.setMessages);
-  const resetAgents = useStore((s) => s.resetAgents);
-  const setGraphData = useStore((s) => s.setGraphData);
-  const setGraphEdges = useStore((s) => s.setGraphEdges);
-  const setSkills = useStore((s) => s.setSkills);
   const setPipelineStatus = useStore((s) => s.setPipelineStatus);
-  const setWmTurns = useStore((s) => s.setWmTurns);
-  const setWmTokenUsage = useStore((s) => s.setWmTokenUsage);
-  const setWmMaxTokens = useStore((s) => s.setWmMaxTokens);
-  const setWmSummaries = useStore((s) => s.setWmSummaries);
-  const setWmBoundaryIndex = useStore((s) => s.setWmBoundaryIndex);
-  const newSession = useStore((s) => s.newSession);
 
   const loadAll = useCallback(async () => {
-    try {
-      const s = await fetchSessions();
-      setSessions(s);
-    } catch {
-      /* ignore */
-    }
     try {
       setPipelineStatus(await fetchPipelineStatus());
     } catch {
       /* ignore */
     }
-  }, [setSessions, setPipelineStatus]);
+  }, [setPipelineStatus]);
 
   useEffect(() => {
     loadAll();
   }, [loadAll]);
-
-  const handleSessionChange = async (
-    e: React.ChangeEvent<HTMLSelectElement>
-  ) => {
-    const sid = e.target.value;
-    if (!sid) return;
-    setSessionId(sid);
-    setMessages([]);
-    resetAgents();
-
-    try {
-      const { turns, summaries, boundary_index, wm_current_tokens, wm_max_tokens } = await fetchSessionTurns(sid);
-      setMessages(
-        turns
-          .filter((t) => t.role === "user" || t.role === "assistant")
-          .map((t) => ({
-            role: t.role as "user" | "assistant",
-            content: t.content,
-            meta: null,
-          }))
-      );
-      setWmTurns(turns);
-      setWmSummaries(summaries);
-      setWmBoundaryIndex(boundary_index);
-      setWmTokenUsage(wm_current_tokens);
-      setWmMaxTokens(wm_max_tokens);
-    } catch {
-      /* ignore */
-    }
-
-    try {
-      setGraphData(await fetchGraphData());
-    } catch {
-      /* ignore */
-    }
-    try {
-      setGraphEdges(await fetchGraphEdges());
-    } catch {
-      /* ignore */
-    }
-    try {
-      setSkills(await fetchSkills());
-    } catch {
-      /* ignore */
-    }
-  };
-
-  const handleNewSession = () => {
-    newSession();
-  };
 
   return (
     <header id="app-header">
@@ -105,29 +29,6 @@ export default function Header() {
           <span className="logo-text">
             立知大模型<span className="logo-text">记忆系统</span>
           </span>
-        </div>
-      </div>
-      <div className="header-center">
-        <div className="session-selector">
-          <select
-            id="session-select"
-            value={sessionId}
-            onChange={handleSessionChange}
-          >
-            <option value="">新建会话</option>
-            {sessions.map((s) => (
-              <option key={s.session_id} value={s.session_id}>
-                {(s.topic || s.session_id).slice(0, 40)}
-              </option>
-            ))}
-          </select>
-          <button
-            className="icon-btn"
-            title="新建会话"
-            onClick={handleNewSession}
-          >
-            ＋
-          </button>
         </div>
       </div>
       <div className="header-right">
@@ -142,6 +43,16 @@ export default function Header() {
             <ThunderboltOutlined /> {pipelineStatus.skill_count}
           </span>
         </div>
+        {user && (
+          <div className="user-info">
+            <span className="user-chip" title={user.username}>
+              <UserOutlined /> {user.display_name || user.username}
+            </span>
+            <button className="icon-btn logout-btn" title="退出登录" onClick={logout}>
+              <LogoutOutlined />
+            </button>
+          </div>
+        )}
       </div>
     </header>
   );

@@ -22,14 +22,20 @@ def main():
     import uvicorn
 
     from src.api.server import create_app
+    from src.auth.auth import configure_jwt
+    from src.auth.user_store import UserStore
     from src.core.config import settings
     from src.core.factory import create_pipeline
 
     llm = _create_llm(settings)
     embedder = _create_embedder(settings)
 
+    # 用户存储 + JWT 配置
+    user_store = UserStore(db_path=settings.user_db_path)
+    configure_jwt(settings.jwt_secret_key, settings.jwt_expire_hours)
+
     pipeline = create_pipeline(llm=llm, embedder=embedder, settings=settings)
-    app = create_app(pipeline)
+    app = create_app(pipeline, user_store=user_store)
 
     print(f"🚀 LycheeMemOS server starting on http://{args.host}:{args.port}")
     print(f"   LLM:  {settings.llm_model}")
@@ -37,6 +43,7 @@ def main():
     print(
         f"   Storage: session={settings.session_backend}, graph={settings.graph_backend}, skill={settings.skill_backend}"
     )
+    print(f"   Auth:  user_db={settings.user_db_path}")
     print(f"   Docs: http://{args.host}:{args.port}/docs")
 
     uvicorn.run(app, host=args.host, port=args.port)

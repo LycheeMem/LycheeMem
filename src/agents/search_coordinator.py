@@ -164,12 +164,13 @@ class SearchCoordinator(BaseAgent):
         session_id = kwargs.get("session_id")
         if session_id is not None:
             session_id = str(session_id)
+        user_id = kwargs.get("user_id", "")
 
         return {
             "retrieved_graph_memories": self._search_graph(
-                graph_queries, session_id=session_id
+                graph_queries, session_id=session_id, user_id=user_id
             ),
-            "retrieved_skills": self._search_skills(skill_queries[0]),
+            "retrieved_skills": self._search_skills(skill_queries[0], user_id=user_id),
         }
 
     def _plan_retrieval(self, query: str) -> dict[str, list[str]]:
@@ -200,7 +201,7 @@ class SearchCoordinator(BaseAgent):
         return {}
 
     def _search_graph(
-        self, queries: list[str], *, session_id: str | None = None
+        self, queries: list[str], *, session_id: str | None = None, user_id: str = ""
     ) -> list[dict[str, Any]]:
         """在知识图谱中检索相关节点和邻居。
 
@@ -231,6 +232,7 @@ class SearchCoordinator(BaseAgent):
                     top_k=self.graph_top_k,
                     query_embedding=query_embedding,
                     include_communities=True,
+                    user_id=user_id,
                 )
                 if r.context.strip():
                     all_contexts.append(r.context.strip())
@@ -263,7 +265,8 @@ class SearchCoordinator(BaseAgent):
         for query in queries:
             query_embedding = _embed(query)
             hits = self.graph_store.search(
-                query, top_k=self.graph_top_k, query_embedding=query_embedding
+                query, top_k=self.graph_top_k, query_embedding=query_embedding,
+                user_id=user_id,
             )
             for hit in hits:
                 node_id = hit.get("node_id", hit.get("id", ""))
@@ -281,7 +284,7 @@ class SearchCoordinator(BaseAgent):
                 )
         return results
 
-    def _search_skills(self, query: str) -> list[dict[str, Any]]:
+    def _search_skills(self, query: str, user_id: str = "") -> list[dict[str, Any]]:
         """使用 HyDE 策略检索技能库。
 
         1. 用 LLM 生成假设性回答
@@ -301,6 +304,7 @@ class SearchCoordinator(BaseAgent):
             query=query,
             top_k=self.skill_top_k,
             query_embedding=hyde_embedding,
+            user_id=user_id,
         )
 
         for skill in results:

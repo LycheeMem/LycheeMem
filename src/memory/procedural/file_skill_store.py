@@ -90,7 +90,7 @@ class FileSkillStore(BaseMemoryStore):
     # BaseMemoryStore API
     # ──────────────────────────────────────
 
-    def add(self, items: list[dict[str, Any]]) -> None:
+    def add(self, items: list[dict[str, Any]], *, user_id: str = "") -> None:
         if not items:
             return
         with self._lock:
@@ -104,6 +104,7 @@ class FileSkillStore(BaseMemoryStore):
                     success_count=item.get("success_count", 0),
                     last_used=item.get("last_used"),
                     conditions=item.get("conditions", ""),
+                    user_id=item.get("user_id", "") or user_id,
                 )
                 self._skills[skill.id] = skill
             self._save()
@@ -113,6 +114,8 @@ class FileSkillStore(BaseMemoryStore):
         query: str,
         top_k: int = 5,
         query_embedding: list[float] | None = None,
+        *,
+        user_id: str = "",
     ) -> list[dict[str, Any]]:
         if query_embedding is None:
             return []
@@ -125,6 +128,8 @@ class FileSkillStore(BaseMemoryStore):
 
             scored: list[tuple[float, SkillEntry]] = []
             for skill in self._skills.values():
+                if user_id and skill.user_id != user_id:
+                    continue
                 s_vec = np.array(skill.embedding, dtype=np.float32)
                 s_norm = float(np.linalg.norm(s_vec) + 1e-9)
                 cos_sim = float(np.dot(q_vec, s_vec) / (q_norm * s_norm))
@@ -152,7 +157,7 @@ class FileSkillStore(BaseMemoryStore):
                 self._skills.pop(skill_id, None)
             self._save()
 
-    def get_all(self) -> list[dict[str, Any]]:
+    def get_all(self, *, user_id: str = "") -> list[dict[str, Any]]:
         with self._lock:
             return [
                 {
@@ -165,6 +170,7 @@ class FileSkillStore(BaseMemoryStore):
                     "conditions": s.conditions,
                 }
                 for s in self._skills.values()
+                if not user_id or s.user_id == user_id
             ]
 
     # ──────────────────────────────────────

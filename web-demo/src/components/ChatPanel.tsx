@@ -1,4 +1,4 @@
-import { AppstoreOutlined, BarChartOutlined, MessageOutlined } from "@ant-design/icons";
+import { MessageOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useRef } from "react";
 import { fetchGraphData, fetchGraphEdges, fetchPipelineStatus, fetchSessionTurns, fetchSessions, fetchSkills, streamChatMessage } from "../api";
 import { useStore } from "../state";
@@ -161,7 +161,6 @@ export default function ChatPanel() {
     <section id="panel-chat" className="panel">
       <div className="panel-header">
         <h2><MessageOutlined /> 对话</h2>
-        <span className="session-id-label">{sessionId}</span>
       </div>
 
       <div id="chat-messages" className="chat-messages" ref={messagesRef}>

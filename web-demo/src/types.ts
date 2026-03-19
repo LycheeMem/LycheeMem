@@ -1,3 +1,11 @@
+// ── Auth ──
+export interface AuthUser {
+  user_id: string;
+  username: string;
+  display_name: string;
+  token: string;
+}
+
 // ── Message ──
 export interface MessageMeta {
   memories_retrieved: number;
@@ -78,6 +86,10 @@ export interface PipelineStatus {
 export interface SessionInfo {
   session_id: string;
   topic?: string;
+  title?: string;       // 派生标题：topic 优先，否则取首条用户消息
+  turn_count?: number;
+  last_message?: string;
+  updated_at?: string | null;
 }
 
 // ── Pipeline Steps (Timeline) ──
