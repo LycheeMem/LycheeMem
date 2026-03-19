@@ -151,12 +151,14 @@ class GraphitiEngine:
                     vector_entities = self.store.vector_search_entities(
                         query_embedding=query_embedding,
                         limit=max(20, top_k * 4),
+                        user_id=user_id,
                     )
                 else:
                     try:
                         vector_entities = self.store.vector_search_entities(
                             query_embedding=query_embedding,
                             limit=max(20, top_k * 4),
+                            user_id=user_id,
                         )
                     except Exception:
                         vector_entities = []
@@ -216,10 +218,14 @@ class GraphitiEngine:
 
         ft_entities: list[dict[str, Any]] = []
         if self.strict:
-            ft_entities = self.store.fulltext_search_entities(query=query, limit=10)
+            ft_entities = self.store.fulltext_search_entities(
+                query=query, limit=10, user_id=user_id
+            )
         else:
             try:
-                ft_entities = self.store.fulltext_search_entities(query=query, limit=10)
+                ft_entities = self.store.fulltext_search_entities(
+                    query=query, limit=10, user_id=user_id
+                )
             except Exception:
                 ft_entities = []
 
@@ -414,12 +420,14 @@ class GraphitiEngine:
                     vector_facts = self.store.vector_search_facts(
                         query_embedding=query_embedding,
                         limit=max(30, top_k * 6),
+                        user_id=user_id,
                     )
                 else:
                     try:
                         vector_facts = self.store.vector_search_facts(
                             query_embedding=query_embedding,
                             limit=max(30, top_k * 6),
+                            user_id=user_id,
                         )
                     except Exception:
                         vector_facts = []

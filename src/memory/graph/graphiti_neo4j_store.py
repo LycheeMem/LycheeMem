@@ -308,6 +308,11 @@ class GraphitiNeo4jStore:
         return (
             "CALL db.index.fulltext.queryNodes('entity_fulltext', $q) "
             "YIELD node, score "
+            "WHERE EXISTS { "
+            "  MATCH (f:Fact) "
+            "  WHERE (f.subject_entity_id = node.entity_id OR f.object_entity_id = node.entity_id) "
+            "    AND coalesce(f.user_id, '') = $user_id "
+            "} "
             "RETURN node.entity_id AS entity_id, node.name AS name, node.summary AS summary, "
             "node.aliases AS aliases, node.type_label AS type_label, score AS score "
             "ORDER BY score DESC "
@@ -317,21 +322,31 @@ class GraphitiNeo4jStore:
     @staticmethod
     def vector_search_entities_cypher() -> str:
         return (
-            "CALL db.index.vector.queryNodes('entity_embedding', $k, $embedding) "
-            "YIELD node, score "
-            "RETURN node.entity_id AS entity_id, node.name AS name, node.summary AS summary, "
-            "node.aliases AS aliases, node.type_label AS type_label, score AS score "
+            "MATCH (e:Entity) "
+            "WHERE e.embedding IS NOT NULL "
+            "  AND EXISTS { "
+            "    MATCH (f:Fact) "
+            "    WHERE (f.subject_entity_id = e.entity_id OR f.object_entity_id = e.entity_id) "
+            "      AND coalesce(f.user_id, '') = $user_id "
+            "  } "
+            "WITH e, vector.similarity.cosine(e.embedding, $embedding) AS score "
             "ORDER BY score DESC "
-            "LIMIT $k"
+            "LIMIT $limit "
+            "RETURN e.entity_id AS entity_id, e.name AS name, e.summary AS summary, "
+            "e.aliases AS aliases, e.type_label AS type_label, score AS score"
         )
 
-    def fulltext_search_entities(self, *, query: str, limit: int = 10) -> list[dict[str, Any]]:
+    def fulltext_search_entities(
+        self, *, query: str, limit: int = 10, user_id: str = ""
+    ) -> list[dict[str, Any]]:
         with self._driver.session(database=self._database) as session:
-            rs = session.run(self.fulltext_search_entities_cypher(), q=query, limit=limit)
+            rs = session.run(
+                self.fulltext_search_entities_cypher(), q=query, limit=limit, user_id=user_id
+            )
             return [dict(r) for r in rs]
 
     def vector_search_entities(
-        self, *, query_embedding: list[float], limit: int = 10
+        self, *, query_embedding: list[float], limit: int = 10, user_id: str = ""
     ) -> list[dict[str, Any]]:
         if not query_embedding:
             return []
@@ -339,7 +354,8 @@ class GraphitiNeo4jStore:
             rs = session.run(
                 self.vector_search_entities_cypher(),
                 embedding=list(query_embedding),
-                k=int(limit),
+                limit=limit,
+                user_id=user_id,
             )
             return [dict(r) for r in rs]
 
@@ -932,6 +948,7 @@ class GraphitiNeo4jStore:
         return (
             "MATCH (f:Fact) "
             "WHERE toUpper(coalesce(f.relation_type, '')) = toUpper($relation) "
+            "  AND coalesce(f.user_id, '') = $user_id "
             "RETURN "
             "f.fact_id AS fact_id, "
             "f.subject_entity_id AS source, "
@@ -948,9 +965,9 @@ class GraphitiNeo4jStore:
             "LIMIT $limit"
         )
 
-    def search_facts_by_relation(self, *, relation: str, limit: int = 10) -> list[dict[str, Any]]:
+    def search_facts_by_relation(self, *, relation: str, limit: int = 10, user_id: str = "") -> list[dict[str, Any]]:
         with self._driver.session(database=self._database) as session:
-            rs = session.run(self.search_facts_by_relation_cypher(), relation=relation, limit=limit)
+            rs = session.run(self.search_facts_by_relation_cypher(), relation=relation, limit=limit, user_id=user_id)
             return [dict(r) for r in rs]
 
     @staticmethod
@@ -968,6 +985,7 @@ class GraphitiNeo4jStore:
             "WHERE "
             "  ($until IS NULL OR f_from <= $until) "
             "  AND ($since IS NULL OR f_to >= $since) "
+            "  AND coalesce(f.user_id, '') = $user_id "
             "RETURN "
             "f.fact_id AS fact_id, "
             "f.subject_entity_id AS source, "
@@ -990,12 +1008,11 @@ class GraphitiNeo4jStore:
 
     @staticmethod
     def fulltext_search_facts_cypher() -> str:
-        # $user_id = '' means no filter; non-empty means filter to that user only.
         return (
             "CALL db.index.fulltext.queryNodes('fact_fulltext', $q) "
             "YIELD node, score "
             "WHERE node.t_tx_expired IS NULL "
-            "  AND ($user_id = '' OR coalesce(node.user_id, '') = $user_id) "
+            "  AND coalesce(node.user_id, '') = $user_id "
             "RETURN node.fact_id AS fact_id, node.subject_entity_id AS source, node.object_entity_id AS target, "
             "coalesce(node.relation_type, '') AS relation, coalesce(node.fact_text, '') AS fact, "
             "coalesce(node.evidence_text, '') AS evidence, coalesce(node.confidence, 1.0) AS confidence, "
@@ -1013,6 +1030,7 @@ class GraphitiNeo4jStore:
             "CALL db.index.vector.queryNodes('fact_embedding', $k, $embedding) "
             "YIELD node, score "
             "WHERE node.t_tx_expired IS NULL "
+            "  AND coalesce(node.user_id, '') = $user_id "
             "RETURN node.fact_id AS fact_id, node.subject_entity_id AS source, node.object_entity_id AS target, "
             "coalesce(node.relation_type, '') AS relation, coalesce(node.fact_text, '') AS fact, "
             "coalesce(node.evidence_text, '') AS evidence, coalesce(node.confidence, 1.0) AS confidence, "
@@ -1034,7 +1052,7 @@ class GraphitiNeo4jStore:
             return [dict(r) for r in rs]
 
     def vector_search_facts(
-        self, *, query_embedding: list[float], limit: int = 10
+        self, *, query_embedding: list[float], limit: int = 10, user_id: str = ""
     ) -> list[dict[str, Any]]:
         if not query_embedding:
             return []
@@ -1043,6 +1061,7 @@ class GraphitiNeo4jStore:
                 self.vector_search_facts_cypher(),
                 embedding=list(query_embedding),
                 k=int(limit),
+                user_id=user_id,
             )
             return [dict(r) for r in rs]
 
@@ -1324,6 +1343,7 @@ class GraphitiNeo4jStore:
         since: str | None = None,
         until: str | None = None,
         limit: int = 10,
+        user_id: str = "",
     ) -> list[dict[str, Any]]:
         with self._driver.session(database=self._database) as session:
             rs = session.run(
@@ -1331,6 +1351,7 @@ class GraphitiNeo4jStore:
                 since=since,
                 until=until,
                 limit=limit,
+                user_id=user_id,
             )
             return [dict(r) for r in rs]
 

@@ -140,7 +140,7 @@ async def search_graph(
             seen: set[str] = set()
 
             try:
-                ft = store.fulltext_search_entities(query=q, limit=max(50, top_k * 5))
+                ft = store.fulltext_search_entities(query=q, limit=max(50, top_k * 5), user_id=user_id)
             except Exception:
                 ft = []
 
@@ -266,13 +266,15 @@ async def search_graph_by_relation(
     relation: str = Query(..., min_length=1),
     top_k: int = Query(default=10, ge=1, le=100),
     pipeline=Depends(get_pipeline),
+    user=Depends(get_optional_user),
 ):
     """按关系类型检索图谱边。"""
+    user_id = user.user_id if user is not None else ""
     graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
     store = getattr(graphiti, "store", None) if graphiti is not None else None
     if store is not None and hasattr(store, "search_facts_by_relation"):
         try:
-            edges = store.search_facts_by_relation(relation=relation, limit=top_k)
+            edges = store.search_facts_by_relation(relation=relation, limit=top_k, user_id=user_id)
             return {"edges": edges, "total": len(edges)}
         except Exception as exc:
             logger.exception("Graphiti search_facts_by_relation failed")
@@ -292,13 +294,15 @@ async def search_graph_by_time(
     until: str | None = Query(default=None),
     top_k: int = Query(default=10, ge=1, le=100),
     pipeline=Depends(get_pipeline),
+    user=Depends(get_optional_user),
 ):
     """按时间范围检索图谱边。"""
+    user_id = user.user_id if user is not None else ""
     graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
     store = getattr(graphiti, "store", None) if graphiti is not None else None
     if store is not None and hasattr(store, "search_facts_by_time"):
         try:
-            edges = store.search_facts_by_time(since=since, until=until, limit=top_k)
+            edges = store.search_facts_by_time(since=since, until=until, limit=top_k, user_id=user_id)
             return {"edges": edges, "total": len(edges)}
         except Exception as exc:
             logger.exception("Graphiti search_facts_by_time failed")
