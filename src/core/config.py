@@ -5,7 +5,17 @@ Pydantic Settings 配置。
 所有字段扁平定义在 Settings 中，直接映射环境变量。
 """
 
+from pathlib import Path
+
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# 在 Settings 初始化前，显式加载 .env 文件
+# override=True 确保 .env 中的值优先于系统环境变量
+# （开发环境约定：.env 提高优先级）
+_env_path = Path(__file__).parent.parent.parent / ".env"
+if _env_path.exists():
+    load_dotenv(_env_path, override=True)
 
 
 class Settings(BaseSettings):
@@ -17,8 +27,8 @@ class Settings(BaseSettings):
     #   Gemini：           gemini/<model>，例如 gemini/gemini-2.0-flash
     #   Ollama：           ollama_chat/<model>，例如 ollama_chat/qwen2.5
     llm_model: str = "openai/gpt-4o-mini"
-    llm_api_key: str = ""   # 可选；空时 litellm 自动从 OPENAI_API_KEY 等 env var 读取
-    llm_api_base: str = ""  # 可选；用于自定义代理或 Ollama 地址
+    llm_api_key: str = ""
+    llm_api_base: str = ""
 
     # ─── Embedder（litellm 统一入口）───
     # model 同样使用完整 litellm 模型字符串，例如：
@@ -27,7 +37,7 @@ class Settings(BaseSettings):
     #   gemini/gemini-embedding-001
     embedding_model: str = "openai/text-embedding-3-small"
     embedding_dim: int = 1536
-    embedding_api_key: str = ""   # 可选
+    embedding_api_key: str = ""  # 可选
     embedding_api_base: str = ""  # 可选
 
     # ─── 工作记忆预算 ───

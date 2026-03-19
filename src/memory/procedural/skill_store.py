@@ -97,9 +97,14 @@ class InMemorySkillStore(BaseMemoryStore):
             for score, s in scored[:top_k]
         ]
 
-    def delete(self, ids: list[str]) -> None:
+    def delete(self, ids: list[str], *, user_id: str = "") -> None:
         for skill_id in ids:
-            self._skills.pop(skill_id, None)
+            skill = self._skills.get(skill_id)
+            if skill is None:
+                continue
+            if user_id and skill.user_id and skill.user_id != user_id:
+                continue
+            del self._skills[skill_id]
 
     def get_all(self, *, user_id: str = "") -> list[dict[str, Any]]:
         """获取所有技能。指定 user_id 时只返回该用户的技能。"""

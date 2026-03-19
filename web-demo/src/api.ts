@@ -316,3 +316,90 @@ export async function fetchConsolidationResult(): Promise<ConsolidatorTrace> {
     skills_added: data.skills_added || 0,
   };
 }
+
+// ── Session CRUD ──
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  const r = await fetch(`${API}/memory/session/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error((data as Record<string, string>).detail || `HTTP ${r.status}`);
+  }
+}
+
+// ── Graph CRUD ──
+
+export async function searchGraphNodes(
+  q: string,
+  topK = 10
+): Promise<GraphData> {
+  const r = await fetch(
+    `${API}/memory/graph/search?q=${encodeURIComponent(q)}&top_k=${topK}`,
+    { headers: authHeaders() }
+  );
+  const data = await r.json();
+  const nodes: GraphNode[] = ((data.nodes || []) as Record<string, unknown>[]).map(
+    (n) => ({
+      id: (n.node_id as string) || (n.id as string),
+      label: getNodeDisplayText(n),
+      properties: (n.properties as Record<string, unknown>) || n,
+      typeLabel: getNodeTypeLabel(n),
+    })
+  );
+  const edges: GraphEdge[] = ((data.edges || []) as Record<string, unknown>[]).map(
+    (e) => ({
+      source: e.source as string,
+      target: e.target as string,
+      relation: (e.relation as string) || "",
+      confidence: (e.confidence as number) || 0.5,
+      fact: (e.fact as string) || "",
+      evidence: (e.evidence as string) || "",
+      timestamp: (e.timestamp as string) || "",
+      source_session: (e.source_session as string) || "",
+    })
+  );
+  return { nodes, edges };
+}
+
+export async function addGraphNode(
+  id: string,
+  label: string,
+  properties?: Record<string, unknown>
+): Promise<void> {
+  const r = await fetch(`${API}/memory/graph/nodes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ id, label, properties: properties || {} }),
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error((data as Record<string, string>).detail || `HTTP ${r.status}`);
+  }
+}
+
+export async function deleteGraphNode(nodeId: string): Promise<void> {
+  const r = await fetch(`${API}/memory/graph/nodes/${encodeURIComponent(nodeId)}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error((data as Record<string, string>).detail || `HTTP ${r.status}`);
+  }
+}
+
+// ── Skill CRUD ──
+
+export async function deleteSkill(skillId: string): Promise<void> {
+  const r = await fetch(`${API}/memory/skills/${encodeURIComponent(skillId)}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error((data as Record<string, string>).detail || `HTTP ${r.status}`);
+  }
+}

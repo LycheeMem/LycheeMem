@@ -408,12 +408,21 @@ class Neo4jGraphStore(BaseMemoryStore):
             edges = [e for e in record["edges"] if e.get("source") and e.get("relation")]
             return {"nodes": nodes, "edges": edges}
 
-    def delete(self, ids: list[str]) -> None:
+    def delete(self, ids: list[str], *, user_id: str = "") -> None:
         with self._driver.session(database=self._database) as session:
-            session.run(
-                "MATCH (n:Entity) WHERE n.node_id IN $ids DETACH DELETE n",
-                ids=ids,
-            )
+            if user_id:
+                session.run(
+                    "MATCH (n:Entity) WHERE n.node_id IN $ids"
+                    " AND (n.user_id = $user_id OR n.user_id IS NULL OR n.user_id = '')"
+                    " DETACH DELETE n",
+                    ids=ids,
+                    user_id=user_id,
+                )
+            else:
+                session.run(
+                    "MATCH (n:Entity) WHERE n.node_id IN $ids DETACH DELETE n",
+                    ids=ids,
+                )
 
     def get_all(self, *, user_id: str = "") -> list[dict[str, Any]]:
         with self._driver.session(database=self._database) as session:

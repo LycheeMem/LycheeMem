@@ -41,7 +41,8 @@ class GraphitiNeo4jStore:
                 'neo4j driver 未安装：请使用 `pip install -e ".[production]"` 安装生产依赖'
             ) from exc
 
-        self._driver = GraphDatabase.driver(uri, auth=(user, password), notifications_min_severity="NONE")
+        self._driver = GraphDatabase.driver(uri, auth=(user, password))
+        # self._driver = GraphDatabase.driver(uri, auth=(user, password), notifications_min_severity="NONE")
         self._database = database
 
         self._vector_dim = int(vector_dim) if vector_dim is not None else None

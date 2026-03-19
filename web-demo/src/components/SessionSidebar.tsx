@@ -1,6 +1,7 @@
-import { EditOutlined, PlusOutlined } from "@ant-design/icons";
+import { DeleteOutlined, EditOutlined, PlusOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+    deleteSession,
     fetchGraphData,
     fetchGraphEdges,
     fetchSessions,
@@ -126,6 +127,16 @@ export default function SessionSidebar() {
     if (e.key === "Escape") setEditingId(null);
   };
 
+  const handleDelete = async (e: React.MouseEvent, sid: string) => {
+    e.stopPropagation();
+    if (!window.confirm("确定删除此会话？此操作不可撤销。")) return;
+    try {
+      await deleteSession(sid);
+      if (sessionId === sid) newSession();
+      await loadSessions();
+    } catch { /* ignore */ }
+  };
+
   return (
     <aside id="session-sidebar">
       <div className="sidebar-header">
@@ -169,13 +180,22 @@ export default function SessionSidebar() {
                 <>
                   <div className="sidebar-item-row">
                     <span className="sidebar-item-title">{getTitle(s)}</span>
-                    <button
-                      className="sidebar-edit-btn"
-                      title="重命名"
-                      onClick={(e) => startEdit(e, s)}
-                    >
-                      <EditOutlined />
-                    </button>
+                    <div className="sidebar-item-actions">
+                      <button
+                        className="sidebar-edit-btn"
+                        title="重命名"
+                        onClick={(e) => startEdit(e, s)}
+                      >
+                        <EditOutlined />
+                      </button>
+                      <button
+                        className="sidebar-edit-btn sidebar-delete-btn"
+                        title="删除会话"
+                        onClick={(e) => handleDelete(e, s.session_id)}
+                      >
+                        <DeleteOutlined />
+                      </button>
+                    </div>
                   </div>
                   <div className="sidebar-item-meta">
                     {(s.turn_count ?? 0) > 0 && <span>{s.turn_count} 轮</span>}

@@ -232,10 +232,11 @@ async def add_graph_edge(
 
 
 @router.delete("/memory/graph/nodes/{node_id}", response_model=DeleteResponse)
-async def delete_graph_node(node_id: str, pipeline=Depends(get_pipeline)):
+async def delete_graph_node(node_id: str, pipeline=Depends(get_pipeline), user=Depends(get_optional_user)):
     """删除图谱中的一个节点（及其所有关联边）。"""
     graph_store = pipeline.search_coordinator.graph_store
-    graph_store.delete([node_id])
+    user_id = user.user_id if user else ""
+    graph_store.delete([node_id], user_id=user_id)
     return DeleteResponse(message=f"Node '{node_id}' deleted.")
 
 
@@ -251,10 +252,11 @@ async def get_skills(pipeline=Depends(get_pipeline), user=Depends(get_optional_u
 
 
 @router.delete("/memory/skills/{skill_id}", response_model=DeleteResponse)
-async def delete_skill(skill_id: str, pipeline=Depends(get_pipeline)):
+async def delete_skill(skill_id: str, pipeline=Depends(get_pipeline), user=Depends(get_optional_user)):
     """删除指定技能条目。"""
     skill_store = pipeline.search_coordinator.skill_store
-    skill_store.delete([skill_id])
+    user_id = user.user_id if user else ""
+    skill_store.delete([skill_id], user_id=user_id)
     return DeleteResponse(message=f"Skill '{skill_id}' deleted.")
 
 

@@ -1108,3 +1108,208 @@ html, body {
 .logout-btn:hover {
   color: var(--red);
 }
+
+/* ═══════════════════════════════════════════════════
+   CRUD Controls (Graph / Skills / Session)
+   ═══════════════════════════════════════════════════ */
+
+/* ── Sub-tabs (nodes / edges toggle) ── */
+.crud-subtabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.crud-subtab {
+  flex: 1;
+  padding: 5px 0;
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+.crud-subtab.active {
+  background: var(--accent);
+  color: #fff;
+}
+.crud-subtab:hover:not(.active) {
+  background: var(--bg-hover);
+}
+
+/* ── Toolbar (search + add button row) ── */
+.crud-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+/* ── Search row ── */
+.crud-search {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+.crud-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-deepest);
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+  transition: border-color var(--transition);
+}
+.crud-search-input:focus {
+  border-color: var(--accent);
+}
+.crud-search-input::placeholder {
+  color: var(--text-muted);
+}
+
+/* ── Buttons ── */
+.crud-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+.crud-btn:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+.crud-btn-sm {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+.crud-btn-primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.crud-btn-primary:hover {
+  background: var(--accent-light);
+  border-color: var(--accent-light);
+  color: #fff;
+}
+.crud-btn-ghost {
+  background: transparent;
+  border-color: transparent;
+}
+.crud-btn-ghost:hover {
+  background: var(--bg-hover);
+}
+
+/* ── Icon button (small, for inline delete etc.) ── */
+.crud-btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all var(--transition);
+}
+.crud-btn-icon:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.crud-btn-danger:hover {
+  color: var(--red) !important;
+  background: rgba(248, 113, 113, 0.1);
+}
+
+/* ── Add-node form card ── */
+.crud-form {
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.crud-input {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-deepest);
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+  transition: border-color var(--transition);
+}
+.crud-input:focus {
+  border-color: var(--accent);
+}
+.crud-input::placeholder {
+  color: var(--text-muted);
+}
+.crud-form-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.crud-error {
+  font-size: 11px;
+  color: var(--red);
+}
+.crud-search-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+/* ── Label row (label text + action buttons side by side) ── */
+.mem-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+.mem-label-row > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Sidebar actions (edit + delete buttons) ── */
+.sidebar-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.sidebar-delete-btn:hover {
+  color: var(--red) !important;
+  background: rgba(248, 113, 113, 0.12);
+}

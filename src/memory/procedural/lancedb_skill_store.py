@@ -102,13 +102,16 @@ class LanceDBSkillStore(BaseMemoryStore):
             for r in results
         ]
 
-    def delete(self, ids: list[str]) -> None:
+    def delete(self, ids: list[str], *, user_id: str = "") -> None:
         if not ids:
             return
         table = self._get_table()
-        # LanceDB 使用 SQL-like where 子句删除
         id_list = ", ".join(f"'{id_}'" for id_ in ids)
-        table.delete(f"id IN ({id_list})")
+        if user_id:
+            escaped = user_id.replace("'", "''")
+            table.delete(f"id IN ({id_list}) AND (user_id = '{escaped}' OR user_id IS NULL OR user_id = '')")
+        else:
+            table.delete(f"id IN ({id_list})")
 
     def get_all(self, *, user_id: str = "") -> list[dict[str, Any]]:
         import json

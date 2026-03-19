@@ -27,8 +27,8 @@ class BaseMemoryStore(ABC):
         """
 
     @abstractmethod
-    def delete(self, ids: list[str]) -> None:
-        """删除指定记忆。"""
+    def delete(self, ids: list[str], *, user_id: str = "") -> None:
+        """删除指定记忆。user_id 非空时只删除属于该用户的条目。"""
 
     @abstractmethod
     def get_all(self) -> list[dict[str, Any]]:

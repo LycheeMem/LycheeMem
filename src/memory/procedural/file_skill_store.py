@@ -149,12 +149,17 @@ class FileSkillStore(BaseMemoryStore):
             for score, s in scored[:top_k]
         ]
 
-    def delete(self, ids: list[str]) -> None:
+    def delete(self, ids: list[str], *, user_id: str = "") -> None:
         if not ids:
             return
         with self._lock:
             for skill_id in ids:
-                self._skills.pop(skill_id, None)
+                skill = self._skills.get(skill_id)
+                if skill is None:
+                    continue
+                if user_id and skill.user_id and skill.user_id != user_id:
+                    continue
+                del self._skills[skill_id]
             self._save()
 
     def get_all(self, *, user_id: str = "") -> list[dict[str, Any]]:

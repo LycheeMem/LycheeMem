@@ -327,10 +327,15 @@ class NetworkXGraphStore(BaseMemoryStore):
         ]
         return {"nodes": nodes, "edges": edges}
 
-    def delete(self, ids: list[str]) -> None:
+    def delete(self, ids: list[str], *, user_id: str = "") -> None:
         for node_id in ids:
-            if node_id in self.graph:
-                self.graph.remove_node(node_id)
+            if node_id not in self.graph:
+                continue
+            if user_id:
+                node_user = self.graph.nodes[node_id].get("user_id", "")
+                if node_user and node_user != user_id:
+                    continue
+            self.graph.remove_node(node_id)
 
     def get_all(self, *, user_id: str = "") -> list[dict[str, Any]]:
         return [
