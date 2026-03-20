@@ -33,6 +33,9 @@ export default function ChatPanel() {
 
   const messagesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // rAF token batching：将高频 token 事件缓冲至每帧最多一次 state 更新
+  const tokenBufferRef = useRef<string>("");
+  const rafRef = useRef<number | null>(null);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -76,16 +79,31 @@ export default function ChatPanel() {
           onToken(token) {
             // 首个 token 到达时关闭 typing 指示器，改为真实流式渲染
             setIsTyping(false);
-            appendStreamingContent(token);
+            // 缓冲 token，通过 rAF 每帧批量刷新一次，避免逐字符 re-render 导致的生硬闪烁
+            tokenBufferRef.current += token;
+            if (rafRef.current === null) {
+              rafRef.current = requestAnimationFrame(() => {
+                appendStreamingContent(tokenBufferRef.current);
+                tokenBufferRef.current = "";
+                rafRef.current = null;
+              });
+            }
           },
           onAnswer(_answer) {
             // answer 事件是对所有 token 的汇总确认，前端已通过 token 事件累积，忽略即可
             setIsTyping(false);
           },
           onDone(data) {
+            // 取消待处理的 rAF，同步刷新缓冲区，确保最后几个 token 不丢失
+            if (rafRef.current !== null) {
+              cancelAnimationFrame(rafRef.current);
+              rafRef.current = null;
+            }
+            if (tokenBufferRef.current) {
+              appendStreamingContent(tokenBufferRef.current);
+              tokenBufferRef.current = "";
+            }
             setWmTokenUsage(data.wm_token_usage || 0);
-            // 使用 streamingContent 的最终值（由 token 事件累积）作为 content
-            // 此处通过 data.trace 获取 wm_token_usage，实际文本内容已在 streamingContent 中
             addMessage({
               role: "assistant",
               content: useStore.getState().streamingContent,
@@ -102,6 +120,11 @@ export default function ChatPanel() {
           },
         });
       } catch (err) {
+        if (rafRef.current !== null) {
+          cancelAnimationFrame(rafRef.current);
+          rafRef.current = null;
+        }
+        tokenBufferRef.current = "";
         setIsTyping(false);
         setStreamingContent("");
         addMessage({
@@ -190,7 +213,7 @@ export default function ChatPanel() {
 
         {/* 流式输出中的 assistant 气泡（token by token 实时渲染） */}
         {isStreaming && streamingContent && (
-          <div className="msg msg-assistant stream-bubble">
+          <div className="msg msg-assistant">
             <MarkdownRenderer content={streamingContent} streaming />
           </div>
         )}

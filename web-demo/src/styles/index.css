@@ -392,7 +392,6 @@ html, body {
   line-height: 1.7;
   color: var(--text-primary);
   word-break: break-word;
-  padding: 0.4px 0; /* 防止行高导致的布局抖动 */
 }
 
 .md-body > *:first-child { margin-top: 0; }
@@ -522,42 +521,35 @@ html, body {
 .md-table-wrapper tr:last-child td { border-bottom: none; }
 .md-table-wrapper tr:hover td { background: rgba(99, 102, 241, 0.04); }
 
-/* 流式气泡的入场和增长动画 */
-.stream-bubble {
-  animation: streamBubbleIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+/* 流式输出中新块级元素平滑出现（React 新增 DOM 节点时触发）*/
+.md-streaming > p,
+.md-streaming > ul,
+.md-streaming > ol,
+.md-streaming > h1,
+.md-streaming > h2,
+.md-streaming > h3,
+.md-streaming > h4,
+.md-streaming > h5,
+.md-streaming > h6,
+.md-streaming > blockquote,
+.md-streaming > .md-code-block,
+.md-streaming > .md-table-wrapper,
+.md-streaming > hr {
+  animation: mdBlockFadeIn 0.22s ease-out;
 }
-@keyframes streamBubbleIn {
-  from {
-    opacity: 0;
-    transform: scale(0.92) translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
-}
-
-/* 流式渲染状态下的背景和边界动画 */
-.md-body.md-streaming {
-  background: linear-gradient(135deg, 
-    rgba(99, 102, 241, 0.04) 0%,
-    rgba(59, 130, 246, 0.02) 100%);
-  animation: streamingGlow 2s ease-in-out infinite;
-}
-@keyframes streamingGlow {
-  0%, 100% {
-    background: linear-gradient(135deg, 
-      rgba(99, 102, 241, 0.04) 0%,
-      rgba(59, 130, 246, 0.02) 100%);
-  }
-  50% {
-    background: linear-gradient(135deg, 
-      rgba(99, 102, 241, 0.06) 0%,
-      rgba(59, 130, 246, 0.04) 100%);
-  }
+@keyframes mdBlockFadeIn {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
-/* 流式输出中的脉动光标 (替代闪烁) */
+/* 流式气泡激活状态：柔和紫色高亮 */
+.msg-assistant:has(.md-streaming) {
+  border-color: rgba(99, 102, 241, 0.45);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.07), 0 2px 16px rgba(99, 102, 241, 0.06);
+  transition: border-color 0.35s ease, box-shadow 0.35s ease;
+}
+
+/* 流式输出中的闪烁光标 */
 .md-cursor {
   display: inline-block;
   width: 2px;
@@ -566,19 +558,11 @@ html, body {
   vertical-align: text-bottom;
   margin-left: 2px;
   border-radius: 1px;
-  animation: cursorPulse 1.2s ease-in-out infinite;
-  box-shadow: 0 0 4px rgba(129, 140, 248, 0.4);
+  animation: cursorBlink 0.8s ease-in-out infinite;
 }
-/* 柔和的脉动效果而非粗暴的闪烁 */
-@keyframes cursorPulse {
-  0%, 100% {
-    opacity: 1;
-    box-shadow: 0 0 4px rgba(129, 140, 248, 0.4);
-  }
-  50% {
-    opacity: 0.4;
-    box-shadow: 0 0 8px rgba(129, 140, 248, 0.2);
-  }
+@keyframes cursorBlink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
 }
 
 /* 用户消息文本（保留换行，不做 Markdown 解析） */
