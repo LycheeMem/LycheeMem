@@ -1,17 +1,17 @@
 import { create } from "zustand";
 import { clearAuth, getStoredUser, storeAuth } from "./api";
 import type {
-    AgentName,
-    AgentStatusValue,
-    AuthUser,
-    GraphData,
-    GraphEdge,
-    Message,
-    PipelineStatus,
-    PipelineTrace,
-    SessionInfo,
-    SkillItem,
-    Turn,
+  AgentName,
+  AgentStatusValue,
+  AuthUser,
+  GraphData,
+  GraphEdge,
+  Message,
+  PipelineStatus,
+  PipelineTrace,
+  SessionInfo,
+  SkillItem,
+  Turn,
 } from "./types";
 import { AGENT_NAMES } from "./types";
 
