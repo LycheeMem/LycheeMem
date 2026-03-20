@@ -353,19 +353,24 @@ export default function AgentsTab() {
 
   const [consolidatorPoll, setConsolidatorPoll] = useState(0);
 
-  // 当新 pending trace 到达时重置轮询计数器
+  // 当新 pending trace 到达时重置轮询计数器（确保每次新对话完成都从 0 重新开始）
   useEffect(() => {
     if (currentTrace?.consolidator.status === "pending") {
-      setConsolidatorPoll(0);
+      // 若当前已经是 0 也要强制触发轮询 effect，所以先设 -1 再设 0
+      setConsolidatorPoll(-1);
     }
   }, [currentTrace]);
 
-  // 固化轮询：逐步加大间隔，最多 8 次重试
+  // 固化轮询：逐步加大间隔（3s→10s），之后以 10s 固定间隔持续轮询直到完成
   useEffect(() => {
-    if (consolidatorPoll > 8) return;
+    if (consolidatorPoll < 0) {
+      // -1 是"重置信号"，立即跳到 0 触发真正的首次轮询
+      setConsolidatorPoll(0);
+      return;
+    }
     const trace = currentTraceRef.current;
     if (!trace || trace.consolidator.status !== "pending") return;
-    const delay = Math.min(2000 + consolidatorPoll * 1000, 6000);
+    const delay = consolidatorPoll < 8 ? Math.min(3000 + consolidatorPoll * 1000, 10000) : 10000;
     const timer = setTimeout(async () => {
       try {
         const result = await fetchConsolidationResult();

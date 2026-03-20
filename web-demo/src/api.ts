@@ -311,6 +311,7 @@ export async function fetchPipelineStatus(): Promise<PipelineStatus> {
   return {
     session_count: data.session_count || 0,
     graph_node_count: data.graph_node_count || 0,
+    graph_edge_count: data.graph_edge_count || 0,
     skill_count: data.skill_count || 0,
   };
 }

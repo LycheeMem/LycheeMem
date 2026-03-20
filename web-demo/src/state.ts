@@ -133,6 +133,7 @@ export const useStore = create<AppState>((set) => ({
   pipelineStatus: {
     session_count: 0,
     graph_node_count: 0,
+    graph_edge_count: 0,
     skill_count: 0,
   },
   activeTab: "tab-agents",

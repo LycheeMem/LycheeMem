@@ -241,7 +241,8 @@ class ConsolidatorAgent(BaseAgent):
         steps: list[dict[str, Any]] = []
 
         # ── 新颖性检查：对话是否引入了已有记忆未覆盖的新信息 ──
-        has_novelty = self._check_has_novelty(turns, retrieved_context)
+        # has_novelty = self._check_has_novelty(turns, retrieved_context)
+        has_novelty = True  # TODO: 先默认每轮对话都有新信息，后续完善这个判断逻辑
         steps.append({
             "name": "novelty_check",
             "status": "done",
