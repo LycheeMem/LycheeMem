@@ -195,7 +195,7 @@ class GraphitiSemanticBuilder:
         ]
         return self.llm.generate(messages)
 
-    def _update_community_summary(self, community_id: str) -> None:
+    def _update_community_summary(self, community_id: str, user_id: str = "") -> None:
         """Paper §2.3: update community summary after dynamic extension.
 
         Fetches intra-community facts and runs map-reduce summarization
@@ -250,10 +250,14 @@ class GraphitiSemanticBuilder:
             name=name,
             summary=summary,
             embedding=embedding,
+            user_id=user_id,
         )
 
-    def _entity_id_from_name(self, name: str) -> str:
-        return _sha1(name.strip().lower())
+    def _entity_id_from_name(self, name: str, user_id: str = "") -> str:
+        # 包含 user_id 使实体 ID 对每个用户唯一隔离，防止不同用户的同名实体共享节点。
+        prefix = str(user_id or "").strip()
+        key = f"{prefix}:{name.strip().lower()}" if prefix else name.strip().lower()
+        return _sha1(key)
 
     def extract_entities(
         self,
@@ -358,16 +362,17 @@ class GraphitiSemanticBuilder:
         previous_turns: list[dict[str, Any]],
         current_turn: dict[str, Any],
         new_entity: dict[str, Any],
+        user_id: str = "",
     ) -> ResolvedEntity:
         name = str(new_entity.get("name") or "").strip()
         if not name:
-            return ResolvedEntity(entity_id=self._entity_id_from_name(""), name="")
+            return ResolvedEntity(entity_id=self._entity_id_from_name("", user_id=user_id), name="")
 
         # Candidate search (hybrid): fulltext + vector index (Neo4j native) (best-effort)
         candidates: list[dict[str, Any]] = []
         try:
             candidates.extend(
-                self.store.fulltext_search_entities(query=name, limit=self.entity_candidate_top_k)
+                self.store.fulltext_search_entities(query=name, limit=self.entity_candidate_top_k, user_id=user_id)
             )
         except Exception:
             pass
@@ -378,6 +383,7 @@ class GraphitiSemanticBuilder:
                 rows = self.store.vector_search_entities(
                     query_embedding=q_emb,
                     limit=max(self.entity_candidate_top_k * 3, 20),
+                    user_id=user_id,
                 )
                 for r in rows:
                     try:
@@ -436,7 +442,7 @@ class GraphitiSemanticBuilder:
         if not isinstance(data, dict):
             # fallback: create new entity id
             return ResolvedEntity(
-                entity_id=self._entity_id_from_name(name),
+                entity_id=self._entity_id_from_name(name, user_id=user_id),
                 name=name,
                 summary=str(new_entity.get("summary") or ""),
                 aliases=list(new_entity.get("aliases") or []),
@@ -473,7 +479,7 @@ class GraphitiSemanticBuilder:
         if is_dup and existing_id:
             entity_id = existing_id
         else:
-            entity_id = self._entity_id_from_name(resolved_name)
+            entity_id = self._entity_id_from_name(resolved_name, user_id=user_id)
 
         return ResolvedEntity(
             entity_id=entity_id,
@@ -785,7 +791,8 @@ class GraphitiSemanticBuilder:
         resolved: list[ResolvedEntity] = []
         for ent in extracted_entities:
             r = self.resolve_entity(
-                previous_turns=previous_turns, current_turn=current_turn, new_entity=ent
+                previous_turns=previous_turns, current_turn=current_turn, new_entity=ent,
+                user_id=user_id,
             )
             if not r.name or not r.entity_id:
                 continue
@@ -806,6 +813,7 @@ class GraphitiSemanticBuilder:
                 # Paper §2.2.1: when is_duplicate=True the summary is the
                 # LLM-fused version; write it unconditionally.
                 force_summary=r.is_duplicate,
+                user_id=user_id,
             )
 
             # Paper: episodic edges linking Episode → referenced semantic entities.
@@ -833,7 +841,7 @@ class GraphitiSemanticBuilder:
                             )
                             # Paper §2.3: "then updates the community summary
                             # and graph accordingly."
-                            self._update_community_summary(best_community_id)
+                            self._update_community_summary(best_community_id, user_id=user_id)
                 except Exception:
                     # Best-effort; community assignment should not block entity ingestion.
                     continue

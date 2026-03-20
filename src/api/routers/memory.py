@@ -250,7 +250,8 @@ async def clear_all_graph(
                     f"Graph memory cleared "
                     f"(facts_deleted={result['facts_deleted']}, "
                     f"episodes_deleted={result.get('episodes_deleted', 0)}, "
-                    f"entities_deleted={result['entities_deleted']})."
+                    f"entities_deleted={result['entities_deleted']}, "
+                    f"communities_deleted={result.get('communities_deleted', 0)})."
                 )
             )
         except Exception as exc:

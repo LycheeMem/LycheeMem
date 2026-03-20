@@ -972,7 +972,7 @@ class GraphitiEngine:
     # ──────────────────────────────────────
 
     def refresh_communities_for_session(
-        self, *, session_id: str, limit: int = 50
+        self, *, session_id: str, limit: int = 50, user_id: str = ""
     ) -> list[dict[str, Any]]:
         if not str(session_id or "").strip():
             return []
@@ -1001,6 +1001,7 @@ class GraphitiEngine:
             entity_ids[:10],
             entity_cache=entity_cache,
             edges=edges,
+            user_id=user_id,
         )
 
     def build_or_refresh_communities_for_entities(
@@ -1011,6 +1012,7 @@ class GraphitiEngine:
         edges: list[dict[str, Any]] | None = None,
         min_size: int = 2,
         max_iter: int = 10,
+        user_id: str = "",
     ) -> list[dict[str, Any]]:
         """在局部子图上做社区发现并写入 Neo4j。
 
@@ -1177,6 +1179,7 @@ class GraphitiEngine:
                         name=name,
                         summary=summary,
                         embedding=embedding,
+                        user_id=user_id,
                     )
                 if hasattr(self.store, "link_entity_to_community"):
                     for eid in members:
@@ -1205,6 +1208,7 @@ class GraphitiEngine:
         *,
         min_size: int = 2,
         max_iter: int = 10,
+        user_id: str = "",
     ) -> list[dict[str, Any]]:
         """Paper §2.3: periodic full-graph community refresh.
 
@@ -1214,23 +1218,33 @@ class GraphitiEngine:
         to ensure full graph coverage beyond the incremental
         ingestion-time assignments.
         """
-        # Gather the full entity set
-        if not hasattr(self.store, "list_all_entity_ids"):
-            if self.strict:
-                raise RuntimeError(
-                    "Graphiti strict periodic community refresh requires "
-                    "store.list_all_entity_ids()"
-                )
-            return []
-
-        try:
-            all_entity_ids = self.store.list_all_entity_ids()
-        except Exception as e:
-            if self.strict:
-                raise RuntimeError(
-                    f"Graphiti strict periodic community refresh failed: {e}"
-                ) from e
-            return []
+        # Gather the full entity set — prefer per-user list when user_id provided
+        uid = str(user_id or "").strip()
+        if uid and hasattr(self.store, "list_entity_ids_for_user"):
+            try:
+                all_entity_ids = self.store.list_entity_ids_for_user(user_id=uid)
+            except Exception as e:
+                if self.strict:
+                    raise RuntimeError(
+                        f"Graphiti strict periodic community refresh failed (list_entity_ids_for_user): {e}"
+                    ) from e
+                all_entity_ids = []
+        else:
+            if not hasattr(self.store, "list_all_entity_ids"):
+                if self.strict:
+                    raise RuntimeError(
+                        "Graphiti strict periodic community refresh requires "
+                        "store.list_all_entity_ids()"
+                    )
+                return []
+            try:
+                all_entity_ids = self.store.list_all_entity_ids()
+            except Exception as e:
+                if self.strict:
+                    raise RuntimeError(
+                        f"Graphiti strict periodic community refresh failed: {e}"
+                    ) from e
+                return []
 
         if not all_entity_ids or len(all_entity_ids) < min_size:
             return []
@@ -1261,6 +1275,7 @@ class GraphitiEngine:
             edges=edges,
             min_size=min_size,
             max_iter=max_iter,
+            user_id=user_id,
         )
 
     @staticmethod
