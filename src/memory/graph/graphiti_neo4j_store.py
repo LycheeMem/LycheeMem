@@ -256,7 +256,6 @@ class GraphitiNeo4jStore:
         return (
             "MERGE (e:Entity {entity_id: $entity_id}) "
             "SET e.name = $name, "
-            "    e.user_id = $user_id, "
             "    e.summary = CASE "
             "        WHEN $summary IS NULL OR $summary = '' THEN coalesce(e.summary, '') "
             "        WHEN $force_summary THEN $summary "
@@ -284,7 +283,6 @@ class GraphitiNeo4jStore:
         source_session: str = "",
         t_created: str | None = None,
         force_summary: bool = False,
-        user_id: str = "",
     ) -> str:
         if t_created is None:
             t_created = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -302,18 +300,19 @@ class GraphitiNeo4jStore:
                 t_created=t_created,
                 t_updated=t_updated,
                 force_summary=force_summary,
-                user_id=user_id,
             )
             record = rs.single()
         return (record or {}).get("entity_id") or entity_id
 
     @staticmethod
     def fulltext_search_entities_cypher() -> str:
-        # Entity.user_id 直接存储所有者，无需间接通过 Fact 查找。
         return (
+            "MATCH (f:Fact) "
+            "WHERE coalesce(f.user_id, '') = $user_id "
+            "WITH COLLECT(DISTINCT f.subject_entity_id) + COLLECT(DISTINCT f.object_entity_id) AS user_entity_ids "
             "CALL db.index.fulltext.queryNodes('entity_fulltext', $q) "
             "YIELD node, score "
-            "WHERE coalesce(node.user_id, '') = $user_id "
+            "WHERE node.entity_id IN user_entity_ids "
             "RETURN node.entity_id AS entity_id, node.name AS name, node.summary AS summary, "
             "node.aliases AS aliases, node.type_label AS type_label, score AS score "
             "ORDER BY score DESC "
@@ -322,10 +321,12 @@ class GraphitiNeo4jStore:
 
     @staticmethod
     def vector_search_entities_cypher() -> str:
-        # Entity.user_id 直接存储所有者，无需间接通过 Fact 查找。
         return (
+            "MATCH (f:Fact) "
+            "WHERE coalesce(f.user_id, '') = $user_id "
+            "WITH COLLECT(DISTINCT f.subject_entity_id) + COLLECT(DISTINCT f.object_entity_id) AS user_entity_ids "
             "MATCH (e:Entity) "
-            "WHERE coalesce(e.user_id, '') = $user_id "
+            "WHERE e.entity_id IN user_entity_ids "
             "  AND e.embedding IS NOT NULL "
             "WITH e, vector.similarity.cosine(e.embedding, $embedding) AS score "
             "ORDER BY score DESC "
@@ -364,19 +365,6 @@ class GraphitiNeo4jStore:
     def list_all_entity_ids(self) -> list[str]:
         with self._driver.session(database=self._database) as session:
             rs = session.run(self.list_all_entity_ids_cypher())
-            return [str(r["entity_id"]) for r in rs if r.get("entity_id")]
-
-    def list_entity_ids_for_user(self, *, user_id: str) -> list[str]:
-        """返回属于指定用户的所有 Entity entity_id 列表。"""
-        uid = str(user_id or "").strip()
-        if not uid:
-            return []
-        with self._driver.session(database=self._database) as session:
-            rs = session.run(
-                "MATCH (e:Entity) WHERE coalesce(e.user_id, '') = $uid "
-                "RETURN e.entity_id AS entity_id",
-                uid=uid,
-            )
             return [str(r["entity_id"]) for r in rs if r.get("entity_id")]
 
     @staticmethod
@@ -1081,7 +1069,6 @@ class GraphitiNeo4jStore:
         return (
             "MERGE (c:Community {community_id: $community_id}) "
             "SET c.name = $name, "
-            "    c.user_id = $user_id, "
             "    c.summary = $summary, "
             "    c.embedding = $embedding, "
             "    c.t_created = coalesce(c.t_created, $t_created), "
@@ -1097,7 +1084,6 @@ class GraphitiNeo4jStore:
         summary: str = "",
         embedding: list[float] | None = None,
         t_created: str | None = None,
-        user_id: str = "",
     ) -> str:
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         if t_created is None:
@@ -1112,7 +1098,6 @@ class GraphitiNeo4jStore:
                 embedding=embedding,
                 t_created=t_created,
                 t_updated=t_updated,
-                user_id=user_id,
             )
             record = rs.single()
         return (record or {}).get("community_id") or community_id
@@ -1466,15 +1451,13 @@ class GraphitiNeo4jStore:
         执行顺序（全部在单个 session 中）：
         1. DETACH DELETE 所有 ``user_id = $uid`` 的 Fact 节点。
         2. DETACH DELETE 所有 ``user_id = $uid`` 的 Episode 节点。
-        3. DETACH DELETE 所有 ``user_id = $uid`` 的 Entity 节点（直接过滤，无需孤立扫描）。
-        4. DETACH DELETE 所有 ``user_id = $uid`` 的 Community 节点。
+        3. DETACH DELETE 所有孤立 Entity（不再被任何 Fact 引用的节点）。
 
-        全部四类节点均存储 user_id，因此清空操作完全基于 user_id 过滤，
-        不会误删其他用户的数据。
+        Entity 本身不存 user_id，步骤 3 全库扫描孤立节点，确保彻底清理。
         """
         user_id = str(user_id or "").strip()
         if not user_id:
-            return {"facts_deleted": 0, "episodes_deleted": 0, "entities_deleted": 0, "communities_deleted": 0}
+            return {"facts_deleted": 0, "episodes_deleted": 0, "entities_deleted": 0}
 
         with self._driver.session(database=self._database) as session:
             # 1) 删除该用户所有 Fact
@@ -1493,27 +1476,22 @@ class GraphitiNeo4jStore:
             )
             episodes_deleted = int((rs2.single() or {}).get("deleted") or 0)
 
-            # 3) 直接按 user_id 删除该用户所有 Entity
+            # 3) 删除所有孤立 Entity（全部 Fact 均已删光后无引用的节点）
             rs3 = session.run(
-                "MATCH (e:Entity) WHERE coalesce(e.user_id, '') = $uid "
-                "WITH e, 1 AS m DETACH DELETE e RETURN count(m) AS deleted",
-                uid=user_id,
+                "MATCH (e:Entity) "
+                "WHERE NOT EXISTS { "
+                "  MATCH (f:Fact) "
+                "  WHERE f.subject_entity_id = e.entity_id "
+                "     OR f.object_entity_id = e.entity_id "
+                "} "
+                "WITH e, 1 AS m DETACH DELETE e RETURN count(m) AS deleted"
             )
             entities_deleted = int((rs3.single() or {}).get("deleted") or 0)
-
-            # 4) 直接按 user_id 删除该用户所有 Community
-            rs4 = session.run(
-                "MATCH (c:Community) WHERE coalesce(c.user_id, '') = $uid "
-                "WITH c, 1 AS m DETACH DELETE c RETURN count(m) AS deleted",
-                uid=user_id,
-            )
-            communities_deleted = int((rs4.single() or {}).get("deleted") or 0)
 
         return {
             "facts_deleted": facts_deleted,
             "episodes_deleted": episodes_deleted,
             "entities_deleted": entities_deleted,
-            "communities_deleted": communities_deleted,
         }
 
     def delete_entity(

@@ -336,14 +336,12 @@ class ConsolidatorAgent(BaseAgent):
                             self.graphiti_engine.refresh_communities_for_session(
                                 session_id=session_id,
                                 limit=50,
-                                user_id=user_id,
                             )
                         else:
                             try:
                                 self.graphiti_engine.refresh_communities_for_session(
                                     session_id=session_id,
                                     limit=50,
-                                    user_id=user_id,
                                 )
                             except Exception:
                                 pass
@@ -362,10 +360,10 @@ class ConsolidatorAgent(BaseAgent):
                         and hasattr(self.graphiti_engine, "refresh_all_communities")
                     ):
                         if strict:
-                            self.graphiti_engine.refresh_all_communities(user_id=user_id)
+                            self.graphiti_engine.refresh_all_communities()
                         else:
                             try:
-                                self.graphiti_engine.refresh_all_communities(user_id=user_id)
+                                self.graphiti_engine.refresh_all_communities()
                             except Exception:
                                 pass
                         self._total_episodes_since_community_refresh = 0
