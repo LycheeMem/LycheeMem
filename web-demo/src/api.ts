@@ -310,10 +310,16 @@ export async function fetchPipelineStatus(): Promise<PipelineStatus> {
 export async function fetchConsolidationResult(): Promise<ConsolidatorTrace> {
   const r = await fetch(`${API}/pipeline/last-consolidation`, { headers: authHeaders() });
   const data = await r.json();
+  const status =
+    data.status === "done" ? "done" : data.status === "skipped" ? "skipped" : "pending";
   return {
-    status: data.status === "done" ? "done" : "pending",
+    status,
     entities_added: data.entities_added || 0,
     skills_added: data.skills_added || 0,
+    facts_added: data.facts_added || 0,
+    has_novelty: data.has_novelty,
+    skipped_reason: data.skipped_reason,
+    steps: Array.isArray(data.steps) ? data.steps : [],
   };
 }
 

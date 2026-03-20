@@ -279,7 +279,10 @@ class LycheePipeline:
                 "session_id": session_id,
                 "entities_added": result.get("entities_added", 0),
                 "skills_added": result.get("skills_added", 0),
+                "facts_added": result.get("facts_added", 0),
+                "has_novelty": result.get("has_novelty"),
                 "skipped_reason": result.get("skipped_reason"),
+                "steps": result.get("steps", []),
             }
         except Exception as exc:
             logger.exception("固化失败 session=%s", session_id)
@@ -287,7 +290,9 @@ class LycheePipeline:
                 "session_id": session_id,
                 "entities_added": 0,
                 "skills_added": 0,
+                "facts_added": 0,
                 "error": str(exc),
+                "steps": [],
             }
             if strict:
                 raise
@@ -296,18 +301,42 @@ class LycheePipeline:
         self, session_id: str, retrieved_context: str = "", user_id: str = ""
     ) -> None:
         """异步场景下的后台固化。"""
+        graphiti = getattr(self.consolidator, "graphiti_engine", None)
+        strict = bool(getattr(graphiti, "strict", False))
         turns = self.wm_manager.session_store.get_turns(session_id)
         if turns:
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: self.consolidator.run(
-                    turns=turns,
-                    session_id=session_id,
-                    retrieved_context=retrieved_context,
-                    user_id=user_id,
-                ),
-            )
+            try:
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: self.consolidator.run(
+                        turns=turns,
+                        session_id=session_id,
+                        retrieved_context=retrieved_context,
+                        user_id=user_id,
+                    ),
+                )
+                self._last_consolidation = {
+                    "session_id": session_id,
+                    "entities_added": result.get("entities_added", 0),
+                    "skills_added": result.get("skills_added", 0),
+                    "facts_added": result.get("facts_added", 0),
+                    "has_novelty": result.get("has_novelty"),
+                    "skipped_reason": result.get("skipped_reason"),
+                    "steps": result.get("steps", []),
+                }
+            except Exception as exc:
+                logger.exception("固化失败 session=%s", session_id)
+                self._last_consolidation = {
+                    "session_id": session_id,
+                    "entities_added": 0,
+                    "skills_added": 0,
+                    "facts_added": 0,
+                    "error": str(exc),
+                    "steps": [],
+                }
+                if strict:
+                    raise
 
     @property
     def graph(self):

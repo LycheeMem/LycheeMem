@@ -36,7 +36,8 @@ async def last_consolidation(pipeline=Depends(get_pipeline)):
     result = getattr(pipeline, "_last_consolidation", None)
     if result is None:
         return {"status": "pending"}
-    return {"status": "done", **result}
+    status = "skipped" if result.get("skipped_reason") else "done"
+    return {"status": status, **result}
 
 
 @router.post("/memory/consolidate/{session_id}", response_model=DeleteResponse)

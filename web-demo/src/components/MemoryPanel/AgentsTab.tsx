@@ -10,7 +10,7 @@ import {
   SearchOutlined,
   SyncOutlined,
 } from "@ant-design/icons";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchConsolidationResult } from "../../api";
 import { useStore } from "../../state";
 import type { PipelineTrace } from "../../types";
@@ -167,6 +167,88 @@ function ReasonerContent({ reasoner }: { reasoner: PipelineTrace["reasoner"] }) 
   );
 }
 
+// ── Consolidator step labels & content ────────────────────────────────────
+
+const STEP_NAME_LABELS: Record<string, string> = {
+  novelty_check: "新颖性检查",
+  episode_ingest: "Episode 写入",
+  semantic_build: "语义构建",
+  community_refresh: "社区刷新",
+  llm_analysis: "LLM 分析",
+  entity_extraction: "实体抽取",
+  skill_extraction: "技能提取",
+};
+
+function ConsolidatorContent({
+  consolidator,
+}: {
+  consolidator: PipelineTrace["consolidator"];
+}) {
+  if (consolidator.status === "pending") {
+    return (
+      <div className="trace-detail">
+        <div className="trace-empty">
+          <SyncOutlined spin style={{ marginRight: 8 }} />
+          后台固化中，请稍候...
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="trace-detail">
+      <div className="trace-kv">
+        <span>状态</span>
+        <span>{consolidator.status === "skipped" ? "已跳过" : "完成"}</span>
+      </div>
+      {consolidator.status === "skipped" && (
+        <div className="trace-kv">
+          <span>原因</span>
+          <span>
+            {consolidator.skipped_reason === "no_novelty"
+              ? "未检测到新信息"
+              : (consolidator.skipped_reason ?? "未知")}
+          </span>
+        </div>
+      )}
+      {consolidator.status === "done" && (
+        <>
+          <div className="trace-kv">
+            <span>新增实体</span>
+            <span>{consolidator.entities_added}</span>
+          </div>
+          {consolidator.facts_added > 0 && (
+            <div className="trace-kv">
+              <span>写入事实</span>
+              <span>{consolidator.facts_added}</span>
+            </div>
+          )}
+          <div className="trace-kv">
+            <span>新增技能</span>
+            <span>{consolidator.skills_added}</span>
+          </div>
+        </>
+      )}
+      {consolidator.steps.length > 0 && (
+        <>
+          <div className="trace-section-title">执行步骤</div>
+          {consolidator.steps.map((step, i) => (
+            <div key={i} className="trace-item">
+              <CheckCircleOutlined
+                style={{ color: "#52c41a", marginRight: 6, flexShrink: 0 }}
+              />
+              <span className="trace-item-name">
+                {STEP_NAME_LABELS[step.name] ?? step.name}
+              </span>
+              {step.detail && <span className="trace-meta">{step.detail}</span>}
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Full trace (after streaming completes) ─────────────────────────────────
 
 function TraceContent({ trace }: { trace: PipelineTrace }) {
@@ -229,28 +311,20 @@ function TraceContent({ trace }: { trace: PipelineTrace }) {
         summary={
           consolidator.status === "pending"
             ? "后台处理中..."
-            : `${consolidator.entities_added} 实体 | ${consolidator.skills_added} 技能`
+            : consolidator.status === "skipped"
+            ? "已跳过（无新信息）"
+            : `${consolidator.entities_added} 实体${
+                consolidator.facts_added > 0 ? ` | ${consolidator.facts_added} 事实` : ""
+              } | ${consolidator.skills_added} 技能`
         }
-        status={consolidator.status === "done" ? "done" : "pending"}
+        status={
+          consolidator.status === "done" || consolidator.status === "skipped"
+            ? "done"
+            : "pending"
+        }
+        defaultOpen={consolidator.status !== "pending"}
       >
-        <div className="trace-detail">
-          <div className="trace-kv">
-            <span>状态</span>
-            <span>{consolidator.status === "pending" ? "处理中" : "完成"}</span>
-          </div>
-          {consolidator.status === "done" && (
-            <>
-              <div className="trace-kv">
-                <span>新增实体</span>
-                <span>{consolidator.entities_added}</span>
-              </div>
-              <div className="trace-kv">
-                <span>新增技能</span>
-                <span>{consolidator.skills_added}</span>
-              </div>
-            </>
-          )}
-        </div>
+        <ConsolidatorContent consolidator={consolidator} />
       </TraceStep>
     </>
   );
@@ -272,24 +346,42 @@ export default function AgentsTab() {
   const partialTrace = useStore((s) => s.partialTrace);
   const setCurrentTrace = useStore((s) => s.setCurrentTrace);
 
-  // Poll for consolidator result ~3s after response
+  const currentTraceRef = useRef(currentTrace);
   useEffect(() => {
-    if (!currentTrace || currentTrace.consolidator.status !== "pending") return;
+    currentTraceRef.current = currentTrace;
+  }, [currentTrace]);
+
+  const [consolidatorPoll, setConsolidatorPoll] = useState(0);
+
+  // 当新 pending trace 到达时重置轮询计数器
+  useEffect(() => {
+    if (currentTrace?.consolidator.status === "pending") {
+      setConsolidatorPoll(0);
+    }
+  }, [currentTrace]);
+
+  // 固化轮询：逐步加大间隔，最多 8 次重试
+  useEffect(() => {
+    if (consolidatorPoll > 8) return;
+    const trace = currentTraceRef.current;
+    if (!trace || trace.consolidator.status !== "pending") return;
+    const delay = Math.min(2000 + consolidatorPoll * 1000, 6000);
     const timer = setTimeout(async () => {
       try {
         const result = await fetchConsolidationResult();
-        if (result.status === "done") {
-          setCurrentTrace({
-            ...currentTrace,
-            consolidator: result,
-          });
+        const latestTrace = currentTraceRef.current;
+        if (!latestTrace) return;
+        if (result.status !== "pending") {
+          setCurrentTrace({ ...latestTrace, consolidator: result });
+        } else {
+          setConsolidatorPoll((p) => p + 1);
         }
       } catch {
-        /* ignore */
+        setConsolidatorPoll((p) => p + 1);
       }
-    }, 3000);
+    }, delay);
     return () => clearTimeout(timer);
-  }, [currentTrace, setCurrentTrace]);
+  }, [consolidatorPoll, setCurrentTrace]);
 
   if (!currentTrace) {
     if (!isStreaming) {

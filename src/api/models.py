@@ -122,10 +122,20 @@ class ReasonerTrace(BaseModel):
     response_length: int = 0
 
 
+class ConsolidatorStepTrace(BaseModel):
+    name: str
+    status: str = "done"
+    detail: str = ""
+
+
 class ConsolidatorTrace(BaseModel):
     status: str = "pending"
     entities_added: int = 0
     skills_added: int = 0
+    facts_added: int = 0
+    has_novelty: bool | None = None
+    skipped_reason: str | None = None
+    steps: list[ConsolidatorStepTrace] = []
 
 
 class PipelineTrace(BaseModel):

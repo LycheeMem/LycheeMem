@@ -185,10 +185,20 @@ export interface ReasonerTrace {
   response_length: number;
 }
 
+export interface ConsolidatorStepTrace {
+  name: string;
+  status: string;
+  detail?: string;
+}
+
 export interface ConsolidatorTrace {
   status: "pending" | "done" | "skipped";
   entities_added: number;
   skills_added: number;
+  facts_added: number;
+  has_novelty?: boolean;
+  skipped_reason?: string;
+  steps: ConsolidatorStepTrace[];
 }
 
 export interface PipelineTrace {

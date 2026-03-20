@@ -235,15 +235,30 @@ class ConsolidatorAgent(BaseAgent):
             dict 包含：entities_added (int), skills_added (int)
         """
         if not turns:
-            return {"entities_added": 0, "skills_added": 0}
+            return {"entities_added": 0, "skills_added": 0, "steps": []}
+
+        steps: list[dict[str, Any]] = []
 
         # ── 新颖性检查：对话是否引入了已有记忆未覆盖的新信息 ──
-        if not self._check_has_novelty(turns, retrieved_context):
-            return {"entities_added": 0, "skills_added": 0, "skipped_reason": "no_novelty"}
+        has_novelty = self._check_has_novelty(turns, retrieved_context)
+        steps.append({
+            "name": "novelty_check",
+            "status": "done",
+            "detail": "检测到新信息" if has_novelty else "对话内容已覆盖，跳过固化",
+        })
+        if not has_novelty:
+            return {
+                "entities_added": 0,
+                "skills_added": 0,
+                "has_novelty": False,
+                "skipped_reason": "no_novelty",
+                "steps": steps,
+            }
 
         # 0. Graphiti: Episode raw ingestion + Semantic build（可选；不影响现有检索/回答）
         graphiti_entities_added = 0
         graphiti_facts_added = 0
+        _episodes_ingested = 0
         if self.graphiti_engine is not None and session_id:
             now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
@@ -274,6 +289,7 @@ class ConsolidatorAgent(BaseAgent):
                     episode_type=ep_type,
                     user_id=user_id,
                 )
+                _episodes_ingested += 1
             self._graphiti_last_episode_ingested[session_id] = len(turns) - 1
 
             # 0.2 Paper §2.2: semantic extraction covers ALL turns
@@ -352,6 +368,20 @@ class ConsolidatorAgent(BaseAgent):
                                 pass
                         self._total_episodes_since_community_refresh = 0
 
+        # ── 记录 Graphiti 阶段执行步骤 ──
+        if self.graphiti_engine is not None and session_id:
+            steps.append({
+                "name": "episode_ingest",
+                "status": "done",
+                "detail": f"写入 {_episodes_ingested} 条 Episode",
+            })
+            if self._graphiti_semantic_builder is not None:
+                steps.append({
+                    "name": "semantic_build",
+                    "status": "done",
+                    "detail": f"{graphiti_entities_added} 实体 · {graphiti_facts_added} 事实",
+                })
+
         # 格式化对话用于分析
         conversation_text = "\n".join(f"{t['role']}: {t['content']}" for t in turns)
 
@@ -362,6 +392,14 @@ class ConsolidatorAgent(BaseAgent):
             add_time_basis=True,
         )
         analysis = self._safe_parse(response)
+        steps.append({
+            "name": "llm_analysis",
+            "status": "done",
+            "detail": (
+                f"{'需要' if analysis.get('should_extract_entities') else '无需'}实体抽取"
+                + (f" · {len(analysis.get('new_skills', []))} 条新技能" if analysis.get('new_skills') else "")
+            ),
+        })
 
         entities_added = 0
         skills_added = 0
@@ -377,6 +415,11 @@ class ConsolidatorAgent(BaseAgent):
             if triples:
                 self.graph_store.add(triples, user_id=user_id)
                 entities_added = len(triples)
+        steps.append({
+            "name": "entity_extraction",
+            "status": "done",
+            "detail": f"{entities_added} 个实体" if entities_added else "无新实体",
+        })
 
         # 3. 新技能 → 存入技能库
         new_skills = analysis.get("new_skills", [])
@@ -397,9 +440,17 @@ class ConsolidatorAgent(BaseAgent):
                 )
                 skills_added += 1
 
+        steps.append({
+            "name": "skill_extraction",
+            "status": "done",
+            "detail": f"{skills_added} 个技能" if skills_added else "无新技能",
+        })
+
         result: dict[str, Any] = {
             "entities_added": entities_added,
             "skills_added": skills_added,
+            "has_novelty": True,
+            "steps": steps,
         }
         if self.graphiti_engine is not None and session_id:
             result["facts_added"] = graphiti_facts_added
