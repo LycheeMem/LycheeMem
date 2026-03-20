@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import datetime
 import hashlib
 from typing import Any
@@ -255,11 +256,19 @@ class ConsolidatorAgent(BaseAgent):
                 "steps": steps,
             }
 
-        # 0. Graphiti: Episode raw ingestion + Semantic build（可选；不影响现有检索/回答）
-        graphiti_entities_added = 0
-        graphiti_facts_added = 0
-        _episodes_ingested = 0
-        if self.graphiti_engine is not None and session_id:
+        # ──────────────────────────────────────────────────────────────────────
+        # 阶段 1（并行）：Graphiti Episode + Semantic（左路）
+        #               vs LLM 分析对话 → 技能/实体标记（右路）
+        # 两路互不依赖，同步触发；均完成后再执行实体写入和技能写入。
+        # ──────────────────────────────────────────────────────────────────────
+        conversation_text = "\n".join(f"{t['role']}: {t['content']}" for t in turns)
+
+        def _do_graphiti() -> dict[str, Any]:
+            """左路：Episode 写入 + Semantic 提取 + Community 刷新。"""
+            _ge_added = 0
+            _gf_added = 0
+            _ep_ingested = 0
+            _gsteps: list[dict[str, Any]] = []
             now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
             # 0.1 仅写入新增 turns 的 Episode（幂等）
@@ -289,12 +298,16 @@ class ConsolidatorAgent(BaseAgent):
                     episode_type=ep_type,
                     user_id=user_id,
                 )
-                _episodes_ingested += 1
+                _ep_ingested += 1
             self._graphiti_last_episode_ingested[session_id] = len(turns) - 1
+            _gsteps.append({
+                "name": "episode_ingest",
+                "status": "done",
+                "detail": f"写入 {_ep_ingested} 条 Episode",
+            })
 
             # 0.2 Paper §2.2: semantic extraction covers ALL turns
             # (user + assistant), not just the latest user turn.
-            # Process every new turn since last semantic extraction.
             if self._graphiti_semantic_builder is not None:
                 last_semantic = self._graphiti_last_semantic.get(session_id, -1)
                 for turn_idx in range(last_semantic + 1, len(turns)):
@@ -324,8 +337,8 @@ class ConsolidatorAgent(BaseAgent):
                         episode_type=ep_type,
                         user_id=user_id,
                     )
-                    graphiti_entities_added += int(built.get("entities_added", 0))
-                    graphiti_facts_added += int(built.get("facts_added", 0))
+                    _ge_added += int(built.get("entities_added", 0))
+                    _gf_added += int(built.get("facts_added", 0))
 
                 if len(turns) > 0:
                     self._graphiti_last_semantic[session_id] = len(turns) - 1
@@ -368,30 +381,74 @@ class ConsolidatorAgent(BaseAgent):
                                 pass
                         self._total_episodes_since_community_refresh = 0
 
-        # ── 记录 Graphiti 阶段执行步骤 ──
-        if self.graphiti_engine is not None and session_id:
-            steps.append({
-                "name": "episode_ingest",
-                "status": "done",
-                "detail": f"写入 {_episodes_ingested} 条 Episode",
-            })
-            if self._graphiti_semantic_builder is not None:
-                steps.append({
+                _gsteps.append({
                     "name": "semantic_build",
                     "status": "done",
-                    "detail": f"{graphiti_entities_added} 实体 · {graphiti_facts_added} 事实",
+                    "detail": f"{_ge_added} 实体 · {_gf_added} 事实",
                 })
 
-        # 格式化对话用于分析
-        conversation_text = "\n".join(f"{t['role']}: {t['content']}" for t in turns)
+            return {
+                "entities_added": _ge_added,
+                "facts_added": _gf_added,
+                "episodes_ingested": _ep_ingested,
+                "steps": _gsteps,
+            }
 
-        # 1. 用 LLM 分析对话，判断是否有新技能和是否需要实体抽取
-        response = self._call_llm(
-            conversation_text,
-            system_content=self.prompt_template,
-            add_time_basis=True,
-        )
-        analysis = self._safe_parse(response)
+        def _do_llm_analysis() -> dict[str, Any]:
+            """右路：LLM 分析对话，判断新技能与是否需要实体抽取。"""
+            response = self._call_llm(
+                conversation_text,
+                system_content=self.prompt_template,
+                add_time_basis=True,
+            )
+            return self._safe_parse(response)
+
+        # ── 并行执行两路 ──
+        # 技能写入仅依赖 LLM 分析结果（右路），与 Graphiti（左路）完全无关，
+        # 因此在 executor 上下文内，LLM future 就绪后立即执行技能写入，
+        # 无需等待 Graphiti 完成。
+        run_graphiti = self.graphiti_engine is not None and bool(session_id)
+        graphiti_entities_added = 0
+        graphiti_facts_added = 0
+        entities_added = 0
+        skills_added = 0
+
+        def _write_skills(analysis: dict[str, Any]) -> int:
+            """将 LLM 分析出的新技能写入技能库，返回写入条数。"""
+            count = 0
+            for skill in analysis.get("new_skills", []):
+                intent = skill.get("intent", "")
+                doc_markdown = skill.get("doc_markdown", "")
+                if intent and doc_markdown:
+                    embedding = self.embedder.embed_query(intent)
+                    self.skill_store.add(
+                        [{"intent": intent, "embedding": embedding, "doc_markdown": doc_markdown}],
+                        user_id=user_id,
+                    )
+                    count += 1
+            return count
+
+        if run_graphiti:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                graphiti_future = executor.submit(_do_graphiti)
+                llm_future = executor.submit(_do_llm_analysis)
+
+                # 右路完成后立即开始技能写入，不等左路
+                analysis = llm_future.result()
+                skill_future = executor.submit(_write_skills, analysis)
+
+                # 等待 Graphiti（左路）完成
+                graphiti_result = graphiti_future.result()
+                # 等待技能写入完成（通常已结束）
+                skills_added = skill_future.result()
+
+            graphiti_entities_added = graphiti_result["entities_added"]
+            graphiti_facts_added = graphiti_result["facts_added"]
+            steps.extend(graphiti_result["steps"])
+        else:
+            analysis = _do_llm_analysis()
+            skills_added = _write_skills(analysis)
+
         steps.append({
             "name": "llm_analysis",
             "status": "done",
@@ -401,12 +458,9 @@ class ConsolidatorAgent(BaseAgent):
             ),
         })
 
-        entities_added = 0
-        skills_added = 0
-
-        # 2. 实体抽取 → 更新图谱
+        # 2. 实体写入 → 仅在 Graphiti 完成后（已有结果）或 legacy 模式下执行
         # Graphiti 模式下使用 Fact-node 语义子图；暂不写入 legacy triples（避免双写与语义冲突）。
-        if self.graphiti_engine is not None and session_id:
+        if run_graphiti:
             entities_added = graphiti_entities_added
         elif analysis.get("should_extract_entities", False):
             triples = self.entity_extractor.extract_from_turns(
@@ -421,25 +475,6 @@ class ConsolidatorAgent(BaseAgent):
             "detail": f"{entities_added} 个实体" if entities_added else "无新实体",
         })
 
-        # 3. 新技能 → 存入技能库
-        new_skills = analysis.get("new_skills", [])
-        for skill in new_skills:
-            intent = skill.get("intent", "")
-            doc_markdown = skill.get("doc_markdown", "")
-            if intent and doc_markdown:
-                embedding = self.embedder.embed_query(intent)
-                self.skill_store.add(
-                    [
-                        {
-                            "intent": intent,
-                            "embedding": embedding,
-                            "doc_markdown": doc_markdown,
-                        }
-                    ],
-                    user_id=user_id,
-                )
-                skills_added += 1
-
         steps.append({
             "name": "skill_extraction",
             "status": "done",
@@ -452,7 +487,7 @@ class ConsolidatorAgent(BaseAgent):
             "has_novelty": True,
             "steps": steps,
         }
-        if self.graphiti_engine is not None and session_id:
+        if run_graphiti:
             result["facts_added"] = graphiti_facts_added
         return result
 

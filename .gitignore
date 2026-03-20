@@ -9,3 +9,4 @@ lychee_memos_sessions.db
 .pytest_cache
 node_modules
 .next
+data
