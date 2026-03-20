@@ -79,6 +79,7 @@ export const AGENTS: AgentInfo[] = [
 export interface PipelineStatus {
   session_count: number;
   graph_node_count: number;
+  graph_edge_count: number;
   skill_count: number;
 }
 
