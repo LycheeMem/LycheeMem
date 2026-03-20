@@ -1,6 +1,6 @@
 ﻿import { DeleteOutlined, SearchOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useState } from "react";
-import { deleteSkill, fetchSkills } from "../../api";
+import { clearSkillMemory, deleteSkill, fetchSkills } from "../../api";
 import { useStore } from "../../state";
 import type { SkillItem } from "../../types";
 import { escapeHtml, formatContent } from "../../utils";
@@ -27,6 +27,16 @@ export default function SkillsTab() {
     } catch { /* ignore */ }
   };
 
+  const handleClearAll = async () => {
+    if (!window.confirm(
+      `确定清空所有技能记忆？\n当前共 ${skills.length} 条技能将被永久删除，此操作不可撤销。`
+    )) return;
+    try {
+      await clearSkillMemory();
+      await reload();
+    } catch { /* ignore */ }
+  };
+
   const filtered = filterText.trim()
     ? skills.filter((s) => {
         const q = filterText.toLowerCase();
@@ -49,6 +59,15 @@ export default function SkillsTab() {
           />
           <SearchOutlined style={{ color: "var(--text-muted)", fontSize: 12 }} />
         </div>
+        <button
+          className="crud-btn crud-btn-sm"
+          style={{ color: "var(--red)", borderColor: "var(--red)" }}
+          onClick={handleClearAll}
+          title="清空当前用户的所有技能记忆"
+          disabled={skills.length === 0}
+        >
+          <DeleteOutlined /> 清空
+        </button>
       </div>
 
       {filtered.length === 0 ? (

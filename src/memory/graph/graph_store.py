@@ -337,6 +337,19 @@ class NetworkXGraphStore(BaseMemoryStore):
                     continue
             self.graph.remove_node(node_id)
 
+    def delete_all(self, *, user_id: str = "") -> None:
+        """删除所有节点（及关联边）。user_id 非空时只删该用户的节点。"""
+        if user_id:
+            to_remove = [
+                n for n, d in self.graph.nodes(data=True)
+                if d.get("user_id", "") == user_id
+            ]
+            for n in to_remove:
+                if n in self.graph:
+                    self.graph.remove_node(n)
+        else:
+            self.graph.clear()
+
     def get_all(self, *, user_id: str = "") -> list[dict[str, Any]]:
         return [
             {"id": n, **d}

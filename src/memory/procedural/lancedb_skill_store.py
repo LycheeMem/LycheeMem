@@ -113,6 +113,15 @@ class LanceDBSkillStore(BaseMemoryStore):
         else:
             table.delete(f"id IN ({id_list})")
 
+    def delete_all(self, *, user_id: str = "") -> None:
+        """删除所有技能。user_id 非空时只删该用户的技能。"""
+        table = self._get_table()
+        if user_id:
+            escaped = user_id.replace("'", "''")
+            table.delete(f"user_id = '{escaped}' OR user_id IS NULL OR user_id = ''")
+        else:
+            table.delete("id IS NOT NULL")
+
     def get_all(self, *, user_id: str = "") -> list[dict[str, Any]]:
         import json
 

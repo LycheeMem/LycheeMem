@@ -275,6 +275,7 @@ export async function fetchGraphEdges(): Promise<GraphEdge[]> {
   const data = await r.json();
   const edges: GraphEdge[] = ((data.edges || []) as Record<string, unknown>[]).map(
     (e) => ({
+      fact_id: (e.fact_id as string) || undefined,
       source: e.source as string,
       target: e.target as string,
       relation: (e.relation as string) || "",
@@ -391,10 +392,42 @@ export async function deleteGraphNode(nodeId: string): Promise<void> {
   }
 }
 
+export async function deleteGraphFact(factId: string): Promise<void> {
+  const r = await fetch(`${API}/memory/graph/facts/${encodeURIComponent(factId)}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error((data as Record<string, string>).detail || `HTTP ${r.status}`);
+  }
+}
 // ── Skill CRUD ──
 
 export async function deleteSkill(skillId: string): Promise<void> {
   const r = await fetch(`${API}/memory/skills/${encodeURIComponent(skillId)}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error((data as Record<string, string>).detail || `HTTP ${r.status}`);
+  }
+}
+
+export async function clearGraphMemory(): Promise<void> {
+  const r = await fetch(`${API}/memory/graph/clear`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error((data as Record<string, string>).detail || `HTTP ${r.status}`);
+  }
+}
+
+export async function clearSkillMemory(): Promise<void> {
+  const r = await fetch(`${API}/memory/skills/clear`, {
     method: "DELETE",
     headers: authHeaders(),
   });

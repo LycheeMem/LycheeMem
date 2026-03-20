@@ -231,13 +231,87 @@ async def add_graph_edge(
     )
 
 
+@router.delete("/memory/graph/clear", response_model=DeleteResponse)
+async def clear_all_graph(
+    pipeline=Depends(get_pipeline),
+    user=Depends(get_optional_user),
+):
+    """清空当前用户的所有图谱记忆（Entity + Fact / legacy 节点）。"""
+    user_id = user.user_id if user else ""
+
+    # Graphiti 路径
+    graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
+    store = getattr(graphiti, "store", None) if graphiti is not None else None
+    if store is not None and hasattr(store, "delete_all_for_user"):
+        try:
+            result = store.delete_all_for_user(user_id=user_id)
+            return DeleteResponse(
+                message=(
+                    f"Graph memory cleared "
+                    f"(facts_deleted={result['facts_deleted']}, "
+                    f"episodes_deleted={result.get('episodes_deleted', 0)}, "
+                    f"entities_deleted={result['entities_deleted']})."
+                )
+            )
+        except Exception as exc:
+            logger.exception("Graphiti delete_all_for_user failed")
+            raise HTTPException(status_code=500, detail=f"Graphiti clear failed: {exc}")
+
+    # Legacy 路径
+    graph_store = pipeline.search_coordinator.graph_store
+    if hasattr(graph_store, "delete_all"):
+        graph_store.delete_all(user_id=user_id)
+    else:
+        nodes = graph_store.get_all(user_id=user_id)
+        ids = [n.get("id") or n.get("node_id") or "" for n in nodes]
+        ids = [i for i in ids if i]
+        if ids:
+            graph_store.delete(ids, user_id=user_id)
+    return DeleteResponse(message="Graph memory cleared.")
+
+
 @router.delete("/memory/graph/nodes/{node_id}", response_model=DeleteResponse)
 async def delete_graph_node(node_id: str, pipeline=Depends(get_pipeline), user=Depends(get_optional_user)):
-    """删除图谱中的一个节点（及其所有关联边）。"""
-    graph_store = pipeline.search_coordinator.graph_store
+    """删除图谱中的一个节点（及其所有关联边/Fact）。"""
     user_id = user.user_id if user else ""
+
+    # Graphiti 路径：entity_id 是内容哈希，与 legacy node_id 不同，需单独处理
+    graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
+    store = getattr(graphiti, "store", None) if graphiti is not None else None
+    if store is not None and hasattr(store, "delete_entity"):
+        try:
+            result = store.delete_entity(entity_id=node_id, user_id=user_id)
+            return DeleteResponse(
+                message=(
+                    f"Node '{node_id}' deleted "
+                    f"(entity_deleted={result['entity_deleted']}, "
+                    f"facts_deleted={result['facts_deleted']})."
+                )
+            )
+        except Exception as exc:
+            logger.exception("Graphiti delete_entity failed")
+            raise HTTPException(status_code=500, detail=f"Graphiti delete failed: {exc}")
+
+    # Legacy 路径
+    graph_store = pipeline.search_coordinator.graph_store
     graph_store.delete([node_id], user_id=user_id)
     return DeleteResponse(message=f"Node '{node_id}' deleted.")
+
+
+@router.delete("/memory/graph/facts/{fact_id}", response_model=DeleteResponse)
+async def delete_graph_fact(fact_id: str, pipeline=Depends(get_pipeline), user=Depends(get_optional_user)):
+    """精准删除图谱中的一条 Fact（边）。仅支持 Graphiti 路径。"""
+    graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
+    store = getattr(graphiti, "store", None) if graphiti is not None else None
+    if store is None or not hasattr(store, "delete_fact"):
+        raise HTTPException(status_code=404, detail="Fact deletion is only supported in Graphiti mode.")
+    user_id = user.user_id if user else ""
+    try:
+        result = store.delete_fact(fact_id=fact_id, user_id=user_id)
+        return DeleteResponse(message=f"Fact '{fact_id}' deleted (deleted={result['deleted']}).")
+    except Exception as exc:
+        logger.exception("Graphiti delete_fact failed")
+        raise HTTPException(status_code=500, detail=f"Graphiti delete_fact failed: {exc}")
 
 
 # ── Memory: Skills ──
@@ -249,6 +323,28 @@ async def get_skills(pipeline=Depends(get_pipeline), user=Depends(get_optional_u
     user_id = user.user_id if user else ""
     skills = skill_store.get_all(user_id=user_id)
     return SkillsResponse(skills=skills, total=len(skills))
+
+
+# NOTE: 固定路径 /memory/skills/clear 必须在参数化路径 /memory/skills/{skill_id} 前定义，
+# 否则 FastAPI 会将 "clear" 当作 skill_id 参数处理。
+@router.delete("/memory/skills/clear", response_model=DeleteResponse)
+async def clear_all_skills(
+    pipeline=Depends(get_pipeline),
+    user=Depends(get_optional_user),
+):
+    """清空当前用户的所有技能记忆。"""
+    skill_store = pipeline.search_coordinator.skill_store
+    user_id = user.user_id if user else ""
+    if hasattr(skill_store, "delete_all"):
+        skill_store.delete_all(user_id=user_id)
+    else:
+        # 降级：逐一删除
+        all_skills = skill_store.get_all(user_id=user_id)
+        ids = [s.get("id") or s.get("skill_id") or "" for s in all_skills]
+        ids = [i for i in ids if i]
+        if ids:
+            skill_store.delete(ids, user_id=user_id)
+    return DeleteResponse(message="All skills cleared.")
 
 
 @router.delete("/memory/skills/{skill_id}", response_model=DeleteResponse)

@@ -162,6 +162,18 @@ class FileSkillStore(BaseMemoryStore):
                 del self._skills[skill_id]
             self._save()
 
+    def delete_all(self, *, user_id: str = "") -> None:
+        """删除所有技能。user_id 非空时只删该用户的技能。"""
+        with self._lock:
+            if user_id:
+                self._skills = {
+                    k: v for k, v in self._skills.items()
+                    if v.user_id != user_id
+                }
+            else:
+                self._skills.clear()
+            self._save()
+
     def get_all(self, *, user_id: str = "") -> list[dict[str, Any]]:
         with self._lock:
             return [

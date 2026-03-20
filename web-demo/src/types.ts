@@ -33,6 +33,7 @@ export interface GraphNode {
 }
 
 export interface GraphEdge {
+  fact_id?: string;
   source: string | GraphNode;
   target: string | GraphNode;
   relation: string;

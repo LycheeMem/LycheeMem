@@ -424,6 +424,19 @@ class Neo4jGraphStore(BaseMemoryStore):
                     ids=ids,
                 )
 
+    def delete_all(self, *, user_id: str = "") -> None:
+        """删除所有 Entity 节点及关联边。user_id 非空时只删该用户的节点。"""
+        with self._driver.session(database=self._database) as session:
+            if user_id:
+                session.run(
+                    "MATCH (n:Entity) "
+                    "WHERE n.user_id = $user_id OR n.user_id IS NULL OR n.user_id = '' "
+                    "DETACH DELETE n",
+                    user_id=user_id,
+                )
+            else:
+                session.run("MATCH (n:Entity) DETACH DELETE n")
+
     def get_all(self, *, user_id: str = "") -> list[dict[str, Any]]:
         with self._driver.session(database=self._database) as session:
             if user_id:

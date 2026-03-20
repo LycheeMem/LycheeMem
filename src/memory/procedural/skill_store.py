@@ -106,6 +106,16 @@ class InMemorySkillStore(BaseMemoryStore):
                 continue
             del self._skills[skill_id]
 
+    def delete_all(self, *, user_id: str = "") -> None:
+        """删除所有技能。user_id 非空时只删该用户的技能。"""
+        if user_id:
+            self._skills = {
+                k: v for k, v in self._skills.items()
+                if v.user_id != user_id
+            }
+        else:
+            self._skills.clear()
+
     def get_all(self, *, user_id: str = "") -> list[dict[str, Any]]:
         """获取所有技能。指定 user_id 时只返回该用户的技能。"""
         return [
