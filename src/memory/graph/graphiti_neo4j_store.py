@@ -1531,59 +1531,6 @@ class GraphitiNeo4jStore:
 
         return {"facts_deleted": facts_deleted, "entity_deleted": entity_deleted}
 
-    def delete_fact(self, *, fact_id: str, user_id: str = "") -> dict[str, int]:
-        """精准删除一条 Fact 节点。
-
-        当 user_id 非空时，仅删除归属该用户的 Fact，防止误删他人数据。
-        删除后孤立 Entity（即再无 Fact 引用）一并清理。
-        """
-        fact_id = str(fact_id or "").strip()
-        if not fact_id:
-            return {"deleted": 0, "orphan_entities_deleted": 0}
-
-        with self._driver.session(database=self._database) as session:
-            if user_id:
-                rs = session.run(
-                    "MATCH (f:Fact {fact_id: $fid}) "
-                    "WHERE coalesce(f.user_id, '') = $uid "
-                    "WITH f, f.subject_entity_id AS sub, f.object_entity_id AS obj "
-                    "DETACH DELETE f "
-                    "RETURN count(f) AS deleted, sub, obj",
-                    fid=fact_id,
-                    uid=user_id,
-                )
-            else:
-                rs = session.run(
-                    "MATCH (f:Fact {fact_id: $fid}) "
-                    "WITH f, f.subject_entity_id AS sub, f.object_entity_id AS obj "
-                    "DETACH DELETE f "
-                    "RETURN count(f) AS deleted, sub, obj",
-                    fid=fact_id,
-                )
-            record = rs.single()
-            if not record or not int(record.get("deleted") or 0):
-                return {"deleted": 0, "orphan_entities_deleted": 0}
-
-            sub = str(record.get("sub") or "").strip()
-            obj = str(record.get("target") or record.get("obj") or "").strip()
-            touched_eids = [e for e in [sub, obj] if e]
-
-            orphan_entities_deleted = 0
-            if touched_eids:
-                rs2 = session.run(
-                    "MATCH (e:Entity) WHERE e.entity_id IN $eids "
-                    "AND NOT EXISTS { "
-                    "  MATCH (f:Fact) "
-                    "  WHERE f.subject_entity_id = e.entity_id "
-                    "     OR f.object_entity_id = e.entity_id "
-                    "} "
-                    "WITH e, 1 AS m DETACH DELETE e RETURN count(m) AS deleted",
-                    eids=touched_eids,
-                )
-                orphan_entities_deleted = int((rs2.single() or {}).get("deleted") or 0)
-
-        return {"deleted": 1, "orphan_entities_deleted": orphan_entities_deleted}
-
     # ──────────────────────────────────────
     # Compatibility export
     # ──────────────────────────────────────
@@ -1647,9 +1594,7 @@ class GraphitiNeo4jStore:
                 "MATCH (f:Fact) "
                 "WHERE f.subject_entity_id IS NOT NULL AND f.object_entity_id IS NOT NULL "
                 "  AND coalesce(f.user_id, '') = $user_id "
-                "  AND f.t_tx_expired IS NULL "
                 "RETURN "
-                "f.fact_id AS fact_id, "
                 "f.subject_entity_id AS source, "
                 "f.object_entity_id AS target, "
                 "coalesce(f.relation_type, '') AS relation, "
@@ -1665,7 +1610,6 @@ class GraphitiNeo4jStore:
                 "MATCH (f:Fact) "
                 "WHERE coalesce(f.user_id, '') = $user_id "
                 "  AND f.subject_entity_id IS NOT NULL AND f.object_entity_id IS NOT NULL "
-                "  AND f.t_tx_expired IS NULL "
                 "WITH collect(DISTINCT f.subject_entity_id) + collect(DISTINCT f.object_entity_id) AS eids "
                 "UNWIND eids AS eid "
                 "MATCH (e:Entity {entity_id: eid}) "

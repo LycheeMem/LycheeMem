@@ -1,6 +1,6 @@
 ﻿import { DeleteOutlined, LinkOutlined, NodeIndexOutlined, PlusOutlined, PushpinOutlined, SearchOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useState } from "react";
-import { addGraphNode, clearGraphMemory, deleteGraphFact, deleteGraphNode, fetchGraphData, fetchGraphEdges, searchGraphNodes } from "../../api";
+import { addGraphNode, clearGraphMemory, deleteGraphNode, fetchGraphData, fetchGraphEdges, searchGraphNodes } from "../../api";
 import { useStore } from "../../state";
 import type { GraphEdge, GraphNode } from "../../types";
 import { escapeHtml } from "../../utils";
@@ -119,21 +119,6 @@ export default function GraphMemoryTab() {
       await clearGraphMemory();
       await reload();
     } catch { /* ignore */ }
-  };
-
-  const handleDeleteEdge = async (e: GraphEdge) => {
-    if (!e.fact_id) {
-      alert("此边没有 fact_id，无法精准删除（仅 Graphiti 模式支持单条删除）。");
-      return;
-    }
-    const label = (e.fact || e.relation || e.fact_id).slice(0, 60);
-    if (!window.confirm(`确定删除这条 Fact？\n「${label}」\n此操作不可撤销。`)) return;
-    try {
-      await deleteGraphFact(e.fact_id);
-      await reload();
-    } catch (err) {
-      alert(err instanceof Error ? err.message : "删除失败");
-    }
   };
 
   const activeEdge = selectedEdge || hoveredEdge;
@@ -316,16 +301,7 @@ export default function GraphMemoryTab() {
                     onMouseLeave={() => { if (!selectedEdge) setHoveredEdge(null); }}
                     onClick={() => { setSelectedEdge(e); setHoveredEdge(e); }}
                   >
-                    <div className="mem-label graph mem-label-row">
-                      <span><LinkOutlined /> 图谱事实</span>
-                      <button
-                        className="crud-btn-icon crud-btn-danger"
-                        title="删除此 Fact（边）"
-                        onClick={(ev) => { ev.stopPropagation(); handleDeleteEdge(e); }}
-                      >
-                        <DeleteOutlined />
-                      </button>
-                    </div>
+                    <div className="mem-label graph"><LinkOutlined /> 图谱事实</div>
                     <div className="mem-content">
                       {escapeHtml(getEdgeFact(e, nodeById))}
                     </div>

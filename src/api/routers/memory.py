@@ -298,22 +298,6 @@ async def delete_graph_node(node_id: str, pipeline=Depends(get_pipeline), user=D
     return DeleteResponse(message=f"Node '{node_id}' deleted.")
 
 
-@router.delete("/memory/graph/facts/{fact_id}", response_model=DeleteResponse)
-async def delete_graph_fact(fact_id: str, pipeline=Depends(get_pipeline), user=Depends(get_optional_user)):
-    """精准删除图谱中的一条 Fact（边）。仅支持 Graphiti 路径。"""
-    graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
-    store = getattr(graphiti, "store", None) if graphiti is not None else None
-    if store is None or not hasattr(store, "delete_fact"):
-        raise HTTPException(status_code=404, detail="Fact deletion is only supported in Graphiti mode.")
-    user_id = user.user_id if user else ""
-    try:
-        result = store.delete_fact(fact_id=fact_id, user_id=user_id)
-        return DeleteResponse(message=f"Fact '{fact_id}' deleted (deleted={result['deleted']}).")
-    except Exception as exc:
-        logger.exception("Graphiti delete_fact failed")
-        raise HTTPException(status_code=500, detail=f"Graphiti delete_fact failed: {exc}")
-
-
 # ── Memory: Skills ──
 
 
