@@ -220,7 +220,25 @@ class LycheePipeline:
         state.update(patch)
         yield {"type": "step", "step": "synthesize", "status": "done", "patch": patch}
 
-        patch = await asyncio.to_thread(self._reason_node, state)
+        # reason 阶段：流式生成，逐 token yield，最后再发 step:reason 完成事件
+        streaming_response = ""
+        async for token in self.reasoner.astream(
+            user_query=state["user_query"],
+            compressed_history=state.get("compressed_history", []),
+            background_context=state.get("background_context", ""),
+            skill_reuse_plan=state.get("skill_reuse_plan", []),
+        ):
+            streaming_response += token
+            yield {"type": "token", "content": token}
+
+        # 写回 assistant turn（保持与同步路径一致）
+        await asyncio.to_thread(
+            self.wm_manager.append_assistant_turn,
+            state["session_id"],
+            streaming_response,
+            user_id,
+        )
+        patch = {"final_response": streaming_response, "consolidation_pending": True}
         state.update(patch)
         yield {"type": "step", "step": "reason", "status": "done", "patch": patch}
 

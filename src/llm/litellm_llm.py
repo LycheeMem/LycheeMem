@@ -10,6 +10,7 @@ model 格式遵循 litellm 约定（参考 https://docs.litellm.ai/docs/）：
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 import litellm
@@ -103,3 +104,25 @@ class LiteLLMLLM(BaseLLM):
             ),
         )
         return resp.choices[0].message.content or ""
+
+    async def astream_generate(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[str]:
+        """真实 token 流式生成，逐 chunk yield 字符串。"""
+        response = await litellm.acompletion(
+            model=self.model,
+            messages=messages,
+            stream=True,
+            **self._build_kwargs(
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format=None,
+            ),
+        )
+        async for chunk in response:
+            delta = chunk.choices[0].delta
+            if delta and delta.content:
+                yield delta.content

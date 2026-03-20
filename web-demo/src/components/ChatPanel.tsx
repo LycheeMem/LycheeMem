@@ -2,13 +2,14 @@ import { MessageOutlined } from "@ant-design/icons";
 import { useCallback, useEffect, useRef } from "react";
 import { fetchGraphData, fetchGraphEdges, fetchPipelineStatus, fetchSessionTurns, fetchSessions, fetchSkills, streamChatMessage } from "../api";
 import { useStore } from "../state";
-import { formatContent } from "../utils";
+import MarkdownRenderer from "./MarkdownRenderer";
 
 export default function ChatPanel() {
   const sessionId = useStore((s) => s.sessionId);
   const messages = useStore((s) => s.messages);
   const isStreaming = useStore((s) => s.isStreaming);
   const isTyping = useStore((s) => s.isTyping);
+  const streamingContent = useStore((s) => s.streamingContent);
 
   const addMessage = useStore((s) => s.addMessage);
   const setIsStreaming = useStore((s) => s.setIsStreaming);
@@ -27,6 +28,8 @@ export default function ChatPanel() {
   const setPartialTrace = useStore((s) => s.setPartialTrace);
   const mergePartialTrace = useStore((s) => s.mergePartialTrace);
   const setCompletedSteps = useStore((s) => s.setCompletedSteps);
+  const setStreamingContent = useStore((s) => s.setStreamingContent);
+  const appendStreamingContent = useStore((s) => s.appendStreamingContent);
 
   const messagesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -36,7 +39,7 @@ export default function ChatPanel() {
     if (messagesRef.current) {
       messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
     }
-  }, [messages, isTyping]);
+  }, [messages, isTyping, streamingContent]);
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -52,12 +55,12 @@ export default function ChatPanel() {
       addMessage({ role: "user", content: text, meta: null });
       setIsTyping(true);
       setIsStreaming(true);
+      setStreamingContent("");
       setCurrentTrace(null);
       setPartialTrace(null);
       setCompletedSteps([]);
 
       // Track accumulated state across SSE callbacks
-      let responseText = "";
       const doneSteps: string[] = [];
 
       try {
@@ -70,15 +73,22 @@ export default function ChatPanel() {
               mergePartialTrace(fragment as Record<string, unknown>);
             }
           },
-          onAnswer(answer) {
-            responseText = answer;
+          onToken(token) {
+            // 首个 token 到达时关闭 typing 指示器，改为真实流式渲染
+            setIsTyping(false);
+            appendStreamingContent(token);
+          },
+          onAnswer(_answer) {
+            // answer 事件是对所有 token 的汇总确认，前端已通过 token 事件累积，忽略即可
             setIsTyping(false);
           },
           onDone(data) {
             setWmTokenUsage(data.wm_token_usage || 0);
+            // 使用 streamingContent 的最终值（由 token 事件累积）作为 content
+            // 此处通过 data.trace 获取 wm_token_usage，实际文本内容已在 streamingContent 中
             addMessage({
               role: "assistant",
-              content: responseText,
+              content: useStore.getState().streamingContent,
               meta: {
                 memories_retrieved: data.memories_retrieved || 0,
                 wm_token_usage: data.wm_token_usage || 0,
@@ -88,14 +98,16 @@ export default function ChatPanel() {
             if (data.trace) {
               setCurrentTrace(data.trace);
             }
+            setStreamingContent("");
           },
         });
       } catch (err) {
         setIsTyping(false);
+        setStreamingContent("");
         addMessage({
           role: "assistant",
           content:
-            "\u26A0\uFE0F 连接错误: " +
+            "⚠️ 连接错误: " +
             (err instanceof Error ? err.message : String(err)),
           meta: null,
         });
@@ -110,7 +122,7 @@ export default function ChatPanel() {
         try { setSkills(await fetchSkills()); } catch { /* */ }
         try { setPipelineStatus(await fetchPipelineStatus()); } catch { /* */ }
         try { setSessions(await fetchSessions()); } catch { /* */ }
-        try { 
+        try {
           const { turns, summaries, boundary_index, wm_current_tokens, wm_max_tokens } = await fetchSessionTurns(sessionId);
           setWmTurns(turns);
           setWmSummaries(summaries);
@@ -126,6 +138,8 @@ export default function ChatPanel() {
       addMessage,
       setIsTyping,
       setIsStreaming,
+      setStreamingContent,
+      appendStreamingContent,
       setWmTokenUsage,
       setWmMaxTokens,
       setWmTurns,
@@ -166,19 +180,22 @@ export default function ChatPanel() {
       <div id="chat-messages" className="chat-messages" ref={messagesRef}>
         {messages.map((msg, i) => (
           <div key={i} className={`msg msg-${msg.role}`}>
-            <span
-              dangerouslySetInnerHTML={{ __html: formatContent(msg.content) }}
-            />
-            {/* {msg.role === "assistant" && msg.meta && (
-              <div className="msg-meta">
-                <span><AppstoreOutlined /> {msg.meta.memories_retrieved} 条记忆</span>
-                <span>
-                  <BarChartOutlined /> {(msg.meta.wm_token_usage || 0).toLocaleString()} tokens
-                </span>
-              </div>
-            )} */}
+            {msg.role === "user" ? (
+              <span className="msg-user-text">{msg.content}</span>
+            ) : (
+              <MarkdownRenderer content={msg.content} />
+            )}
           </div>
         ))}
+
+        {/* 流式输出中的 assistant 气泡（token by token 实时渲染） */}
+        {isStreaming && streamingContent && (
+          <div className="msg msg-assistant stream-bubble">
+            <MarkdownRenderer content={streamingContent} streaming />
+          </div>
+        )}
+
+        {/* 等待首个 token 前的打字指示器 */}
         {isTyping && (
           <div className="msg msg-assistant">
             <div className="typing-indicator">

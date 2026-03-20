@@ -65,6 +65,9 @@ export interface AppState {
   // Streaming step progress ("wm_manager" | "search" | "synthesize" | "reason")
   completedSteps: string[];
 
+  // 流式输出中的临时文本（token by token 累积）
+  streamingContent: string;
+
   // Actions
   setSessionId: (id: string) => void;
   setSessions: (sessions: SessionInfo[]) => void;
@@ -91,6 +94,8 @@ export interface AppState {
   setPartialTrace: (trace: Partial<PipelineTrace> | null) => void;
   mergePartialTrace: (fragment: Record<string, unknown>) => void;
   setCompletedSteps: (steps: string[]) => void;
+  setStreamingContent: (content: string) => void;
+  appendStreamingContent: (token: string) => void;
   newSession: () => void;
   login: (user: AuthUser) => void;
   logout: () => void;
@@ -136,6 +141,7 @@ export const useStore = create<AppState>((set) => ({
   currentTrace: null,
   partialTrace: null,
   completedSteps: [],
+  streamingContent: "",
 
   setSessionId: (id) => set({ sessionId: id }),
   setSessions: (sessions) => set({ sessions }),
@@ -166,6 +172,8 @@ export const useStore = create<AppState>((set) => ({
       partialTrace: { ...(s.partialTrace ?? {}), ...fragment } as Partial<PipelineTrace>,
     })),
   setCompletedSteps: (steps) => set({ completedSteps: steps }),
+  setStreamingContent: (content) => set({ streamingContent: content }),
+  appendStreamingContent: (token) => set((s) => ({ streamingContent: s.streamingContent + token })),
   newSession: () =>
     set({
       sessionId: generateSessionId(),
@@ -180,6 +188,7 @@ export const useStore = create<AppState>((set) => ({
       currentTrace: null,
       partialTrace: null,
       completedSteps: [],
+      streamingContent: "",
     }),
   login: (user) => {
     storeAuth(user);

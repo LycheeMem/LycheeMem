@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 from src.agents.base_agent import BaseAgent
@@ -46,23 +47,31 @@ class ReasoningAgent(BaseAgent):
         skill_reuse_plan: list[dict] | None = None,
         **kwargs,
     ) -> dict[str, Any]:
-        """执行推理，生成最终回答。
+        messages = self._build_messages(user_query, compressed_history, background_context, skill_reuse_plan)
+        response = self.llm.generate(messages)
+        return {"final_response": response}
 
-        Args:
-            user_query: 用户当前查询。
-            compressed_history: 压缩后的对话历史（含摘要）。
-            background_context: 整合器输出的背景知识。
-            skill_reuse_plan: 可复用技能执行计划。
+    async def astream(
+        self,
+        user_query: str,
+        compressed_history: list[dict[str, str]] | None = None,
+        background_context: str = "",
+        skill_reuse_plan: list[dict] | None = None,
+    ) -> AsyncIterator[str]:
+        """流式生成最终回复，逐 token yield。"""
+        messages = self._build_messages(user_query, compressed_history, background_context, skill_reuse_plan)
+        async for token in self.llm.astream_generate(messages):
+            yield token
 
-        Returns:
-            dict 包含：final_response (str)
-        """
+    def _build_messages(
+        self,
+        user_query: str,
+        compressed_history: list[dict[str, str]] | None = None,
+        background_context: str = "",
+        skill_reuse_plan: list[dict] | None = None,
+    ) -> list[dict[str, str]]:
+        """构建发送给 LLM 的消息列表（供 run 和 astream 共用）。"""
         # ── 从 compressed_history 中分离 system 摘要与对话轮次 ──
-        # 压缩后 render_context 会将历史摘要作为 role="system" 消息写入
-        # compressed_history。如果将其作为独立的 system message 发送，
-        # 会被模型优先关注而「挤掉」background_context（Lost-in-the-Middle）。
-        # 因此这里提取摘要文本合并进统一的 system prompt，
-        # 仅保留 user/assistant 轮次作为对话历史。
         history_summary_parts: list[str] = []
         conversation_turns: list[dict[str, str]] = []
         if compressed_history:
@@ -74,7 +83,6 @@ class ReasoningAgent(BaseAgent):
                         {"role": msg["role"], "content": msg["content"]}
                     )
 
-        # ── 构建统一 system prompt ──
         if history_summary_parts:
             history_section = (
                 "以下是之前对话的压缩摘要：\n\n" + "\n\n".join(history_summary_parts)
@@ -99,18 +107,15 @@ class ReasoningAgent(BaseAgent):
 
         system_prompt = self._append_time_basis(system_prompt)
 
-        # ── 构建完整消息列表（单一 system + 对话轮次）──
         messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
 
         for msg in conversation_turns:
             messages.append(msg)
 
-        # 用户当前查询（确保在末尾）
         if not messages or messages[-1].get("content") != user_query:
             messages.append({"role": "user", "content": user_query})
 
-        response = self.llm.generate(messages)
-        return {"final_response": response}
+        return messages
 
     @staticmethod
     def _format_skill_plan(plan: list[dict] | None) -> str:

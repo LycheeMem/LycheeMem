@@ -219,13 +219,13 @@ export default function GraphMemoryTab() {
                     <span>
                       <NodeIndexOutlined /> {escapeHtml(n.label || n.id)}
                     </span>
-                    <button
+                    {/* <button
                       className="crud-btn-icon crud-btn-danger"
                       title="删除节点"
                       onClick={() => handleDeleteNode(n.id)}
                     >
                       <DeleteOutlined />
-                    </button>
+                    </button> */}
                   </div>
                   {n.typeLabel && <div className="mem-meta">类型: {escapeHtml(n.typeLabel)}</div>}
                   <div className="mem-meta">ID: {escapeHtml(n.id)}</div>

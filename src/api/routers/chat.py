@@ -70,6 +70,8 @@ async def chat_stream(req: ChatRequest, pipeline=Depends(get_pipeline), user=Dep
                     fragment["reasoner"] = _build_reasoner_trace(accumulated).model_dump()
 
                 yield _sse({"type": "step", "step": step_name, "status": "done", "trace_fragment": fragment})
+            elif evt["type"] == "token":
+                yield _sse({"type": "token", "content": evt["content"]})
             elif evt["type"] == "done":
                 final_result = evt.get("result", {})
 

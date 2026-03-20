@@ -1,14 +1,14 @@
 import type {
-    AuthUser,
-    ConsolidatorTrace,
-    GraphData,
-    GraphEdge,
-    GraphNode,
-    PipelineStatus,
-    PipelineTrace,
-    SessionInfo,
-    SkillItem,
-    Turn,
+  AuthUser,
+  ConsolidatorTrace,
+  GraphData,
+  GraphEdge,
+  GraphNode,
+  PipelineStatus,
+  PipelineTrace,
+  SessionInfo,
+  SkillItem,
+  Turn,
 } from "./types";
 
 const API = "";
@@ -147,6 +147,11 @@ export interface StreamStepEvent {
   wm_token_usage?: number;
 }
 
+export interface StreamTokenEvent {
+  type: "token";
+  content: string;
+}
+
 export interface StreamAnswerEvent {
   type: "answer";
   content: string;
@@ -160,18 +165,19 @@ export interface StreamDoneEvent {
   trace: PipelineTrace;
 }
 
-export type StreamEvent = StreamStepEvent | StreamAnswerEvent | StreamDoneEvent;
+export type StreamEvent = StreamStepEvent | StreamTokenEvent | StreamAnswerEvent | StreamDoneEvent;
 
 /**
  * SSE 流式对话。通过回调实时接收每个 pipeline 步骤的进度。
- * 后端依次发送 step 事件（wm_manager / search / synthesize / reason），
- * 最后发送 answer 和 done 事件。
+ * 后端依次发送 step 事件（wm_manager / search / synthesize），
+ * 然后在 reason 阶段发送多个 token 事件，最后发送 step:reason / answer / done。
  */
 export async function streamChatMessage(
   sessionId: string,
   message: string,
   callbacks: {
     onStep?: (step: string, data: Record<string, unknown>) => void;
+    onToken?: (token: string) => void;
     onAnswer?: (answer: string) => void;
     onDone?: (data: StreamDoneEvent) => void;
   }
@@ -219,6 +225,8 @@ export async function streamChatMessage(
 
       if (evt.type === "step" && callbacks.onStep) {
         callbacks.onStep(evt.step as string, evt);
+      } else if (evt.type === "token" && callbacks.onToken) {
+        callbacks.onToken(evt.content as string);
       } else if (evt.type === "answer" && callbacks.onAnswer) {
         callbacks.onAnswer(evt.content as string);
       } else if (evt.type === "done" && callbacks.onDone) {
