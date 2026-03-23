@@ -22,40 +22,43 @@ LycheeMem is a cognitive memory system for long-horizon AI agents, providing per
 
 LycheeMem organizes memory into three complementary stores:
 
-<div align="center">
-  <div style="border: 1px solid #e1e4e8; border-radius: 8px; padding: 20px; background-color: #f6f8fa; font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;">
-    <h3 style="margin-top: 0; color: #24292e;">LycheeMem Memory Architecture</h3>
-    <div style="display: flex; gap: 15px; justify-content: center; flex-wrap: wrap; margin-top: 15px;">
-      <div style="border: 1px solid #d1d5da; border-radius: 6px; padding: 15px; background: white; min-width: 180px; text-align: left; box-shadow: 0 1px 3px rgba(27,31,35,0.04);">
-        <h4 style="margin: 0 0 10px 0; color: #0366d6;">Working Memory</h4>
-        <p style="margin: 0; font-size: 13px; color: #586069;">(Episodic)</p>
-        <ul style="margin: 10px 0 0 0; padding-left: 18px; font-size: 13px; line-height: 1.6; color: #24292e;">
+<table style="border-collapse: collapse; width: 100%; margin: 20px auto; border: 1px solid #e1e4e8; border-radius: 8px; overflow: hidden;">
+  <thead>
+    <tr style="background-color: #f6f8fa;">
+      <th style="border: 1px solid #e1e4e8; padding: 15px; text-align: center; color: #0366d6; font-weight: 600;">Working Memory</th>
+      <th style="border: 1px solid #e1e4e8; padding: 15px; text-align: center; color: #0366d6; font-weight: 600;">Semantic Memory</th>
+      <th style="border: 1px solid #e1e4e8; padding: 15px; text-align: center; color: #0366d6; font-weight: 600;">Procedural Memory</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="border: 1px solid #e1e4e8; padding: 15px; vertical-align: top; background: white;">
+        <p style="margin: 0 0 10px 0; font-size: 13px; color: #586069; font-weight: 600;">(Episodic)</p>
+        <ul style="margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.6; color: #24292e;">
           <li>Session turns</li>
           <li>Summaries</li>
           <li>Token budget management</li>
         </ul>
-      </div>
-      <div style="border: 1px solid #d1d5da; border-radius: 6px; padding: 15px; background: white; min-width: 180px; text-align: left; box-shadow: 0 1px 3px rgba(27,31,35,0.04);">
-        <h4 style="margin: 0 0 10px 0; color: #0366d6;">Semantic Memory</h4>
-        <p style="margin: 0; font-size: 13px; color: #586069;">(Knowledge Graph)</p>
-        <ul style="margin: 10px 0 0 0; padding-left: 18px; font-size: 13px; line-height: 1.6; color: #24292e;">
+      </td>
+      <td style="border: 1px solid #e1e4e8; padding: 15px; vertical-align: top; background: white;">
+        <p style="margin: 0 0 10px 0; font-size: 13px; color: #586069; font-weight: 600;">(Knowledge Graph)</p>
+        <ul style="margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.6; color: #24292e;">
           <li>Entity nodes</li>
           <li>Bi-temporal facts</li>
           <li>Communities</li>
           <li>Episode anchors</li>
         </ul>
-      </div>
-      <div style="border: 1px solid #d1d5da; border-radius: 6px; padding: 15px; background: white; min-width: 180px; text-align: left; box-shadow: 0 1px 3px rgba(27,31,35,0.04);">
-        <h4 style="margin: 0 0 10px 0; color: #0366d6;">Procedural Memory</h4>
-        <p style="margin: 0; font-size: 13px; color: #586069;">(Skills)</p>
-        <ul style="margin: 10px 0 0 0; padding-left: 18px; font-size: 13px; line-height: 1.6; color: #24292e;">
+      </td>
+      <td style="border: 1px solid #e1e4e8; padding: 15px; vertical-align: top; background: white;">
+        <p style="margin: 0 0 10px 0; font-size: 13px; color: #586069; font-weight: 600;">(Skills)</p>
+        <ul style="margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.6; color: #24292e;">
           <li>Skill entries</li>
           <li>HyDE retrieval</li>
         </ul>
-      </div>
-    </div>
-  </div>
-</div>
+      </td>
+    </tr>
+  </tbody>
+</table>
 
 ### Working Memory
 
