@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -25,12 +26,7 @@ router = APIRouter()
 
 
 def _strip_node_embeddings(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """从节点列表中移除 embedding 向量字段，避免 API 响应体过大。
-
-    兼容两种节点结构：
-    - Graphiti 路径：顶层 ``properties`` 子字典中含 ``embedding``。
-    - NetworkX / Neo4j legacy 路径：顶层直接含 ``embedding``。
-    """
+    """从节点列表中移除 embedding 向量字段，避免 API 响应体过大。"""
     result: list[dict[str, Any]] = []
     for node in nodes:
         n = {k: v for k, v in node.items() if k != "embedding"}
@@ -78,7 +74,16 @@ async def memory_search(req: MemorySearchRequest, pipeline=Depends(get_pipeline)
 
     graph_results: list[dict[str, Any]] = []
     if req.include_graph:
-        graph_results = sc.graph_store.search(req.query, top_k=req.top_k, user_id=user_id)
+        q_emb = sc.embedder.embed_query(req.query)
+        r = sc.graphiti_engine.search(
+            query=req.query,
+            session_id=None,
+            top_k=req.top_k,
+            query_embedding=q_emb,
+            include_communities=True,
+            user_id=user_id,
+        )
+        graph_results = r.provenance
 
     skill_results: list[dict[str, Any]] = []
     if req.include_skills:
@@ -100,26 +105,16 @@ async def memory_search(req: MemorySearchRequest, pipeline=Depends(get_pipeline)
 @router.get("/memory/graph", response_model=GraphResponse)
 async def get_graph(pipeline=Depends(get_pipeline), user=Depends(get_optional_user)):
     user_id = user.user_id if user else ""
-    graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
-    store = getattr(graphiti, "store", None) if graphiti is not None else None
-    if store is not None and hasattr(store, "export_semantic_graph"):
-        try:
-            data = store.export_semantic_graph(user_id=user_id)
-            return GraphResponse(
-                nodes=_strip_node_embeddings(data.get("nodes", [])),
-                edges=data.get("edges", []),
-            )
-        except Exception as exc:
-            logger.exception("Graphiti export_semantic_graph failed")
-            raise HTTPException(status_code=500, detail=f"Graphiti export failed: {exc}")
-
-    graph_store = pipeline.search_coordinator.graph_store
-    nodes = _strip_node_embeddings(graph_store.get_all(user_id=user_id))
-    if hasattr(graph_store, "get_all_edges"):
-        edges = graph_store.get_all_edges(user_id=user_id)
-    else:
-        edges = []
-    return GraphResponse(nodes=nodes, edges=edges)
+    store = pipeline.search_coordinator.graphiti_engine.store
+    try:
+        data = store.export_semantic_graph(user_id=user_id)
+        return GraphResponse(
+            nodes=_strip_node_embeddings(data.get("nodes", [])),
+            edges=data.get("edges", []),
+        )
+    except Exception as exc:
+        logger.exception("Graphiti export_semantic_graph failed")
+        raise HTTPException(status_code=500, detail=f"Graphiti export failed: {exc}")
 
 
 @router.get("/memory/graph/search", response_model=GraphResponse)
@@ -131,70 +126,42 @@ async def search_graph(
 ):
     """按关键词搜索图谱节点，返回子图。"""
     user_id = user.user_id if user else ""
-    graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
-    store = getattr(graphiti, "store", None) if graphiti is not None else None
-    if store is not None and hasattr(store, "export_semantic_subgraph"):
-        try:
-            # 1) candidate entity ids (strict: fulltext only; no embedding scan fallback)
-            candidate_ids: list[str] = []
-            seen: set[str] = set()
-
-            try:
-                ft = store.fulltext_search_entities(query=q, limit=max(50, top_k * 5), user_id=user_id)
-            except Exception:
-                ft = []
-
-            for r in ft:
-                eid = str(r.get("entity_id") or "").strip()
-                if eid and eid not in seen:
-                    candidate_ids.append(eid)
-                    seen.add(eid)
-
-            anchor_ids = candidate_ids[:top_k]
-            data = store.export_semantic_subgraph(
-                entity_ids=anchor_ids,
-                edge_limit=min(500, max(50, top_k * 50)),
-                user_id=user_id,
-            )
-
-            nodes = _strip_node_embeddings(data.get("nodes", []))
-            edges = data.get("edges", [])
-
-            # Mark anchors (non-breaking extra metadata)
-            for n in nodes:
-                try:
-                    nid = str(n.get("id") or "").strip()
-                    if nid and nid in set(anchor_ids):
-                        props = n.get("properties")
-                        if not isinstance(props, dict):
-                            props = {}
-                            n["properties"] = props
-                        props["is_anchor"] = True
-                except Exception:
-                    continue
-
-            return GraphResponse(nodes=nodes, edges=edges)
-        except Exception:
-            logger.exception("Graphiti native graph search failed")
-            raise HTTPException(status_code=500, detail="Graphiti graph search failed")
-
-    sc = pipeline.search_coordinator
-    graph_store = sc.graph_store
-    query_embedding = None
+    store = pipeline.search_coordinator.graphiti_engine.store
     try:
-        query_embedding = sc.embedder.embed_query(q)
+        candidate_ids: list[str] = []
+        seen: set[str] = set()
+        for r in store.fulltext_search_entities(query=q, limit=max(50, top_k * 5), user_id=user_id):
+            eid = str(r.get("entity_id") or "").strip()
+            if eid and eid not in seen:
+                candidate_ids.append(eid)
+                seen.add(eid)
+
+        anchor_ids = candidate_ids[:top_k]
+        data = store.export_semantic_subgraph(
+            entity_ids=anchor_ids,
+            edge_limit=min(500, max(50, top_k * 50)),
+            user_id=user_id,
+        )
+        nodes = _strip_node_embeddings(data.get("nodes", []))
+        edges = data.get("edges", [])
+
+        anchor_set = set(anchor_ids)
+        for n in nodes:
+            try:
+                nid = str(n.get("id") or "").strip()
+                if nid and nid in anchor_set:
+                    props = n.get("properties")
+                    if not isinstance(props, dict):
+                        props = {}
+                        n["properties"] = props
+                    props["is_anchor"] = True
+            except Exception:
+                continue
+
+        return GraphResponse(nodes=nodes, edges=edges)
     except Exception:
-        query_embedding = None
-    matched_nodes = _strip_node_embeddings(
-        graph_store.search(q, top_k=top_k, query_embedding=query_embedding, user_id=user_id)
-    )
-    node_ids = {n["node_id"] for n in matched_nodes}
-    if hasattr(graph_store, "get_all_edges"):
-        all_edges = graph_store.get_all_edges(user_id=user_id)
-        edges = [e for e in all_edges if e["source"] in node_ids or e["target"] in node_ids]
-    else:
-        edges = []
-    return GraphResponse(nodes=matched_nodes, edges=edges)
+        logger.exception("Graphiti native graph search failed")
+        raise HTTPException(status_code=500, detail="Graphiti graph search failed")
 
 
 @router.post("/memory/graph/nodes", response_model=DeleteResponse)
@@ -203,13 +170,20 @@ async def add_graph_node(
     pipeline=Depends(get_pipeline),
     user=Depends(get_optional_user),
 ):
-    """手动添加一个实体节点到知识图谱。"""
-    graph_store = pipeline.search_coordinator.graph_store
+    """手动 upsert 一个实体节点到 Graphiti 知识图谱。"""
+    store = pipeline.search_coordinator.graphiti_engine.store
     props = dict(req.properties or {})
-    if user:
-        props["user_id"] = user.user_id
-    graph_store.add_node(req.id, label=req.label, properties=props)
-    return DeleteResponse(message=f"Node '{req.id}' added.")
+    user_id_val = user.user_id if user else ""
+    name = str(props.get("name") or req.id)
+    store.upsert_entity(
+        entity_id=req.id,
+        name=name,
+        summary=str(props.get("summary", "")),
+        type_label=req.label,
+        source_session=str(props.get("source_session", "")),
+        user_id=user_id_val,
+    )
+    return DeleteResponse(message=f"Entity '{req.id}' upserted.")
 
 
 @router.post("/memory/graph/edges", response_model=DeleteResponse)
@@ -218,17 +192,24 @@ async def add_graph_edge(
     pipeline=Depends(get_pipeline),
     user=Depends(get_optional_user),
 ):
-    """手动添加一条关系边到知识图谱。"""
-    graph_store = pipeline.search_coordinator.graph_store
+    """手动 upsert 一条 Fact 边到 Graphiti 知识图谱。"""
+    store = pipeline.search_coordinator.graphiti_engine.store
     props = dict(req.properties or {})
-    if user:
-        props["user_id"] = user.user_id
-    graph_store.add_edge(
-        req.source, req.target, relation=req.relation, properties=props
+    user_id_val = user.user_id if user else ""
+    fact_id = str(props.get("fact_id") or uuid.uuid4())
+    fact_text = str(props.get("fact_text") or f"{req.source} {req.relation} {req.target}")
+    store.upsert_fact(
+        fact_id=fact_id,
+        subject_entity_id=req.source,
+        object_entity_id=req.target,
+        relation_type=req.relation,
+        fact_text=fact_text,
+        evidence_text=str(props.get("evidence_text", "")),
+        confidence=float(props.get("confidence", 1.0)),
+        source_session=str(props.get("source_session", "")),
+        user_id=user_id_val,
     )
-    return DeleteResponse(
-        message=f"Edge '{req.source}' -{req.relation}-> '{req.target}' added."
-    )
+    return DeleteResponse(message=f"Fact '{fact_id}' upserted.")
 
 
 @router.delete("/memory/graph/clear", response_model=DeleteResponse)
@@ -236,66 +217,41 @@ async def clear_all_graph(
     pipeline=Depends(get_pipeline),
     user=Depends(get_optional_user),
 ):
-    """清空当前用户的所有图谱记忆（Entity + Fact / legacy 节点）。"""
+    """清空当前用户的所有图谱记忆（Entity + Fact）。"""
     user_id = user.user_id if user else ""
-
-    # Graphiti 路径
-    graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
-    store = getattr(graphiti, "store", None) if graphiti is not None else None
-    if store is not None and hasattr(store, "delete_all_for_user"):
-        try:
-            result = store.delete_all_for_user(user_id=user_id)
-            return DeleteResponse(
-                message=(
-                    f"Graph memory cleared "
-                    f"(facts_deleted={result['facts_deleted']}, "
-                    f"episodes_deleted={result.get('episodes_deleted', 0)}, "
-                    f"entities_deleted={result['entities_deleted']})."
-                )
+    store = pipeline.search_coordinator.graphiti_engine.store
+    try:
+        result = store.delete_all_for_user(user_id=user_id)
+        return DeleteResponse(
+            message=(
+                f"Graph memory cleared "
+                f"(facts_deleted={result['facts_deleted']}, "
+                f"episodes_deleted={result.get('episodes_deleted', 0)}, "
+                f"entities_deleted={result['entities_deleted']})."
             )
-        except Exception as exc:
-            logger.exception("Graphiti delete_all_for_user failed")
-            raise HTTPException(status_code=500, detail=f"Graphiti clear failed: {exc}")
-
-    # Legacy 路径
-    graph_store = pipeline.search_coordinator.graph_store
-    if hasattr(graph_store, "delete_all"):
-        graph_store.delete_all(user_id=user_id)
-    else:
-        nodes = graph_store.get_all(user_id=user_id)
-        ids = [n.get("id") or n.get("node_id") or "" for n in nodes]
-        ids = [i for i in ids if i]
-        if ids:
-            graph_store.delete(ids, user_id=user_id)
-    return DeleteResponse(message="Graph memory cleared.")
+        )
+    except Exception as exc:
+        logger.exception("Graphiti delete_all_for_user failed")
+        raise HTTPException(status_code=500, detail=f"Graphiti clear failed: {exc}")
 
 
 @router.delete("/memory/graph/nodes/{node_id}", response_model=DeleteResponse)
 async def delete_graph_node(node_id: str, pipeline=Depends(get_pipeline), user=Depends(get_optional_user)):
-    """删除图谱中的一个节点（及其所有关联边/Fact）。"""
+    """删除图谱中的一个实体（及其所有关联 Fact）。"""
     user_id = user.user_id if user else ""
-
-    # Graphiti 路径：entity_id 是内容哈希，与 legacy node_id 不同，需单独处理
-    graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
-    store = getattr(graphiti, "store", None) if graphiti is not None else None
-    if store is not None and hasattr(store, "delete_entity"):
-        try:
-            result = store.delete_entity(entity_id=node_id, user_id=user_id)
-            return DeleteResponse(
-                message=(
-                    f"Node '{node_id}' deleted "
-                    f"(entity_deleted={result['entity_deleted']}, "
-                    f"facts_deleted={result['facts_deleted']})."
-                )
+    store = pipeline.search_coordinator.graphiti_engine.store
+    try:
+        result = store.delete_entity(entity_id=node_id, user_id=user_id)
+        return DeleteResponse(
+            message=(
+                f"Node '{node_id}' deleted "
+                f"(entity_deleted={result['entity_deleted']}, "
+                f"facts_deleted={result['facts_deleted']})."
             )
-        except Exception as exc:
-            logger.exception("Graphiti delete_entity failed")
-            raise HTTPException(status_code=500, detail=f"Graphiti delete failed: {exc}")
-
-    # Legacy 路径
-    graph_store = pipeline.search_coordinator.graph_store
-    graph_store.delete([node_id], user_id=user_id)
-    return DeleteResponse(message=f"Node '{node_id}' deleted.")
+        )
+    except Exception as exc:
+        logger.exception("Graphiti delete_entity failed")
+        raise HTTPException(status_code=500, detail=f"Graphiti delete failed: {exc}")
 
 
 # ── Memory: Skills ──
@@ -352,22 +308,13 @@ async def search_graph_by_relation(
 ):
     """按关系类型检索图谱边。"""
     user_id = user.user_id if user is not None else ""
-    graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
-    store = getattr(graphiti, "store", None) if graphiti is not None else None
-    if store is not None and hasattr(store, "search_facts_by_relation"):
-        try:
-            edges = store.search_facts_by_relation(relation=relation, limit=top_k, user_id=user_id)
-            return {"edges": edges, "total": len(edges)}
-        except Exception as exc:
-            logger.exception("Graphiti search_facts_by_relation failed")
-            raise HTTPException(status_code=500, detail=f"Graphiti by-relation failed: {exc}")
-
-    graph_store = pipeline.search_coordinator.graph_store
-    if hasattr(graph_store, "search_by_relation"):
-        edges = graph_store.search_by_relation(relation, top_k=top_k)
-    else:
-        edges = []
-    return {"edges": edges, "total": len(edges)}
+    store = pipeline.search_coordinator.graphiti_engine.store
+    try:
+        edges = store.search_facts_by_relation(relation=relation, limit=top_k, user_id=user_id)
+        return {"edges": edges, "total": len(edges)}
+    except Exception as exc:
+        logger.exception("Graphiti search_facts_by_relation failed")
+        raise HTTPException(status_code=500, detail=f"Graphiti by-relation failed: {exc}")
 
 
 @router.get("/memory/graph/by-time")
@@ -380,22 +327,13 @@ async def search_graph_by_time(
 ):
     """按时间范围检索图谱边。"""
     user_id = user.user_id if user is not None else ""
-    graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
-    store = getattr(graphiti, "store", None) if graphiti is not None else None
-    if store is not None and hasattr(store, "search_facts_by_time"):
-        try:
-            edges = store.search_facts_by_time(since=since, until=until, limit=top_k, user_id=user_id)
-            return {"edges": edges, "total": len(edges)}
-        except Exception as exc:
-            logger.exception("Graphiti search_facts_by_time failed")
-            raise HTTPException(status_code=500, detail=f"Graphiti by-time failed: {exc}")
-
-    graph_store = pipeline.search_coordinator.graph_store
-    if hasattr(graph_store, "search_by_time"):
-        edges = graph_store.search_by_time(since=since, until=until, top_k=top_k)
-    else:
-        edges = []
-    return {"edges": edges, "total": len(edges)}
+    store = pipeline.search_coordinator.graphiti_engine.store
+    try:
+        edges = store.search_facts_by_time(since=since, until=until, limit=top_k, user_id=user_id)
+        return {"edges": edges, "total": len(edges)}
+    except Exception as exc:
+        logger.exception("Graphiti search_facts_by_time failed")
+        raise HTTPException(status_code=500, detail=f"Graphiti by-time failed: {exc}")
 
 
 # ── Memory: Graph Facts ──
@@ -408,51 +346,27 @@ async def list_active_facts(
     top_k: int = Query(default=200, ge=1, le=1000),
     pipeline=Depends(get_pipeline),
 ):
-    """查看当前有效事实（Graphiti 优先）。"""
-    graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
-    store = getattr(graphiti, "store", None) if graphiti is not None else None
+    """查看当前有效事实。"""
+    store = pipeline.search_coordinator.graphiti_engine.store
+    try:
+        if relation and hasattr(store, "list_active_facts_for_subject_relation"):
+            rows = store.list_active_facts_for_subject_relation(
+                subject_entity_id=subject,
+                relation_type=str(relation).strip().upper(),
+                limit=top_k,
+            )
+        elif hasattr(store, "list_active_facts_for_subject"):
+            rows = store.list_active_facts_for_subject(
+                subject_entity_id=subject, limit=top_k
+            )
+        else:
+            rows = []
 
-    if store is not None:
-        try:
-            if relation and hasattr(store, "list_active_facts_for_subject_relation"):
-                rows = store.list_active_facts_for_subject_relation(
-                    subject_entity_id=subject,
-                    relation_type=str(relation).strip().upper(),
-                    limit=top_k,
-                )
-            elif hasattr(store, "list_active_facts_for_subject"):
-                rows = store.list_active_facts_for_subject(
-                    subject_entity_id=subject, limit=top_k
-                )
-            else:
-                rows = []
-
-            edges = [_fact_row_to_edge(dict(r)) for r in (rows or [])]
-            return {"edges": edges, "total": len(edges)}
-        except Exception as exc:
-            logger.exception("Graphiti list_active_facts failed")
-            raise HTTPException(status_code=500, detail=f"Graphiti facts/active failed: {exc}")
-
-    # Legacy fallback: best-effort filter from current graph edges (no versioning).
-    graph_store = pipeline.search_coordinator.graph_store
-    if hasattr(graph_store, "get_all_edges"):
-        all_edges = graph_store.get_all_edges()
-    else:
-        all_edges = [
-            {"source": u, "target": v, **d} for u, v, d in graph_store.graph.edges(data=True)
-        ]
-
-    rel_upper = str(relation).strip().upper() if relation else None
-    edges = []
-    for e in all_edges:
-        if str(e.get("source") or "") != subject:
-            continue
-        if rel_upper and str(e.get("relation") or "").strip().upper() != rel_upper:
-            continue
-        edges.append(_fact_row_to_edge(e))
-        if len(edges) >= top_k:
-            break
-    return {"edges": edges, "total": len(edges)}
+        edges = [_fact_row_to_edge(dict(r)) for r in (rows or [])]
+        return {"edges": edges, "total": len(edges)}
+    except Exception as exc:
+        logger.exception("Graphiti list_active_facts failed")
+        raise HTTPException(status_code=500, detail=f"Graphiti facts/active failed: {exc}")
 
 
 @router.get("/memory/graph/facts/history", response_model=FactEdgesResponse)
@@ -462,32 +376,22 @@ async def list_fact_history(
     top_k: int = Query(default=200, ge=1, le=1000),
     pipeline=Depends(get_pipeline),
 ):
-    """查看事实历史版本（含已失效）。
+    """查看事实历史版本（含已失效）。"""
+    store = pipeline.search_coordinator.graphiti_engine.store
+    try:
+        if relation and hasattr(store, "list_facts_for_subject_relation"):
+            rows = store.list_facts_for_subject_relation(
+                subject_entity_id=subject,
+                relation_type=str(relation).strip().upper(),
+                limit=top_k,
+            )
+        elif hasattr(store, "list_facts_for_subject"):
+            rows = store.list_facts_for_subject(subject_entity_id=subject, limit=top_k)
+        else:
+            rows = []
 
-    Notes:
-    - Graphiti store：返回 Fact-node 的版本历史（t_valid_* + t_tx_*）。
-    - Legacy triples：没有事实版本概念，返回空列表。
-    """
-    graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
-    store = getattr(graphiti, "store", None) if graphiti is not None else None
-
-    if store is not None:
-        try:
-            if relation and hasattr(store, "list_facts_for_subject_relation"):
-                rows = store.list_facts_for_subject_relation(
-                    subject_entity_id=subject,
-                    relation_type=str(relation).strip().upper(),
-                    limit=top_k,
-                )
-            elif hasattr(store, "list_facts_for_subject"):
-                rows = store.list_facts_for_subject(subject_entity_id=subject, limit=top_k)
-            else:
-                rows = []
-
-            edges = [_fact_row_to_edge(dict(r)) for r in (rows or [])]
-            return {"edges": edges, "total": len(edges)}
-        except Exception as exc:
-            logger.exception("Graphiti list_fact_history failed")
-            raise HTTPException(status_code=500, detail=f"Graphiti facts/history failed: {exc}")
-
-    return {"edges": [], "total": 0}
+        edges = [_fact_row_to_edge(dict(r)) for r in (rows or [])]
+        return {"edges": edges, "total": len(edges)}
+    except Exception as exc:
+        logger.exception("Graphiti list_fact_history failed")
+        raise HTTPException(status_code=500, detail=f"Graphiti facts/history failed: {exc}")

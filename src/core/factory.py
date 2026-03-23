@@ -14,9 +14,7 @@ from src.agents.wm_manager import WMManager
 from src.core.graph import LycheePipeline
 from src.embedder.base import BaseEmbedder
 from src.llm.base import BaseLLM
-from src.memory.graph.entity_extractor import EntityExtractor
-from src.memory.graph.graph_store import NetworkXGraphStore
-from src.memory.procedural.skill_store import InMemorySkillStore
+from src.memory.procedural.file_skill_store import FileSkillStore
 from src.memory.working.compressor import WorkingMemoryCompressor
 from src.memory.working.session_store import InMemorySessionStore
 
@@ -31,56 +29,6 @@ def _create_session_store(settings=None):
     return InMemorySessionStore()
 
 
-def _create_graph_store(settings=None, embedder: BaseEmbedder | None = None):
-    """根据配置创建图谱存储。"""
-    backend = getattr(settings, "graph_backend", "memory") if settings else "memory"
-    enable_semantic_search = getattr(settings, "graph_semantic_search", True) if settings else True
-    enable_semantic_merge = getattr(settings, "graph_semantic_merge", False) if settings else False
-    merge_threshold = (
-        getattr(settings, "graph_semantic_merge_threshold", 0.88) if settings else 0.88
-    )
-    search_threshold = (
-        getattr(settings, "graph_semantic_search_threshold", 0.55) if settings else 0.55
-    )
-    scan_limit = getattr(settings, "graph_semantic_scan_limit", 5000) if settings else 5000
-    if backend == "neo4j":
-        from src.memory.graph.neo4j_graph_store import Neo4jGraphStore
-
-        return Neo4jGraphStore(
-            uri=settings.neo4j_uri,
-            user=settings.neo4j_user,
-            password=settings.neo4j_password,
-            embedder=embedder,
-            enable_semantic_search=enable_semantic_search,
-            enable_semantic_merge=enable_semantic_merge,
-            semantic_merge_threshold=merge_threshold,
-            semantic_search_threshold=search_threshold,
-            semantic_scan_limit=scan_limit,
-        )
-    return NetworkXGraphStore(
-        embedder=embedder,
-        enable_semantic_search=enable_semantic_search,
-        enable_semantic_merge=enable_semantic_merge,
-        semantic_merge_threshold=merge_threshold,
-        semantic_search_threshold=search_threshold,
-    )
-
-
-def _create_skill_store(settings=None, embedding_dim: int = 768):
-    """根据配置创建技能库。"""
-    backend = getattr(settings, "skill_backend", "memory") if settings else "memory"
-    if backend == "file":
-        from src.memory.procedural.file_skill_store import FileSkillStore
-
-        return FileSkillStore(file_path=settings.skill_file_path)
-    if backend == "lancedb":
-        from src.memory.procedural.lancedb_skill_store import LanceDBSkillStore
-
-        return LanceDBSkillStore(
-            db_path=settings.lancedb_path,
-            embedding_dim=embedding_dim,
-        )
-    return InMemorySkillStore()
 
 
 def create_pipeline(
@@ -101,18 +49,16 @@ def create_pipeline(
     Returns:
         组装好的 LycheePipeline 实例。
     """
-    # 根据 settings 选择存储后端
+    # 存储后端选择
     embedding_dim = settings.embedding_dim
     wm_max_tokens = settings.wm_max_tokens
     warn_threshold = settings.wm_warn_threshold
     block_threshold = settings.wm_block_threshold
     min_recent_turns = settings.min_recent_turns
-    graph_search_depth = settings.graph_search_depth
     graph_top_k = settings.graph_top_k
     skill_top_k = settings.skill_top_k
     session_store = _create_session_store(settings)
-    graph_store = _create_graph_store(settings, embedder=embedder)
-    skill_store = _create_skill_store(settings, embedding_dim=embedding_dim)
+    skill_store = FileSkillStore(file_path=settings.skill_file_path)
 
     # 压缩器
     compressor = WorkingMemoryCompressor(
@@ -123,83 +69,66 @@ def create_pipeline(
         min_recent_turns=min_recent_turns,
     )
 
-    # 实体抽取器
-    entity_extractor = EntityExtractor(llm=llm)
+    # Graphiti Engine（唯一图谱实现，强制 Neo4j）
+    from src.memory.graph.graphiti_engine import GraphitiEngine
+    from src.memory.graph.graphiti_neo4j_store import GraphitiNeo4jStore
 
-    graphiti_engine = None
-    if settings and getattr(settings, "graphiti_enabled", False):
-        if getattr(settings, "graph_backend", "memory") != "neo4j":
-            raise RuntimeError("Graphiti requires graph_backend=neo4j")
+    strict = bool(getattr(settings, "graphiti_strict", True))
 
-        from src.memory.graph.graphiti_engine import GraphitiEngine
-        from src.memory.graph.graphiti_neo4j_store import GraphitiNeo4jStore
+    vector_dim = int(getattr(settings, "graphiti_vector_dim", 0) or 0)
+    if vector_dim <= 0:
+        vector_dim = int(embedding_dim)
 
-        strict = bool(getattr(settings, "graphiti_strict", False))
+    vector_similarity = str(
+        getattr(settings, "graphiti_vector_similarity_function", "cosine") or "cosine"
+    )
 
-        # Infer vector dim for Neo4j vector indexes.
-        vector_dim = int(getattr(settings, "graphiti_vector_dim", 0) or 0)
-        if vector_dim <= 0:
-            # For Gemini embedders the actual dim may differ from the default;
-            # trust embedding_dim which the user should set correctly in .env.
-            vector_dim = int(embedding_dim)
+    graphiti_store = GraphitiNeo4jStore(
+        uri=settings.neo4j_uri,
+        user=settings.neo4j_user,
+        password=settings.neo4j_password,
+        database=getattr(settings, "graphiti_database", "neo4j"),
+        init_schema=True,
+        vector_dim=vector_dim,
+        vector_similarity_function=vector_similarity,
+    )
 
-        vector_similarity = str(
-            getattr(settings, "graphiti_vector_similarity_function", "cosine") or "cosine"
-        )
-
-        graphiti_store = GraphitiNeo4jStore(
-            uri=settings.neo4j_uri,
-            user=settings.neo4j_user,
-            password=settings.neo4j_password,
-            database=getattr(settings, "graphiti_database", "neo4j"),
-            init_schema=True,
+    if strict:
+        graphiti_store.preflight(
+            require_gds=bool(getattr(settings, "graphiti_require_gds", True)),
+            require_vector_index=bool(getattr(settings, "graphiti_require_vector_index", True)),
             vector_dim=vector_dim,
-            vector_similarity_function=vector_similarity,
         )
 
-        if strict:
-            graphiti_store.preflight(
-                require_gds=bool(getattr(settings, "graphiti_require_gds", True)),
-                require_vector_index=bool(getattr(settings, "graphiti_require_vector_index", True)),
-                vector_dim=vector_dim,
-            )
+    # Optional: cross-encoder rerank（复用主 LLM 适配器，不直接调用 provider SDK）
+    cross_encoder = None
+    if bool(getattr(settings, "graphiti_cross_encoder_enabled", False)):
+        if llm is None:
+            raise RuntimeError("Graphiti cross-encoder requires a valid llm adapter")
+        from src.memory.graph.cross_encoder import LLMCrossEncoderReranker  # noqa: PLC0415
 
-        # Optional: cross-encoder rerank (paper-parity, via main LLM adapter)
-        cross_encoder = None
-        cross_encoder_enabled = bool(getattr(settings, "graphiti_cross_encoder_enabled", False))
-        if cross_encoder_enabled:
-            if llm is None:
-                if strict:
-                    raise RuntimeError("Graphiti strict cross-encoder enabled but llm is missing")
-            else:
-                from src.memory.graph.cross_encoder import (  # noqa: PLC0415
-                    LLMCrossEncoderReranker,
-                )
+        cross_encoder = LLMCrossEncoderReranker(llm=llm)
 
-                cross_encoder = LLMCrossEncoderReranker(llm=llm)
-
-        graphiti_engine = GraphitiEngine(
-            store=graphiti_store,
-            strict=strict,
-            community_llm=llm,
-            embedder=embedder,
-            gds_distance_max_depth=int(getattr(settings, "graphiti_gds_distance_max_depth", 4)),
-            cross_encoder=cross_encoder,
-            cross_encoder_top_n=int(getattr(settings, "graphiti_cross_encoder_top_n", 20)),
-            cross_encoder_weight=float(getattr(settings, "graphiti_cross_encoder_weight", 1.0)),
-            mmr_lambda=float(getattr(settings, "graphiti_mmr_lambda", 0.5)),
-            bfs_recent_episode_limit=int(getattr(settings, "graphiti_bfs_recent_episode_limit", 4)),
-        )
+    graphiti_engine = GraphitiEngine(
+        store=graphiti_store,
+        strict=strict,
+        community_llm=llm,
+        embedder=embedder,
+        gds_distance_max_depth=int(getattr(settings, "graphiti_gds_distance_max_depth", 4)),
+        cross_encoder=cross_encoder,
+        cross_encoder_top_n=int(getattr(settings, "graphiti_cross_encoder_top_n", 20)),
+        cross_encoder_weight=float(getattr(settings, "graphiti_cross_encoder_weight", 1.0)),
+        mmr_lambda=float(getattr(settings, "graphiti_mmr_lambda", 0.5)),
+        bfs_recent_episode_limit=int(getattr(settings, "graphiti_bfs_recent_episode_limit", 4)),
+    )
 
     # 5 个认知组件
     wm_manager = WMManager(session_store=session_store, compressor=compressor)
     search_coordinator = SearchCoordinator(
         llm=llm,
         embedder=embedder,
-        graph_store=graph_store,
         skill_store=skill_store,
         graphiti_engine=graphiti_engine,
-        graph_search_depth=graph_search_depth,
         graph_top_k=graph_top_k,
         skill_top_k=skill_top_k,
     )
@@ -209,9 +138,7 @@ def create_pipeline(
     consolidator = ConsolidatorAgent(
         llm=llm,
         embedder=embedder,
-        graph_store=graph_store,
         skill_store=skill_store,
-        entity_extractor=entity_extractor,
         graphiti_engine=graphiti_engine,
         community_refresh_every=settings.graphiti_community_refresh_every,
     )

@@ -13,9 +13,8 @@ from typing import Any
 from src.agents.base_agent import BaseAgent
 from src.embedder.base import BaseEmbedder
 from src.llm.base import BaseLLM
-from src.memory.graph.graph_store import NetworkXGraphStore
 from src.memory.graph.graphiti_engine import GraphitiEngine
-from src.memory.procedural.skill_store import InMemorySkillStore
+from src.memory.procedural.file_skill_store import FileSkillStore
 
 HYDE_SYSTEM_PROMPT = """\
 你是一个「HyDE 假设性回答生成器」。
@@ -120,20 +119,16 @@ class SearchCoordinator(BaseAgent):
         self,
         llm: BaseLLM,
         embedder: BaseEmbedder,
-        graph_store: NetworkXGraphStore,
-        skill_store: InMemorySkillStore,
-        graphiti_engine: GraphitiEngine | None = None,
-        graph_search_depth: int = 1,
+        skill_store: FileSkillStore,
+        graphiti_engine: GraphitiEngine,
         graph_top_k: int = 3,
         skill_top_k: int = 3,
         skill_reuse_threshold: float = 0.85,
     ):
         super().__init__(llm=llm, prompt_template=HYDE_SYSTEM_PROMPT)
         self.embedder = embedder
-        self.graph_store = graph_store
         self.skill_store = skill_store
         self.graphiti_engine = graphiti_engine
-        self.graph_search_depth = graph_search_depth
         self.graph_top_k = graph_top_k
         self.skill_top_k = skill_top_k
         self.skill_reuse_threshold = skill_reuse_threshold
@@ -203,86 +198,49 @@ class SearchCoordinator(BaseAgent):
     def _search_graph(
         self, queries: list[str], *, session_id: str | None = None, user_id: str = ""
     ) -> list[dict[str, Any]]:
-        """在知识图谱中检索相关节点和邻居。
+        """在知识图谱中检索相关节点和邻居（仅 Graphiti 路径）。
 
         支持多条子查询（multi-query）：对列表中每条查询独立检索，
         然后合并去重，确保多主题场景下各主题的记忆都能被召回。
         """
-        strict = bool(getattr(self.graphiti_engine, "strict", False))
+        all_contexts: list[str] = []
+        all_provenance: list[dict[str, Any]] = []
+        seen_fact_ids: set[str] = set()
 
-        def _embed(text: str) -> list[float] | None:
-            if strict:
-                return self.embedder.embed_query(text)
-            try:
-                return self.embedder.embed_query(text)
-            except Exception:
-                return None
-
-        # ── Graphiti 路径：每条子查询独立检索，合并 context 与 provenance ──
-        if self.graphiti_engine is not None:
-            all_contexts: list[str] = []
-            all_provenance: list[dict[str, Any]] = []
-            seen_fact_ids: set[str] = set()
-
-            for query in queries:
-                query_embedding = _embed(query)
-                r = self.graphiti_engine.search(
-                    query=query,
-                    session_id=session_id,
-                    top_k=self.graph_top_k,
-                    query_embedding=query_embedding,
-                    include_communities=True,
-                    user_id=user_id,
-                )
-                if r.context.strip():
-                    all_contexts.append(r.context.strip())
-                for p in r.provenance:
-                    fid = p.get("fact_id", "")
-                    if fid not in seen_fact_ids:
-                        seen_fact_ids.add(fid)
-                        all_provenance.append(p)
-
-            merged_context = "\n\n".join(all_contexts)
-            if not merged_context.strip():
-                return []
-            return [
-                {
-                    "anchor": {
-                        "node_id": "graphiti_context",
-                        "name": "GraphitiContext",
-                        "label": "Context",
-                        "score": 1.0,
-                    },
-                    "subgraph": {"nodes": [], "edges": []},
-                    "constructed_context": merged_context,
-                    "provenance": all_provenance,
-                }
-            ]
-
-        # ── Legacy 路径：每条子查询独立检索，按 node_id 去重 ──
-        results: list[dict[str, Any]] = []
-        seen_ids: set[str] = set()
         for query in queries:
-            query_embedding = _embed(query)
-            hits = self.graph_store.search(
-                query, top_k=self.graph_top_k, query_embedding=query_embedding,
+            query_embedding = self.embedder.embed_query(query)
+            r = self.graphiti_engine.search(
+                query=query,
+                session_id=session_id,
+                top_k=self.graph_top_k,
+                query_embedding=query_embedding,
+                include_communities=True,
                 user_id=user_id,
             )
-            for hit in hits:
-                node_id = hit.get("node_id", hit.get("id", ""))
-                if node_id in seen_ids:
-                    continue
-                seen_ids.add(node_id)
-                subgraph = self.graph_store.get_neighbors(
-                    node_id, depth=self.graph_search_depth
-                )
-                results.append(
-                    {
-                        "anchor": hit,
-                        "subgraph": subgraph,
-                    }
-                )
-        return results
+            if r.context.strip():
+                all_contexts.append(r.context.strip())
+            for p in r.provenance:
+                fid = p.get("fact_id", "")
+                if fid not in seen_fact_ids:
+                    seen_fact_ids.add(fid)
+                    all_provenance.append(p)
+
+        merged_context = "\n\n".join(all_contexts)
+        if not merged_context.strip():
+            return []
+        return [
+            {
+                "anchor": {
+                    "node_id": "graphiti_context",
+                    "name": "GraphitiContext",
+                    "label": "Context",
+                    "score": 1.0,
+                },
+                "subgraph": {"nodes": [], "edges": []},
+                "constructed_context": merged_context,
+                "provenance": all_provenance,
+            }
+        ]
 
     def _search_skills(self, query: str, user_id: str = "") -> list[dict[str, Any]]:
         """使用 HyDE 策略检索技能库。

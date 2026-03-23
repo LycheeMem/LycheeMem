@@ -29,7 +29,7 @@ logger = logging.getLogger("src.pipeline")
 
 
 class LycheePipeline:
-    """LycheeMemOS 认知记忆 Pipeline。
+    """LycheeMem 认知记忆 Pipeline。
 
     封装 LangGraph StateGraph 的构建与运行。
     所有组件通过构造函数注入，Pipeline 本身不持有任何配置。
@@ -101,6 +101,7 @@ class LycheePipeline:
             compressed_history=state.get("compressed_history", []),
             background_context=state.get("background_context", ""),
             skill_reuse_plan=state.get("skill_reuse_plan", []),
+            retrieved_skills=state.get("retrieved_skills", []),
         )
 
         # 将 assistant 回复写回会话日志
@@ -227,6 +228,7 @@ class LycheePipeline:
             compressed_history=state.get("compressed_history", []),
             background_context=state.get("background_context", ""),
             skill_reuse_plan=state.get("skill_reuse_plan", []),
+            retrieved_skills=state.get("retrieved_skills", []),
         ):
             streaming_response += token
             yield {"type": "token", "content": token}

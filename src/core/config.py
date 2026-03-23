@@ -48,8 +48,6 @@ class Settings(BaseSettings):
 
     # ─── 存储后端选择 ───
     session_backend: str = "sqlite"  # "memory" | "sqlite"
-    graph_backend: str = "neo4j"  # "memory" | "neo4j"
-    skill_backend: str = "file"  # "memory" | "file" | "lancedb"
 
     # ─── SQLite (会话持久化) ───
     sqlite_db_path: str = "lychee_memos_sessions.db"
@@ -59,10 +57,7 @@ class Settings(BaseSettings):
     neo4j_user: str = "neo4j"
     neo4j_password: str = ""
 
-    graph_search_depth: int = 1
-
-    # ─── Graphiti(论文) 图谱引擎 ───
-    graphiti_enabled: bool = True
+    # ─── Graphiti(论文) 图谱引擎（唯一图谱实现）───
     graphiti_database: str = "neo4j"
 
     # ─── Graphiti Strict Mode (Graphiti-only / Fail-fast) ───
@@ -97,16 +92,6 @@ class Settings(BaseSettings):
     graphiti_cross_encoder_enabled: bool = True
     graphiti_cross_encoder_top_n: int = 20
     graphiti_cross_encoder_weight: float = 1.0
-
-    # ─── Graph Semantic (向量检索 / 同义合并) ───
-    graph_semantic_search: bool = True
-    graph_semantic_merge: bool = True
-    graph_semantic_merge_threshold: float = 0.88
-    graph_semantic_search_threshold: float = 0.55
-    graph_semantic_scan_limit: int = 5000
-
-    # ─── LanceDB (向量持久化) ───
-    lancedb_path: str = "lychee_memos_lancedb"
 
     # ─── File Skill Store (轻量级向量持久化) ───
     skill_file_path: str = "lychee_memos_skills.json"

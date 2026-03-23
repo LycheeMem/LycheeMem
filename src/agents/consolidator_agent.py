@@ -19,9 +19,7 @@ from typing import TYPE_CHECKING
 from src.agents.base_agent import BaseAgent
 from src.embedder.base import BaseEmbedder
 from src.llm.base import BaseLLM
-from src.memory.graph.entity_extractor import EntityExtractor
-from src.memory.graph.graph_store import NetworkXGraphStore
-from src.memory.procedural.skill_store import InMemorySkillStore
+from src.memory.procedural.file_skill_store import FileSkillStore
 
 if TYPE_CHECKING:
     from src.memory.graph.graphiti_engine import GraphitiEngine
@@ -151,17 +149,13 @@ class ConsolidatorAgent(BaseAgent):
         self,
         llm: BaseLLM,
         embedder: BaseEmbedder,
-        graph_store: NetworkXGraphStore,
-        skill_store: InMemorySkillStore,
-        entity_extractor: EntityExtractor,
-        graphiti_engine: "GraphitiEngine | None" = None,
+        skill_store: FileSkillStore,
+        graphiti_engine: "GraphitiEngine",
         community_refresh_every: int = 50,
     ):
         super().__init__(llm=llm, prompt_template=CONSOLIDATION_SYSTEM_PROMPT)
         self.embedder = embedder
-        self.graph_store = graph_store
         self.skill_store = skill_store
-        self.entity_extractor = entity_extractor
         self.graphiti_engine = graphiti_engine
 
         self._graphiti_last_episode_ingested: dict[str, int] = {}
@@ -175,7 +169,7 @@ class ConsolidatorAgent(BaseAgent):
         self._total_episodes_since_community_refresh: int = 0
 
         self._graphiti_semantic_builder = None
-        if self.graphiti_engine is not None and hasattr(self.graphiti_engine, "store"):
+        if hasattr(self.graphiti_engine, "store"):
             from src.memory.graph.graphiti_semantic import GraphitiSemanticBuilder
 
             self._graphiti_semantic_builder = GraphitiSemanticBuilder(
@@ -228,15 +222,18 @@ class ConsolidatorAgent(BaseAgent):
 
         Args:
             turns: 完整的对话轮次列表。
-            session_id: 会话 ID。
+            session_id: 会话 ID（必填，Graphiti 需要）。
             retrieved_context: Pipeline 检索阶段合成的已有记忆上下文，
                 用于与本轮对话比对，判断是否有新信息需要固化。
 
         Returns:
-            dict 包含：entities_added (int), skills_added (int)
+            dict 包含：entities_added (int), skills_added (int), facts_added (int)
         """
         if not turns:
             return {"entities_added": 0, "skills_added": 0, "steps": []}
+
+        if not session_id:
+            raise RuntimeError("session_id is required for Graphiti consolidation")
 
         steps: list[dict[str, Any]] = []
 
@@ -281,8 +278,6 @@ class ConsolidatorAgent(BaseAgent):
                 if not role and not content:
                     continue
                 t_ref = str(t.get("created_at") or now_iso)
-                # Paper §2.1: episode_type defaults to "message" for
-                # conversation turns.  Future callers may pass text/json.
                 ep_type = str(t.get("episode_type") or "message")
                 self.graphiti_engine.ingest_episode(
                     session_id=session_id,
@@ -317,7 +312,6 @@ class ConsolidatorAgent(BaseAgent):
                     content = str(current_turn.get("content") or "")
                     if not role or not content:
                         continue
-                    # Skip system messages — they carry no facts worth extracting.
                     if role == "system":
                         continue
                     previous_turns = turns[max(0, turn_idx - 4) : turn_idx]
@@ -344,26 +338,14 @@ class ConsolidatorAgent(BaseAgent):
                 if len(turns) > 0:
                     self._graphiti_last_semantic[session_id] = len(turns) - 1
 
-                    strict = bool(getattr(self.graphiti_engine, "strict", False))
-                    if hasattr(self.graphiti_engine, "refresh_communities_for_session"):
-                        if strict:
-                            self.graphiti_engine.refresh_communities_for_session(
-                                session_id=session_id,
-                                limit=50,
-                            )
-                        else:
-                            try:
-                                self.graphiti_engine.refresh_communities_for_session(
-                                    session_id=session_id,
-                                    limit=50,
-                                )
-                            except Exception:
-                                pass
+                    # Paper §2.3: per-session incremental community extension.
+                    self.graphiti_engine.refresh_communities_for_session(
+                        session_id=session_id,
+                        limit=50,
+                    )
 
-                    # Paper §2.3: periodic full-graph community refresh.
-                    # Incremental dynamic extension (per-session above) drifts
-                    # over time; the paper requires periodic full-graph label
-                    # propagation to correct this drift.
+                    # Paper §2.3: periodic full-graph community refresh corrects
+                    # drift from incremental dynamic extension.
                     new_semantic_count = len(turns) - (last_semantic + 1)
                     if new_semantic_count > 0:
                         self._total_episodes_since_community_refresh += new_semantic_count
@@ -373,13 +355,7 @@ class ConsolidatorAgent(BaseAgent):
                         >= self._community_refresh_every
                         and hasattr(self.graphiti_engine, "refresh_all_communities")
                     ):
-                        if strict:
-                            self.graphiti_engine.refresh_all_communities()
-                        else:
-                            try:
-                                self.graphiti_engine.refresh_all_communities()
-                            except Exception:
-                                pass
+                        self.graphiti_engine.refresh_all_communities()
                         self._total_episodes_since_community_refresh = 0
 
                 _gsteps.append({
@@ -404,16 +380,6 @@ class ConsolidatorAgent(BaseAgent):
             )
             return self._safe_parse(response)
 
-        # ── 并行执行两路 ──
-        # 技能写入仅依赖 LLM 分析结果（右路），与 Graphiti（左路）完全无关，
-        # 因此在 executor 上下文内，LLM future 就绪后立即执行技能写入，
-        # 无需等待 Graphiti 完成。
-        run_graphiti = self.graphiti_engine is not None and bool(session_id)
-        graphiti_entities_added = 0
-        graphiti_facts_added = 0
-        entities_added = 0
-        skills_added = 0
-
         def _write_skills(analysis: dict[str, Any]) -> int:
             """将 LLM 分析出的新技能写入技能库，返回写入条数。"""
             count = 0
@@ -429,26 +395,26 @@ class ConsolidatorAgent(BaseAgent):
                     count += 1
             return count
 
-        if run_graphiti:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                graphiti_future = executor.submit(_do_graphiti)
-                llm_future = executor.submit(_do_llm_analysis)
+        # ── 并行执行两路 ──
+        # 技能写入仅依赖 LLM 分析结果（右路），与 Graphiti（左路）完全无关，
+        # 因此在 executor 上下文内，LLM future 就绪后立即执行技能写入，
+        # 无需等待 Graphiti 完成。
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            graphiti_future = executor.submit(_do_graphiti)
+            llm_future = executor.submit(_do_llm_analysis)
 
-                # 右路完成后立即开始技能写入，不等左路
-                analysis = llm_future.result()
-                skill_future = executor.submit(_write_skills, analysis)
+            # 右路完成后立即开始技能写入，不等左路
+            analysis = llm_future.result()
+            skill_future = executor.submit(_write_skills, analysis)
 
-                # 等待 Graphiti（左路）完成
-                graphiti_result = graphiti_future.result()
-                # 等待技能写入完成（通常已结束）
-                skills_added = skill_future.result()
+            # 等待 Graphiti（左路）完成
+            graphiti_result = graphiti_future.result()
+            # 等待技能写入完成（通常已结束）
+            skills_added = skill_future.result()
 
-            graphiti_entities_added = graphiti_result["entities_added"]
-            graphiti_facts_added = graphiti_result["facts_added"]
-            steps.extend(graphiti_result["steps"])
-        else:
-            analysis = _do_llm_analysis()
-            skills_added = _write_skills(analysis)
+        entities_added = graphiti_result["entities_added"]
+        graphiti_facts_added = graphiti_result["facts_added"]
+        steps.extend(graphiti_result["steps"])
 
         steps.append({
             "name": "llm_analysis",
@@ -459,38 +425,24 @@ class ConsolidatorAgent(BaseAgent):
             ),
         })
 
-        # 2. 实体写入 → 仅在 Graphiti 完成后（已有结果）或 legacy 模式下执行
-        # Graphiti 模式下使用 Fact-node 语义子图；暂不写入 legacy triples（避免双写与语义冲突）。
-        if run_graphiti:
-            entities_added = graphiti_entities_added
-        elif analysis.get("should_extract_entities", False):
-            triples = self.entity_extractor.extract_from_turns(
-                turns, source_session=session_id or ""
-            )
-            if triples:
-                self.graph_store.add(triples, user_id=user_id)
-                entities_added = len(triples)
         steps.append({
             "name": "entity_extraction",
             "status": "done",
             "detail": f"{entities_added} 个实体" if entities_added else "无新实体",
         })
-
         steps.append({
             "name": "skill_extraction",
             "status": "done",
             "detail": f"{skills_added} 个技能" if skills_added else "无新技能",
         })
 
-        result: dict[str, Any] = {
+        return {
             "entities_added": entities_added,
             "skills_added": skills_added,
+            "facts_added": graphiti_facts_added,
             "has_novelty": True,
             "steps": steps,
         }
-        if run_graphiti:
-            result["facts_added"] = graphiti_facts_added
-        return result
 
     def _safe_parse(self, response: str) -> dict[str, Any]:
         """安全解析 LLM 输出，失败时返回安全默认值。"""

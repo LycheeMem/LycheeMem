@@ -1,14 +1,14 @@
 import {
-  ApiOutlined,
-  BulbOutlined,
-  CheckCircleOutlined,
-  ClockCircleOutlined,
-  DownOutlined,
-  ExperimentOutlined,
-  InboxOutlined,
-  RightOutlined,
-  SearchOutlined,
-  SyncOutlined,
+    ApiOutlined,
+    BulbOutlined,
+    CheckCircleOutlined,
+    ClockCircleOutlined,
+    DownOutlined,
+    ExperimentOutlined,
+    InboxOutlined,
+    RightOutlined,
+    SearchOutlined,
+    SyncOutlined,
 } from "@ant-design/icons";
 import { useEffect, useRef, useState } from "react";
 import { fetchConsolidationResult } from "../../api";

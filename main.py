@@ -12,7 +12,7 @@ curr_dir = Path(__file__).parent
 
 
 def main():
-    parser = argparse.ArgumentParser(description="LycheeMemOS Cognitive Memory Server")
+    parser = argparse.ArgumentParser(description="LycheeMem Cognitive Memory Server")
     parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload for development")
@@ -37,13 +37,13 @@ def main():
     pipeline = create_pipeline(llm=llm, embedder=embedder, settings=settings)
     app = create_app(pipeline, user_store=user_store)
 
-    print(f"🚀 LycheeMemOS server starting on http://{args.host}:{args.port}")
+    print(f"🚀 LycheeMem server starting on http://{args.host}:{args.port}")
     print(f"   LLM:  {settings.llm_model}")
     print(f"   Embed:{settings.embedding_model}")
-    print(
-        f"   Storage: session={settings.session_backend}, graph={settings.graph_backend}, skill={settings.skill_backend}"
-    )
-    print(f"   Auth:  user_db={settings.user_db_path}")
+    # print(
+    #     f"   Storage: session={settings.session_backend}, graph={settings.graph_backend}, skill={settings.skill_backend}"
+    # )
+    # print(f"   Auth:  user_db={settings.user_db_path}")
     print(f"   Docs: http://{args.host}:{args.port}/docs")
 
     uvicorn.run(app, host=args.host, port=args.port)

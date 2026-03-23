@@ -1,7 +1,7 @@
 [project]
 name = "lychee-memory"
 version = "0.1.0"
-description = "LycheeMemOS: Training-free Agentic Cognitive Memory Framework"
+description = "LycheeMem: Training-free Agentic Cognitive Memory Framework"
 requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
 dependencies = [

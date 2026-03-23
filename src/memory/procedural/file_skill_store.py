@@ -13,13 +13,27 @@ import json
 import os
 import threading
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import numpy as np
 
 from src.memory.base import BaseMemoryStore
-from src.memory.procedural.skill_store import SkillEntry
+
+
+@dataclass
+class SkillEntry:
+    """技能条目。"""
+
+    id: str
+    intent: str
+    embedding: list[float]
+    doc_markdown: str
+    metadata: dict = field(default_factory=dict)
+    success_count: int = 0
+    last_used: str | None = None
+    conditions: str = ""
+    user_id: str = ""
 
 
 class FileSkillStore(BaseMemoryStore):

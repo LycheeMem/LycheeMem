@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-LycheeMemOS is a training-free agentic cognitive memory framework. It implements four cognitive memory types (Working, Graph/Semantic, Procedural, Sensory) orchestrated through six cognitive agents via a LangGraph pipeline, exposed as a FastAPI service. The project documentation and LLM prompts are primarily in Chinese.
+LycheeMem is a training-free agentic cognitive memory framework. It implements four cognitive memory types (Working, Graph/Semantic, Procedural, Sensory) orchestrated through six cognitive agents via a LangGraph pipeline, exposed as a FastAPI service. The project documentation and LLM prompts are primarily in Chinese.
 
 ## Commands
 

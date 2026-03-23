@@ -1,6 +1,6 @@
-﻿# LycheeMemOS 工作区 Copilot 指南
+﻿# LycheeMem 工作区 Copilot 指南
 
-你正在协助开发 **LycheeMemOS：Training-free Agentic Cognitive Memory Framework**（Python + FastAPI + LangGraph + 可选 Neo4j/LanceDB，另含一个 React/Vite Web Demo）。
+你正在协助开发 **LycheeMem：Training-free Agentic Cognitive Memory Framework**（Python + FastAPI + LangGraph + 可选 Neo4j/LanceDB，另含一个 React/Vite Web Demo）。
 
 目标：在不破坏既有架构的前提下，快速定位代码入口、按项目约定实现改动，并通过 Ruff 校验。
 

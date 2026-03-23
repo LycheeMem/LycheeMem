@@ -45,9 +45,10 @@ class ReasoningAgent(BaseAgent):
         compressed_history: list[dict[str, str]] | None = None,
         background_context: str = "",
         skill_reuse_plan: list[dict] | None = None,
+        retrieved_skills: list[dict] | None = None,
         **kwargs,
     ) -> dict[str, Any]:
-        messages = self._build_messages(user_query, compressed_history, background_context, skill_reuse_plan)
+        messages = self._build_messages(user_query, compressed_history, background_context, skill_reuse_plan, retrieved_skills)
         response = self.llm.generate(messages)
         return {"final_response": response}
 
@@ -57,9 +58,10 @@ class ReasoningAgent(BaseAgent):
         compressed_history: list[dict[str, str]] | None = None,
         background_context: str = "",
         skill_reuse_plan: list[dict] | None = None,
+        retrieved_skills: list[dict] | None = None,
     ) -> AsyncIterator[str]:
         """流式生成最终回复，逐 token yield。"""
-        messages = self._build_messages(user_query, compressed_history, background_context, skill_reuse_plan)
+        messages = self._build_messages(user_query, compressed_history, background_context, skill_reuse_plan, retrieved_skills)
         async for token in self.llm.astream_generate(messages):
             yield token
 
@@ -69,6 +71,7 @@ class ReasoningAgent(BaseAgent):
         compressed_history: list[dict[str, str]] | None = None,
         background_context: str = "",
         skill_reuse_plan: list[dict] | None = None,
+        retrieved_skills: list[dict] | None = None,
     ) -> list[dict[str, str]]:
         """构建发送给 LLM 的消息列表（供 run 和 astream 共用）。"""
         # ── 从 compressed_history 中分离 system 摘要与对话轮次 ──
@@ -97,7 +100,11 @@ class ReasoningAgent(BaseAgent):
         else:
             background_section = "当前没有检索到相关的背景记忆。"
 
-        skill_plan_section = self._format_skill_plan(skill_reuse_plan)
+        # 优先使用原始检索技能（保留完整原文），否则退回到经 Synthesizer 过滤的计划
+        if retrieved_skills:
+            skill_plan_section = self._format_retrieved_skills(retrieved_skills)
+        else:
+            skill_plan_section = self._format_skill_plan(skill_reuse_plan)
 
         system_prompt = self.prompt_template.format(
             history_section=history_section,
@@ -116,6 +123,27 @@ class ReasoningAgent(BaseAgent):
             messages.append({"role": "user", "content": user_query})
 
         return messages
+
+    @staticmethod
+    def _format_retrieved_skills(skills: list[dict] | None) -> str:
+        """将原始检索技能列表格式化为 system prompt 片段（保留完整 doc_markdown 原文）。"""
+        if not skills:
+            return ""
+        lines = ["以下是检索到的技能文档（原文），可作为操作指南："]
+        for i, skill in enumerate(skills, 1):
+            intent = skill.get("intent", "?")
+            skill_id = skill.get("id", "")
+            score = skill.get("score", 0)
+            doc = skill.get("doc_markdown", "")
+            header = f"\n---\n技能{i}: {intent}"
+            if skill_id:
+                header += f" (id={skill_id})"
+            if score:
+                header += f" | score={score:.2f}" if isinstance(score, (int, float)) else ""
+            lines.append(header)
+            if doc:
+                lines.append(doc)
+        return "\n".join(lines)
 
     @staticmethod
     def _format_skill_plan(plan: list[dict] | None) -> str:

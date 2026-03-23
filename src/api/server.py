@@ -1,7 +1,7 @@
 ﻿"""
 FastAPI 服务器。
 
-提供 HTTP 接口对外暴露 LycheeMemOS Pipeline。
+提供 HTTP 接口对外暴露 LycheeMem Pipeline。
 
 端点:
 - POST /chat/complete          — 非流式完整对话
@@ -53,7 +53,7 @@ def create_app(pipeline=None, *, user_store=None) -> FastAPI:
         user_store: UserStore 实例。传 None 时 auth 端点不可用。
     """
     app = FastAPI(
-        title="LycheeMemOS Cognitive Memory API",
+        title="LycheeMem Cognitive Memory API",
         version="0.1.0",
         description="Training-free Agentic Cognitive Memory Framework",
     )

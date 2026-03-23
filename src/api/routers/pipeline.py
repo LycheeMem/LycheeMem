@@ -13,12 +13,33 @@ router = APIRouter()
 @router.get("/pipeline/status", response_model=PipelineStatusResponse)
 async def pipeline_status(pipeline=Depends(get_pipeline)):
     """返回 Pipeline 当前各组件状态统计。"""
-    gs = pipeline.search_coordinator.graph_store
+    from fastapi import HTTPException
+
     ss = pipeline.search_coordinator.skill_store
     ws = pipeline.wm_manager.session_store
 
-    node_count = len(gs.get_all())
-    edge_count = len(gs.get_all_edges()) if hasattr(gs, "get_all_edges") else 0
+    graphiti = getattr(getattr(pipeline, "consolidator", None), "graphiti_engine", None)
+    store = getattr(graphiti, "store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="Graphiti store not available")
+
+    try:
+        all_entities = store.list_all_entity_ids() if hasattr(store, "list_all_entity_ids") else []
+        node_count = len(all_entities)
+    except Exception:
+        node_count = 0
+
+    # 以 Entity 数作为节点数；活跃 Fact 数作为边数（近似，仅用于状态展示）
+    edge_count = 0
+    if node_count > 0 and hasattr(store, "export_semantic_subgraph"):
+        try:
+            subgraph = store.export_semantic_subgraph(
+                entity_ids=all_entities[:200], edge_limit=5000
+            )
+            edge_count = len(subgraph.get("edges", []))
+        except Exception:
+            edge_count = 0
+
     skill_count = len(ss.get_all())
     session_count = len(ws.list_sessions())
 
