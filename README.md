@@ -135,66 +135,37 @@ Skill retrieval uses **HyDE (Hypothetical Document Embeddings)**: the query is f
 
 Every request passes through a fixed sequence of five agents. Four are synchronous stages in the LangGraph pipeline; one is a background post-processing task.
 
-<table style="border-collapse: collapse; width: 100%; margin: 20px auto; border: 1px solid #e1e4e8;">
-  <tbody>
-    <tr style="background-color: #f6f8fa;">
-      <td style="border: 1px solid #e1e4e8; padding: 10px 15px; text-align: center; font-weight: 600; color: #586069;">START</td>
-    </tr>
-    <tr>
-      <td style="border: 1px solid #e1e4e8; padding: 12px 15px; background: white;">
-        <div style="display: flex; align-items: flex-start; gap: 10px;">
-          <div style="color: #0366d6; font-weight: 600; flex-shrink: 0;">1.</div>
-          <div>
-            <strong style="color: #0366d6;">WMManager</strong><br/>
-            <span style="font-size: 13px; color: #586069;">Token budget check + compress/render</span>
-          </div>
+<div align="center">
+  <div style="display: flex; flex-direction: column; align-items: center; font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif; gap: 8px;">
+    <div style="font-weight: bold; color: #586069; font-size: 14px;">START</div>
+    <div style="font-size: 18px; color: #d1d5da; line-height: 1;">▼</div>
+    <div style="border: 1px solid #e1e4e8; border-radius: 8px; padding: 15px; background-color: #f6f8fa; width: 100%; max-width: 600px; box-shadow: inset 0 1px 3px rgba(27,31,35,0.02);">
+      <div style="display: flex; flex-direction: column; gap: 8px; text-align: left;">
+        <div style="padding: 12px; border-left: 5px solid #0366d6; background: white; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); color: #24292e;">
+          <strong style="color: #0366d6;">1. WMManager</strong> — Token budget check + compress/render
         </div>
-      </td>
-    </tr>
-    <tr>
-      <td style="border: 1px solid #e1e4e8; padding: 12px 15px; background: white;">
-        <div style="display: flex; align-items: flex-start; gap: 10px;">
-          <div style="color: #0366d6; font-weight: 600; flex-shrink: 0;">2.</div>
-          <div>
-            <strong style="color: #0366d6;">SearchCoordinator</strong><br/>
-            <span style="font-size: 13px; color: #586069;">Multi-query → Graph + Skill retrieval</span>
-          </div>
+        <div style="text-align: center; color: #d1d5da; font-size: 16px; margin: -4px 0;">↓</div>
+        <div style="padding: 12px; border-left: 5px solid #0366d6; background: white; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); color: #24292e;">
+          <strong style="color: #0366d6;">2. SearchCoordinator</strong> — Multi-query → Graph + Skill retrieval
         </div>
-      </td>
-    </tr>
-    <tr>
-      <td style="border: 1px solid #e1e4e8; padding: 12px 15px; background: white;">
-        <div style="display: flex; align-items: flex-start; gap: 10px;">
-          <div style="color: #0366d6; font-weight: 600; flex-shrink: 0;">3.</div>
-          <div>
-            <strong style="color: #0366d6;">SynthesizerAgent</strong><br/>
-            <span style="font-size: 13px; color: #586069;">LLM-as-Judge scoring + context fusion</span>
-          </div>
+        <div style="text-align: center; color: #d1d5da; font-size: 16px; margin: -4px 0;">↓</div>
+        <div style="padding: 12px; border-left: 5px solid #0366d6; background: white; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); color: #24292e;">
+          <strong style="color: #0366d6;">3. SynthesizerAgent</strong> — LLM-as-Judge scoring + context fusion
         </div>
-      </td>
-    </tr>
-    <tr>
-      <td style="border: 1px solid #e1e4e8; padding: 12px 15px; background: white;">
-        <div style="display: flex; align-items: flex-start; gap: 10px;">
-          <div style="color: #28a745; font-weight: 600; flex-shrink: 0;">4.</div>
-          <div>
-            <strong style="color: #28a745;">ReasoningAgent</strong><br/>
-            <span style="font-size: 13px; color: #586069;">Final response generation</span>
-          </div>
+        <div style="text-align: center; color: #d1d5da; font-size: 16px; margin: -4px 0;">↓</div>
+        <div style="padding: 12px; border-left: 5px solid #28a745; background: white; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); color: #24292e;">
+          <strong style="color: #28a745;">4. ReasoningAgent</strong> — Final response generation
         </div>
-      </td>
-    </tr>
-    <tr style="background-color: #eef9ff;">
-      <td style="border: 1px dashed #0366d6; padding: 10px 15px; text-align: center; font-size: 13px;">
-        <span style="background: #0366d6; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-right: 8px;">Background</span>
-        <strong style="color: #0366d6;">ConsolidatorAgent</strong> (asyncio.create_task)
-      </td>
-    </tr>
-    <tr style="background-color: #f6f8fa;">
-      <td style="border: 1px solid #e1e4e8; padding: 10px 15px; text-align: center; font-weight: 600; color: #586069;">END</td>
-    </tr>
-  </tbody>
-</table>
+      </div>
+    </div>
+    <div style="font-size: 18px; color: #d1d5da; line-height: 1;">▼</div>
+    <div style="font-weight: bold; color: #586069; font-size: 14px;">END</div>
+    <div style="display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 8px 12px; background: #eef9ff; border-radius: 6px; border: 1px dashed #0366d6; font-size: 13px; color: #24292e;">
+      <span style="background: #0366d6; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold;">Background</span>
+      <span>asyncio.create_task( <strong style="color: #0366d6;">ConsolidatorAgent</strong> )</span>
+    </div>
+  </div>
+</div>
 
 ### Stage 1 — WMManager
 
