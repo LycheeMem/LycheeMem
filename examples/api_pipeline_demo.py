@@ -1,5 +1,5 @@
 """
-LycheeMemOS — 纯 API Pipeline 流程示例脚本
+LycheeMem — 纯 API Pipeline 流程示例脚本
 ==========================================
 
 演示如何仅通过 HTTP API 完成完整的 Pipeline 流程，无需直接调用 Python 代码：
@@ -385,7 +385,7 @@ SINGLE_TURN_QUERY = (
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="LycheeMemOS 纯 API Pipeline 流程示例脚本",
+        description="LycheeMem 纯 API Pipeline 流程示例脚本",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent(__doc__ or ""),
     )
@@ -404,7 +404,7 @@ def main() -> None:
 
     session_id = args.session_id or f"demo-{uuid.uuid4().hex[:8]}"
 
-    print(f"\n{BOLD}LycheeMemOS — 纯 API Pipeline 流程演示{RESET}")
+    print(f"\n{BOLD}LycheeMem — 纯 API Pipeline 流程演示{RESET}")
     print(f"  Base URL  : {args.base_url}")
     print(f"  Session   : {session_id}")
     print(f"  Auth      : {'禁用（匿名）' if args.no_auth else args.username}")
