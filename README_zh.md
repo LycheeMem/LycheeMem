@@ -1,14 +1,25 @@
-# LycheeMem
+<div align="center">
+  <img src="assert/logo.png" alt="LycheeMem Logo" width="200">
+  <h1>LycheeMem</h1>
+  <p>
+    <img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python Version">
+    <img src="https://img.shields.io/badge/LangGraph-000?style=flat&logo=langchain" alt="LangGraph">
+    <img src="https://img.shields.io/badge/litellm-000?style=flat&logo=python" alt="litellm">
+  </p>
+    <p>
+      中文 | <a href="README.md">English</a>
+    </p>
+</div>
 
-中文 | [English](README.md)
 
-LycheeMem 是一套为长期推理AI代理设计的认知记忆系统，提供持久化、结构化、体系统一的时间感知记忆，无需任何微调。它按照人脑使用记忆的方式组织信息 —— 区分你**记得发生了什么**与你**已经知晓的内容** —— 并通过多阶段推理管道在推理时刻将这些记忆激活。
+LycheeMem 是一套为长期推理AI代理设计的认知记忆系统，提供持久化、结构化、体系统一的时间感知记忆。它按照人类使用记忆的方式组织信息 —— 区分你**记得发生了什么**与你**已经知晓的内容** —— 并通过多阶段推理管道在推理时刻将这些记忆激活。
 
 ---
 
 ## 记忆架构
 
-LycheeMem 将记忆组织为三个相辅相成的存储库，镜像了神经科学中的认知记忆分类法：
+LycheeMem 将记忆组织为三个相辅相成的存储库：
 
 <div align="center">
   <div style="border: 1px solid #e1e4e8; border-radius: 8px; padding: 20px; background-color: #f6f8fa; font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;">
@@ -336,12 +347,3 @@ npm run dev      # 服务于 http://localhost:5173
 ```
 
 > 确保后端运行在端口 8000（或在 `web-demo/vite.config.ts` 中更新代理设置）后再启动前端。
-
-## 致谢
-
-我们感谢以下项目和团队：
-
-- [LangGraph]
-- [Graphiti]
-- [litellm]
-- [Neo4j]

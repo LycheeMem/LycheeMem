@@ -5,8 +5,10 @@ __pycache__
 *.pyc
 .env
 uv.lock
-lychee_memos_sessions.db
 .pytest_cache
 node_modules
 .next
 data
+.ruff_cache
+.github
+dist

@@ -1,14 +1,26 @@
-# LycheeMem
+<div align="center">
+  <img src="assert/logo.png" alt="LycheeMem Logo" width="200">
+  <h1>LycheeMem</h1>
+  <p>
+    <img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License">
+    <img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python Version">
+    <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff">
+    <img src="https://img.shields.io/badge/FastAPI-005571?style=flat&logo=fastapi" alt="FastAPI">
+    <img src="https://img.shields.io/badge/LangGraph-000?style=flat&logo=langchain" alt="LangGraph">
+  </p>
+  <p>
+    <a href="README_zh.md">中文</a> | English
+  </p>
+</div>
 
-[中文](README.zh.md) | English
 
-LycheeMem is a cognitive memory system for long-horizon AI agents, providing persistent, structured, and temporally-aware memory without any fine-tuning. It models memory the way humans use it — distinguishing what you remember *happening* from what you have come to *know* — and makes those memories available at inference time through a multi-stage reasoning pipeline.
+LycheeMem is a cognitive memory system for long-horizon AI agents, providing persistent, structured, and temporally-aware memory. It models memory the way humans use it — distinguishing what you remember *happening* from what you have come to *know* — and makes those memories available at inference time through a multi-stage reasoning pipeline.
 
 ---
 
 ## Memory Architecture
 
-LycheeMem organizes memory into three complementary stores, mirroring the cognitive memory taxonomy from neuroscience:
+LycheeMem organizes memory into three complementary stores:
 
 <div align="center">
   <div style="border: 1px solid #e1e4e8; border-radius: 8px; padding: 20px; background-color: #f6f8fa; font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;">
@@ -342,14 +354,3 @@ Key panels:
 - **Working Memory** — inspect the current session's token usage, compressed summaries, and raw recent turns.
 
 > Make sure the backend is running on port 8000 (or update proxy settings in `web-demo/vite.config.ts`) before starting the frontend.
-
----
-
-## Acknowledgements
-
-We thank the following projects and teams:
-
-- [LangGraph]
-- [Graphiti]
-- [litellm]
-- [Neo4j]

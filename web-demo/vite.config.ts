@@ -4,8 +4,6 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 55555,
-    host: "0.0.0.0",
     proxy: {
       "/auth": "http://localhost:8000",
       "/chat": "http://localhost:8000",
