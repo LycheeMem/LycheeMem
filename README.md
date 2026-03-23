@@ -4,9 +4,8 @@
   <p>
     <img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License">
     <img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python Version">
-    <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff">
-    <img src="https://img.shields.io/badge/FastAPI-005571?style=flat&logo=fastapi" alt="FastAPI">
     <img src="https://img.shields.io/badge/LangGraph-000?style=flat&logo=langchain" alt="LangGraph">
+    <img src="https://img.shields.io/badge/litellm-000?style=flat&logo=python" alt="litellm">
   </p>
   <p>
     <a href="README_zh.md">中文</a> | English
