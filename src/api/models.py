@@ -284,6 +284,100 @@ class MemorySearchResponse(BaseModel):
     total: int
 
 
+# ─── Memory Synthesize ───
+
+
+class MemorySynthesizeRequest(BaseModel):
+    """记忆合成请求：对检索结果进行 LLM-as-Judge 评分与融合，生成 background_context。
+
+    设计为可直接衔接 /memory/search 的响应：将 graph_results / skill_results 原样传入。
+    """
+
+    user_query: str = Field(..., min_length=1, max_length=100_000)
+    graph_results: list[dict[str, Any]] = Field(default_factory=list)
+    skill_results: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class MemorySynthesizeResponse(BaseModel):
+    """记忆合成响应。"""
+
+    background_context: str
+    skill_reuse_plan: list[dict[str, Any]] = []
+    provenance: list[dict[str, Any]] = []
+    kept_count: int = 0
+    dropped_count: int = 0
+
+
+# ─── Memory Reason ───
+
+
+class MemoryReasonRequest(BaseModel):
+    """最终推理请求：基于合成后的上下文生成回答。
+
+    典型用法：
+      1. POST /memory/search         → graph_results / skill_results
+      2. POST /memory/synthesize     → background_context / skill_reuse_plan
+      3. POST /memory/reason         → response（本端点）
+      4. POST /memory/consolidate    → 固化长期记忆
+    """
+
+    session_id: str = Field(..., min_length=1, max_length=128)
+    user_query: str = Field(..., min_length=1, max_length=100_000)
+    background_context: str = ""
+    skill_reuse_plan: list[dict[str, Any]] = Field(default_factory=list)
+    retrieved_skills: list[dict[str, Any]] = Field(default_factory=list)
+    # 是否将本轮 user/assistant 轮次写回会话（供后续 /memory/consolidate 使用）
+    append_to_session: bool = True
+
+
+class MemoryReasonResponse(BaseModel):
+    """最终推理响应。"""
+
+    response: str
+    session_id: str
+    wm_token_usage: int = 0
+
+
+# ─── Memory Consolidate ───
+
+
+class MemoryConsolidateRequest(BaseModel):
+    """记忆固化请求：对当前会话进行记忆萃取，写入图谱与技能库。
+
+    传入 retrieved_context 有助于新颖性判断（避免重复固化已有记忆）。
+    retrieved_context 可取自 /memory/synthesize 的 background_context。
+
+    background=True（默认）：在后台线程中异步执行固化，立即返回 status="started"，
+        与 Pipeline 内部行为一致，适合生产调用（固化耗时可能超过 60 秒）。
+    background=False：同步等待固化完成后返回详细结果，适合调试/验证。
+    """
+
+    session_id: str = Field(..., min_length=1, max_length=128)
+    # 本轮检索合成的已有记忆上下文，用于判断对话是否引入了新信息
+    retrieved_context: str = ""
+    # 是否在后台线程中异步执行（默认 True，避免 HTTP 超时）
+    background: bool = True
+
+
+class MemoryConsolidateResponse(BaseModel):
+    """记忆固化响应。
+
+    background=True 时：status="started"，其余数值字段为 0（结果在后台写入）。
+    background=False 时：status="done" 或 "skipped"，包含实际计数和步骤日志。
+    """
+
+    # "started"  — 后台异步触发
+    # "done"     — 同步执行完毕
+    # "skipped"  — 无有效轮次或无新信息
+    status: str = "done"
+    entities_added: int = 0
+    skills_added: int = 0
+    facts_added: int = 0
+    has_novelty: bool | None = None
+    skipped_reason: str | None = None
+    steps: list[dict[str, Any]] = []
+
+
 # ─── Graph Manual Operations ───
 
 

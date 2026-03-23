@@ -15,8 +15,14 @@ from src.api.models import (
     GraphEdgeAddRequest,
     GraphNodeAddRequest,
     GraphResponse,
+    MemoryConsolidateRequest,
+    MemoryConsolidateResponse,
+    MemoryReasonRequest,
+    MemoryReasonResponse,
     MemorySearchRequest,
     MemorySearchResponse,
+    MemorySynthesizeRequest,
+    MemorySynthesizeResponse,
     SkillsResponse,
 )
 
@@ -96,6 +102,173 @@ async def memory_search(req: MemorySearchRequest, pipeline=Depends(get_pipeline)
         graph_results=graph_results,
         skill_results=skill_results,
         total=total,
+    )
+
+
+# ── Memory: Synthesize ──
+
+
+@router.post("/memory/synthesize", response_model=MemorySynthesizeResponse)
+async def memory_synthesize(
+    req: MemorySynthesizeRequest,
+    pipeline=Depends(get_pipeline),
+    user=Depends(get_optional_user),
+):
+    """对多源检索结果进行 LLM-as-Judge 评分与融合，生成 background_context。
+
+    典型用法：衔接 POST /memory/search 的响应，将 graph_results / skill_results 传入。
+    输出的 background_context 和 skill_reuse_plan 可直接传给 POST /memory/reason。
+    """
+    result = pipeline.synthesizer.run(
+        user_query=req.user_query,
+        retrieved_graph_memories=req.graph_results,
+        retrieved_skills=req.skill_results,
+    )
+
+    # 将嵌套的 provenance 展开为扁平列表
+    provenance_raw = result.get("provenance", [])
+    provenance_flat: list[dict] = []
+    for item in provenance_raw:
+        if isinstance(item, dict) and isinstance(item.get("items"), list):
+            provenance_flat.extend(item["items"])
+        elif isinstance(item, dict):
+            provenance_flat.append(item)
+
+    input_count = len(req.graph_results) + len(req.skill_results)
+    kept_count = len(provenance_flat)
+    dropped_count = max(0, input_count - kept_count)
+
+    return MemorySynthesizeResponse(
+        background_context=result.get("background_context", ""),
+        skill_reuse_plan=result.get("skill_reuse_plan", []),
+        provenance=provenance_flat,
+        kept_count=kept_count,
+        dropped_count=dropped_count,
+    )
+
+
+# ── Memory: Reason ──
+
+
+@router.post("/memory/reason", response_model=MemoryReasonResponse)
+async def memory_reason(
+    req: MemoryReasonRequest,
+    pipeline=Depends(get_pipeline),
+    user=Depends(get_optional_user),
+):
+    """基于合成上下文对用户查询进行最终推理，生成 assistant 回答。
+
+    当 append_to_session=True（默认）时：
+    - 将用户问题追加到会话（含 token 预算检查与按需压缩），作为下一轮历史
+    - 将 assistant 回答追加到会话，供后续 POST /memory/consolidate 使用
+
+    当 append_to_session=False 时：仅读取历史，不写入会话。
+    """
+    user_id = user.user_id if user else ""
+    wm = pipeline.wm_manager
+
+    if req.append_to_session:
+        # 追加用户消息到会话（含 token 计数及双阈值压缩）
+        wm_result = wm.run(
+            session_id=req.session_id,
+            user_query=req.user_query,
+            user_id=user_id,
+        )
+        compressed_history = wm_result["compressed_history"]
+        wm_token_usage = wm_result["wm_token_usage"]
+    else:
+        # 只读历史，不写入会话
+        log = wm.session_store.get_or_create(req.session_id, user_id=user_id)
+        compressed_history = wm.compressor.render_context(log.turns, log.summaries)
+        wm_token_usage = wm.compressor.count_tokens(compressed_history)
+
+    result = pipeline.reasoner.run(
+        user_query=req.user_query,
+        compressed_history=compressed_history,
+        background_context=req.background_context,
+        skill_reuse_plan=req.skill_reuse_plan,
+        retrieved_skills=req.retrieved_skills,
+    )
+
+    if req.append_to_session:
+        wm.append_assistant_turn(
+            req.session_id,
+            result["final_response"],
+            user_id=user_id,
+        )
+
+    return MemoryReasonResponse(
+        response=result["final_response"],
+        session_id=req.session_id,
+        wm_token_usage=wm_token_usage,
+    )
+
+
+# ── Memory: Consolidate ──
+
+
+@router.post("/memory/consolidate", response_model=MemoryConsolidateResponse)
+async def memory_consolidate(
+    req: MemoryConsolidateRequest,
+    pipeline=Depends(get_pipeline),
+    user=Depends(get_optional_user),
+):
+    """对当前会话进行记忆萃取固化，提取实体/事实写入图谱，提取技能写入技能库。
+
+    retrieved_context 建议传入本轮 /memory/synthesize 的 background_context，
+    用于新颖性判断（避免将已有记忆重复固化）。
+
+    background=True（默认）：在后台线程中异步执行，立即返回 status="started"；
+        与 Pipeline 内部行为一致，适合生产调用（固化耗时通常超过 60 秒）。
+    background=False：同步等待完成后返回详细结果，适合调试/验证。
+    """
+    import threading
+
+    user_id = user.user_id if user else ""
+    log = pipeline.wm_manager.session_store.get_or_create(
+        req.session_id, user_id=user_id
+    )
+    # 仅传入未被软删除的有效轮次
+    turns = [t for t in log.turns if not t.get("deleted", False)]
+    if not turns:
+        return MemoryConsolidateResponse(
+            status="skipped",
+            skipped_reason="session_empty",
+            steps=[{"name": "session_check", "status": "skipped", "detail": "会话无有效对话轮次"}],
+        )
+
+    if req.background:
+        # 后台线程触发（fire-and-forget），与 LycheePipeline.run() 内部行为一致
+        def _run() -> None:
+            try:
+                pipeline.consolidator.run(
+                    turns=turns,
+                    session_id=req.session_id,
+                    retrieved_context=req.retrieved_context,
+                    user_id=user_id,
+                )
+            except Exception:
+                logger.exception("background consolidation failed session=%s", req.session_id)
+
+        t = threading.Thread(target=_run, daemon=True, name=f"consolidate-{req.session_id[:8]}")
+        t.start()
+        return MemoryConsolidateResponse(status="started")
+
+    # 同步执行（background=False）
+    result = pipeline.consolidator.run(
+        turns=turns,
+        session_id=req.session_id,
+        retrieved_context=req.retrieved_context,
+        user_id=user_id,
+    )
+    return MemoryConsolidateResponse(
+        status="skipped" if result.get("skipped_reason") else "done",
+        entities_added=result.get("entities_added", 0),
+        skills_added=result.get("skills_added", 0),
+        facts_added=result.get("facts_added", 0),
+        has_novelty=result.get("has_novelty"),
+        skipped_reason=result.get("skipped_reason"),
+        steps=result.get("steps", []),
     )
 
 
