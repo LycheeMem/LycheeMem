@@ -1,6 +1,6 @@
 # LycheeMem
 
-**Training-free Agentic Cognitive Memory Framework**
+[中文](README.zh.md) | English
 
 LycheeMem is a cognitive memory system for long-horizon AI agents, providing persistent, structured, and temporally-aware memory without any fine-tuning. It models memory the way humans use it — distinguishing what you remember *happening* from what you have come to *know* — and makes those memories available at inference time through a multi-stage reasoning pipeline.
 
@@ -10,21 +10,40 @@ LycheeMem is a cognitive memory system for long-horizon AI agents, providing per
 
 LycheeMem organizes memory into three complementary stores, mirroring the cognitive memory taxonomy from neuroscience:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         LycheeMem Memory                            │
-│                                                                     │
-│  ┌──────────────────┐  ┌─────────────────────┐  ┌───────────────┐   │
-│  │  Working Memory  │  │   Semantic Memory   │  │  Procedural   │   │
-│  │   (Episodic)     │  │  (Knowledge Graph)  │  │   Memory      │   │
-│  │                  │  │                     │  │  (Skills)     │   │
-│  │  • Session turns │  │  • Entity nodes     │  │  • Skill      │   │
-│  │  • Summaries     │  │  • Bi-temporal facts│  │    entries    │   │
-│  │  • Token budget  │  │  • Communities      │  │  • HyDE       │   │
-│  │    management    │  │  • Episode anchors  │  │    retrieval  │   │
-│  └──────────────────┘  └─────────────────────┘  └───────────────┘   │
-└─────────────────────────────────────────────────────────────────────┘
-```
+<div align="center">
+  <div style="border: 1px solid #e1e4e8; border-radius: 8px; padding: 20px; background-color: #f6f8fa; font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;">
+    <h3 style="margin-top: 0; color: #24292e;">LycheeMem Memory Architecture</h3>
+    <div style="display: flex; gap: 15px; justify-content: center; flex-wrap: wrap; margin-top: 15px;">
+      <div style="border: 1px solid #d1d5da; border-radius: 6px; padding: 15px; background: white; min-width: 180px; text-align: left; box-shadow: 0 1px 3px rgba(27,31,35,0.04);">
+        <h4 style="margin: 0 0 10px 0; color: #0366d6;">Working Memory</h4>
+        <p style="margin: 0; font-size: 13px; color: #586069;">(Episodic)</p>
+        <ul style="margin: 10px 0 0 0; padding-left: 18px; font-size: 13px; line-height: 1.6; color: #24292e;">
+          <li>Session turns</li>
+          <li>Summaries</li>
+          <li>Token budget management</li>
+        </ul>
+      </div>
+      <div style="border: 1px solid #d1d5da; border-radius: 6px; padding: 15px; background: white; min-width: 180px; text-align: left; box-shadow: 0 1px 3px rgba(27,31,35,0.04);">
+        <h4 style="margin: 0 0 10px 0; color: #0366d6;">Semantic Memory</h4>
+        <p style="margin: 0; font-size: 13px; color: #586069;">(Knowledge Graph)</p>
+        <ul style="margin: 10px 0 0 0; padding-left: 18px; font-size: 13px; line-height: 1.6; color: #24292e;">
+          <li>Entity nodes</li>
+          <li>Bi-temporal facts</li>
+          <li>Communities</li>
+          <li>Episode anchors</li>
+        </ul>
+      </div>
+      <div style="border: 1px solid #d1d5da; border-radius: 6px; padding: 15px; background: white; min-width: 180px; text-align: left; box-shadow: 0 1px 3px rgba(27,31,35,0.04);">
+        <h4 style="margin: 0 0 10px 0; color: #0366d6;">Procedural Memory</h4>
+        <p style="margin: 0; font-size: 13px; color: #586069;">(Skills)</p>
+        <ul style="margin: 10px 0 0 0; padding-left: 18px; font-size: 13px; line-height: 1.6; color: #24292e;">
+          <li>Skill entries</li>
+          <li>HyDE retrieval</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
 
 ### Working Memory
 
@@ -88,27 +107,41 @@ Skill retrieval uses **HyDE (Hypothetical Document Embeddings)**: the query is f
 
 Every request passes through a fixed sequence of five agents. Four are synchronous stages in the LangGraph pipeline; one is a background post-processing task.
 
-```
-START
-  │
-  ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  1. WMManager         Token budget check + compress/render      │
-│     ↓                                                           │
-│  2. SearchCoordinator  Multi-query → Graph + Skill retrieval    │
-│     ↓                                                           │
-│  3. SynthesizerAgent   LLM-as-Judge scoring + context fusion    │
-│     ↓                                                           │
-│  4. ReasoningAgent     Final response generation                │
-└─────────────────────────────────────────────────────────────────┘
-  │
-  ▼
-END  →  asyncio.create_task( ConsolidatorAgent )   [background]
-```
+<div align="center">
+  <div style="display: flex; flex-direction: column; align-items: center; font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif; gap: 8px;">
+    <div style="font-weight: bold; color: #586069; font-size: 14px;">START</div>
+    <div style="font-size: 18px; color: #d1d5da; line-height: 1;">▼</div>
+    <div style="border: 1px solid #e1e4e8; border-radius: 8px; padding: 15px; background-color: #f6f8fa; width: 100%; max-width: 600px; box-shadow: inset 0 1px 3px rgba(27,31,35,0.02);">
+      <div style="display: flex; flex-direction: column; gap: 8px; text-align: left;">
+        <div style="padding: 12px; border-left: 5px solid #0366d6; background: white; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); color: #24292e;">
+          <strong style="color: #0366d6;">1. WMManager</strong> — Token budget check + compress/render
+        </div>
+        <div style="text-align: center; color: #d1d5da; font-size: 16px; margin: -4px 0;">↓</div>
+        <div style="padding: 12px; border-left: 5px solid #0366d6; background: white; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); color: #24292e;">
+          <strong style="color: #0366d6;">2. SearchCoordinator</strong> — Multi-query → Graph + Skill retrieval
+        </div>
+        <div style="text-align: center; color: #d1d5da; font-size: 16px; margin: -4px 0;">↓</div>
+        <div style="padding: 12px; border-left: 5px solid #0366d6; background: white; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); color: #24292e;">
+          <strong style="color: #0366d6;">3. SynthesizerAgent</strong> — LLM-as-Judge scoring + context fusion
+        </div>
+        <div style="text-align: center; color: #d1d5da; font-size: 16px; margin: -4px 0;">↓</div>
+        <div style="padding: 12px; border-left: 5px solid #28a745; background: white; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); color: #24292e;">
+          <strong style="color: #28a745;">4. ReasoningAgent</strong> — Final response generation
+        </div>
+      </div>
+    </div>
+    <div style="font-size: 18px; color: #d1d5da; line-height: 1;">▼</div>
+    <div style="font-weight: bold; color: #586069; font-size: 14px;">END</div>
+    <div style="display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 8px 12px; background: #eef9ff; border-radius: 6px; border: 1px dashed #0366d6; font-size: 13px; color: #24292e;">
+      <span style="background: #0366d6; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold;">Background</span>
+      <span>asyncio.create_task( <strong style="color: #0366d6;">ConsolidatorAgent</strong> )</span>
+    </div>
+  </div>
+</div>
 
 ### Stage 1 — WMManager
 
-Rule-based agent (no LLM prompt). Appends the user turn to the session log, counts tokens with `tiktoken`, and fires compression if either threshold is crossed. Produces `compressed_history` and `raw_recent_turns` for downstream stages.
+Rule-based agent (no LLM prompt). Appends the user turn to the session log, counts tokens, and fires compression if either threshold is crossed. Produces `compressed_history` and `raw_recent_turns` for downstream stages.
 
 ### Stage 2 — SearchCoordinator
 
@@ -128,7 +161,7 @@ Receives `compressed_history`, `background_context`, and `skill_reuse_plan` and 
 
 Triggered immediately after `ReasoningAgent` completes, runs in a thread pool and **does not block the response**. It:
 
-1. Performs a **novelty check** — LLM judges whether the conversation introduced new information worth persisting. Skips consolidation for pure retrieval exchanges.
+1. Performs a **novelty check** — judges whether the conversation introduced new information worth persisting. Skips consolidation for pure retrieval exchanges.
 2. Calls `GraphitiEngine.ingest_episode()` to extract entities and facts from the conversation turns and commit them into the Neo4j graph (with bi-temporal timestamps derived from wall-clock time).
 3. Extracts skill entries from successful tool-usage patterns in the conversation and adds them to the skill store.
 4. Optionally triggers periodic `refresh_communities_for_session()`.
@@ -273,6 +306,23 @@ curl -X POST http://localhost:8000/memory/consolidate/my-session
 { "message": "Consolidation done: 5 entities, 2 skills extracted." }
 ```
 
+### Usage Examples
+
+```bash
+# Basic single-turn demo (automatically registers 'demo_user')
+python examples/api_pipeline_demo.py
+
+# Multi-turn chat demo (3 consecutive turns, followed by consolidation)
+python examples/api_pipeline_demo.py --multi-turn
+
+# Custom query and user credentials
+python examples/api_pipeline_demo.py --username alice --password secret123 \
+  --query "How do I backup my database with pg_dump?"
+
+# Use a fixed session_id (useful for accumulating history across multiple runs)
+python examples/api_pipeline_demo.py --session-id my-test-session
+```
+
 ---
 
 ## Web Demo
@@ -295,6 +345,11 @@ Key panels:
 
 ---
 
-## License
+## Acknowledgements
 
-Apache 2.0
+We thank the following projects and teams:
+
+- [LangGraph]
+- [Graphiti]
+- [litellm]
+- [Neo4j]
