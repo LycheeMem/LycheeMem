@@ -37,7 +37,7 @@ def create_pipeline(
     *,
     settings,
 ) -> LycheePipeline:
-    """一键组装 LycheeMem Pipeline。
+    """一键组装 LycheeMemOS Pipeline。
 
     传入 settings 时使用配置指定的存储后端（SQLite/Neo4j/LanceDB）。
     不传 settings 时使用内存存储（开发/测试模式）。
