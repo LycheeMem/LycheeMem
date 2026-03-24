@@ -390,10 +390,4 @@ npm install
 npm run dev      # served at http://localhost:5173
 ```
 
-Key panels:
-- **Chat** — full conversation with per-step trace expansion (click any pipeline stage to inspect what was retrieved and scored).
-- **Graph Memory** — interactive visualization of the Neo4j knowledge graph; search by entity name or relation type; filter by valid-time range.
-- **Skills** — browse and search the procedural skill library.
-- **Working Memory** — inspect the current session's token usage, compressed summaries, and raw recent turns.
-
 > Make sure the backend is running on port 8000 (or update proxy settings in `web-demo/vite.config.ts`) before starting the frontend.
