@@ -39,7 +39,7 @@ LycheeMem is a cognitive memory system for long-horizon AI agents, providing per
 
 ## 🚀 Coming Soon
 
-📢 **OpenClaw Plugin is Coming!** — Save your tokens and optimize memory efficiency！
+📢 **OpenClaw Plugin is Coming!** — Save your tokens and optimize memory efficiency! Stay tuned!
 
 ---
 
