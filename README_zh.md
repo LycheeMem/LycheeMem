@@ -235,6 +235,21 @@ NEO4J_PASSWORD=你的密码
 > **支持的 LLM 供应商**（经 [litellm](https://github.com/BerriAI/litellm)）：  
 > `openai/gpt-4o-mini` · `gemini/gemini-2.0-flash` · `ollama_chat/qwen2.5` · 任何 OpenAI 兼容端点
 
+### 启动 Neo4j
+
+**方案 1：Docker（推荐）**
+
+```bash
+# 启动 Neo4j 并启用 GDS 插件
+docker compose up -d
+
+# 验证运行状态：http://localhost:7474（默认：neo4j / 12345678）
+```
+
+**方案 2：本地手动安装**
+
+下载並安装 Neo4j 5.x，确保已安装 GDS 插件。
+
 ### 启动服务器
 
 ```bash

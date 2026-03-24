@@ -235,6 +235,21 @@ NEO4J_PASSWORD=your_password
 > **Supported LLM providers** (via [litellm](https://github.com/BerriAI/litellm)):  
 > `openai/gpt-4o-mini` · `gemini/gemini-3.0-flash` · `ollama_chat/qwen2.5` · any OpenAI-compatible endpoint
 
+### Start Neo4j
+
+**Option 1: Docker (Recommended)**
+
+```bash
+# Start Neo4j with GDS plugin enabled
+docker compose up -d
+
+# Verify it's running at http://localhost:7474 (default: neo4j / 12345678)
+```
+
+**Option 2: Manual Installation**
+
+Download and install Neo4j 5.x locally, then ensure the GDS plugin is installed.
+
 ### Start the Server
 
 ```bash
