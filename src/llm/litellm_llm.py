@@ -68,21 +68,7 @@ class LiteLLMLLM(BaseLLM):
         if response_format is not None:
             kwargs["response_format"] = response_format
         return kwargs
-
-    # 输出运行此函数的时间，写一个装饰器
-    def timing_decorator(func):
-        import time
-
-        def wrapper(*args, **kwargs):
-            start_time = time.time()
-            result = func(*args, **kwargs)
-            end_time = time.time()
-            print(f"{func.__name__} took {end_time - start_time:.2f} seconds")
-            return result
-
-        return wrapper
-    
-    @timing_decorator
+        
     def generate(
         self,
         messages: list[dict[str, str]],
@@ -101,7 +87,6 @@ class LiteLLMLLM(BaseLLM):
         )
         return resp.choices[0].message.content or ""
     
-    @timing_decorator
     async def agenerate(
         self,
         messages: list[dict[str, str]],
