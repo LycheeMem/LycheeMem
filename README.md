@@ -31,7 +31,19 @@ LycheeMem is a cognitive memory system for long-horizon AI agents, providing per
 
 ---
 
-## Memory Architecture
+## 🔥 News
+
+• [03/23/2026] 🎉 **LycheeMem is now Open Source!** [GitHub Repository →](https://github.com/LycheeMem/LycheeMem)
+
+---
+
+## 🚀 Coming Soon
+
+📢 **OpenClaw Plugin is Coming!** — Save your tokens and optimize memory efficiency！
+
+---
+
+## 📚 Memory Architecture
 
 LycheeMem organizes memory into three complementary stores:
 
@@ -73,7 +85,7 @@ LycheeMem organizes memory into three complementary stores:
   </tbody>
 </table>
 
-### Working Memory
+### 💾 Working Memory
 
 The working memory window holds the active conversation context for a session. It operates under a **dual-threshold token budget**:
 
@@ -82,7 +94,7 @@ The working memory window holds the active conversation context for a session. I
 
 Compression produces *summary anchors* (past context, distilled) + *raw recent turns* (last N turns, verbatim). Both are passed downstream as the conversation history.
 
-### Semantic Memory — Graphiti Knowledge Graph
+### 🗺️ Semantic Memory — Graphiti Knowledge Graph
 
 The knowledge graph is implemented as a **Graphiti-style bi-temporal graph** backed by Neo4j. It stores the world in four node types:
 
@@ -118,7 +130,7 @@ After retrieval, candidates are re-ranked using **Reciprocal Rank Fusion (RRF)**
 
 A background sweep runs `refresh_all_communities()` every *N* episodes globally (default: 50). Community summaries are included in graph search results to provide broad contextual framing even when no specific fact directly matches a query.
 
-### Procedural Memory — Skill Store
+### 🛠️ Procedural Memory — Skill Store
 
 The skill store preserves reusable *how-to* knowledge as structured skill entries, each carrying:
 
@@ -131,7 +143,7 @@ Skill retrieval uses **HyDE (Hypothetical Document Embeddings)**: the query is f
 
 ---
 
-## Pipeline
+## ⚙️ Pipeline
 
 Every request passes through a fixed sequence of five agents. Four are synchronous stages in the LangGraph pipeline; one is a background post-processing task.
 
@@ -196,7 +208,7 @@ Triggered immediately after `ReasoningAgent` completes, runs in a thread pool an
 
 ---
 
-## Quick Start
+## ⚡ Quick Start
 
 ### Prerequisites
 
@@ -262,7 +274,7 @@ The API is served at `http://localhost:8000`. Interactive docs at `/docs`.
 
 ---
 
-## API Reference
+## 🔌 API Reference
 
 ### `POST /memory/search` — Unified Memory Retrieval
 
@@ -368,7 +380,7 @@ python examples/api_pipeline_demo.py --session-id my-test-session
 
 ---
 
-## Web Demo
+## 🎨 Web Demo
 
 A frontend demo is included under `web-demo/`. It provides a chat interface alongside live views of the knowledge graph, skill library, and working memory state.
 
