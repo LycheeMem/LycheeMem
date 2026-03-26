@@ -1,0 +1,105 @@
+{
+  "name": "lycheemem-openclaw",
+  "version": "0.1.0",
+  "displayName": "LycheeMem Tools",
+  "description": "Thin OpenClaw adapter for LycheeMem structured memory. Keeps memory-core intact and exposes long-term retrieval, optional retrieval compression, and background consolidation without replacing the built-in memory owner.",
+  "entry": "src/client.py",
+  "config": {
+    "LYCHEEMEM_BASE_URL": {
+      "type": "string",
+      "default": "http://127.0.0.1:8000",
+      "description": "Base URL of the local LycheeMem service."
+    },
+    "LYCHEEMEM_TRANSPORT": {
+      "type": "string",
+      "default": "mcp",
+      "description": "Transport mode: mcp or http."
+    },
+    "LYCHEEMEM_TIMEOUT": {
+      "type": "number",
+      "default": 15.0,
+      "description": "Request timeout in seconds."
+    }
+  },
+  "healthcheck": {
+    "type": "http",
+    "path": "/health"
+  },
+  "tools": [
+    {
+      "name": "lychee_memory_search",
+      "description": "Retrieve structured long-term memory from LycheeMem. Use it for historical facts, entity relationships, long-running project context, and procedural memory recall. The returned graph_results are synthesizer-ready richer structures rather than flat fact lists.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Natural language recall request."
+          },
+          "top_k": {
+            "type": "integer",
+            "default": 5,
+            "description": "Maximum results per source before synthesis."
+          },
+          "include_graph": {
+            "type": "boolean",
+            "default": true,
+            "description": "Whether to search graph memories."
+          },
+          "include_skills": {
+            "type": "boolean",
+            "default": true,
+            "description": "Whether to search skill memories."
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "lychee_memory_synthesize",
+      "description": "Compress and fuse the structured retrieval results from lychee_memory_search into a shorter background_context. Use it when the retrieved memory payload is too verbose to inject directly into the main OpenClaw context.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "user_query": {
+            "type": "string",
+            "description": "The current user request used for relevance scoring."
+          },
+          "graph_results": {
+            "type": "array",
+            "description": "graph_results returned by lychee_memory_search."
+          },
+          "skill_results": {
+            "type": "array",
+            "description": "skill_results returned by lychee_memory_search."
+          }
+        },
+        "required": ["user_query", "graph_results", "skill_results"]
+      }
+    },
+    {
+      "name": "lychee_memory_consolidate",
+      "description": "Persist new long-term knowledge into LycheeMem at the end of a conversation. Use after a turn produced meaningful new facts, entities, preferences, relationships, or reusable skills.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "LycheeMem session id."
+          },
+          "retrieved_context": {
+            "type": "string",
+            "default": "",
+            "description": "Compressed background_context from the current turn for novelty detection."
+          },
+          "background": {
+            "type": "boolean",
+            "default": true,
+            "description": "Whether consolidation should run asynchronously."
+          }
+        },
+        "required": ["session_id"]
+      }
+    }
+  ]
+}

@@ -196,7 +196,12 @@ class SearchCoordinator(BaseAgent):
         return {}
 
     def _search_graph(
-        self, queries: list[str], *, session_id: str | None = None, user_id: str = ""
+        self,
+        queries: list[str],
+        *,
+        session_id: str | None = None,
+        user_id: str = "",
+        top_k: int | None = None,
     ) -> list[dict[str, Any]]:
         """在知识图谱中检索相关节点和邻居（仅 Graphiti 路径）。
 
@@ -207,12 +212,14 @@ class SearchCoordinator(BaseAgent):
         all_provenance: list[dict[str, Any]] = []
         seen_fact_ids: set[str] = set()
 
+        graph_top_k = top_k if top_k is not None else self.graph_top_k
+
         for query in queries:
             query_embedding = self.embedder.embed_query(query)
             r = self.graphiti_engine.search(
                 query=query,
                 session_id=session_id,
-                top_k=self.graph_top_k,
+                top_k=graph_top_k,
                 query_embedding=query_embedding,
                 include_communities=True,
                 user_id=user_id,
@@ -242,7 +249,12 @@ class SearchCoordinator(BaseAgent):
             }
         ]
 
-    def _search_skills(self, query: str, user_id: str = "") -> list[dict[str, Any]]:
+    def _search_skills(
+        self,
+        query: str,
+        user_id: str = "",
+        top_k: int | None = None,
+    ) -> list[dict[str, Any]]:
         """使用 HyDE 策略检索技能库。
 
         1. 用 LLM 生成假设性回答
@@ -258,9 +270,11 @@ class SearchCoordinator(BaseAgent):
 
         hyde_embedding = self.embedder.embed_query(hyde_doc)
 
+        skill_top_k = top_k if top_k is not None else self.skill_top_k
+
         results = self.skill_store.search(
             query=query,
-            top_k=self.skill_top_k,
+            top_k=skill_top_k,
             query_embedding=hyde_embedding,
             user_id=user_id,
         )

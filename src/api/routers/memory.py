@@ -69,34 +69,45 @@ def _fact_row_to_edge(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# ── Memory: Search ──
-
-
-@router.post("/memory/search", response_model=MemorySearchResponse)
-async def memory_search(req: MemorySearchRequest, pipeline=Depends(get_pipeline), user=Depends(get_optional_user)):
-    """统一记忆检索：同时查询图谱和技能库。"""
+def run_memory_search(
+    pipeline,
+    req: MemorySearchRequest,
+    *,
+    user_id: str = "",
+) -> MemorySearchResponse:
+    """执行统一记忆检索，返回可直接供 Synthesizer 消费的 richer 结构。"""
     sc = pipeline.search_coordinator
-    user_id = user.user_id if user else ""
 
     graph_results: list[dict[str, Any]] = []
+    skill_results: list[dict[str, Any]] = []
+    sub_queries = sc._plan_retrieval(req.query)
+    graph_queries = sub_queries.get("graph") or [req.query]
+    skill_queries = sub_queries.get("skill") or [req.query]
+
     if req.include_graph:
-        q_emb = sc.embedder.embed_query(req.query)
-        r = sc.graphiti_engine.search(
-            query=req.query,
+        graph_results = sc._search_graph(
+            graph_queries,
             session_id=None,
             top_k=req.top_k,
-            query_embedding=q_emb,
-            include_communities=True,
             user_id=user_id,
         )
-        graph_results = r.provenance
 
-    skill_results: list[dict[str, Any]] = []
     if req.include_skills:
-        q_emb = sc.embedder.embed_query(req.query)
-        skill_results = sc.skill_store.search(req.query, top_k=req.top_k, query_embedding=q_emb, user_id=user_id)
+        skill_results = sc._search_skills(
+            skill_queries[0],
+            top_k=req.top_k,
+            user_id=user_id,
+        )
 
-    total = len(graph_results) + len(skill_results)
+    graph_total = 0
+    for item in graph_results:
+        provenance = item.get("provenance")
+        if isinstance(provenance, list) and provenance:
+            graph_total += len(provenance)
+        else:
+            graph_total += 1
+
+    total = graph_total + len(skill_results)
     return MemorySearchResponse(
         query=req.query,
         graph_results=graph_results,
@@ -105,27 +116,17 @@ async def memory_search(req: MemorySearchRequest, pipeline=Depends(get_pipeline)
     )
 
 
-# ── Memory: Synthesize ──
-
-
-@router.post("/memory/synthesize", response_model=MemorySynthesizeResponse)
-async def memory_synthesize(
+def run_memory_synthesize(
+    pipeline,
     req: MemorySynthesizeRequest,
-    pipeline=Depends(get_pipeline),
-    user=Depends(get_optional_user),
-):
-    """对多源检索结果进行 LLM-as-Judge 评分与融合，生成 background_context。
-
-    典型用法：衔接 POST /memory/search 的响应，将 graph_results / skill_results 传入。
-    输出的 background_context 和 skill_reuse_plan 可直接传给 POST /memory/reason。
-    """
+) -> MemorySynthesizeResponse:
+    """执行检索结果压缩，供 HTTP Router 与 MCP 共享。"""
     result = pipeline.synthesizer.run(
         user_query=req.user_query,
         retrieved_graph_memories=req.graph_results,
         retrieved_skills=req.skill_results,
     )
 
-    # 将嵌套的 provenance 展开为扁平列表
     provenance_raw = result.get("provenance", [])
     provenance_flat: list[dict] = []
     for item in provenance_raw:
@@ -145,6 +146,91 @@ async def memory_synthesize(
         kept_count=kept_count,
         dropped_count=dropped_count,
     )
+
+
+def run_memory_consolidate(
+    pipeline,
+    req: MemoryConsolidateRequest,
+    *,
+    user_id: str = "",
+) -> MemoryConsolidateResponse:
+    """执行长期记忆固化，供 HTTP Router 与 MCP 共享。"""
+    import threading
+
+    log = pipeline.wm_manager.session_store.get_or_create(
+        req.session_id,
+        user_id=user_id,
+    )
+    turns = [t for t in log.turns if not t.get("deleted", False)]
+    if not turns:
+        return MemoryConsolidateResponse(
+            status="skipped",
+            skipped_reason="session_empty",
+            steps=[{"name": "session_check", "status": "skipped", "detail": "会话无有效对话轮次"}],
+        )
+
+    if req.background:
+        def _run() -> None:
+            try:
+                pipeline.consolidator.run(
+                    turns=turns,
+                    session_id=req.session_id,
+                    retrieved_context=req.retrieved_context,
+                    user_id=user_id,
+                )
+            except Exception:
+                logger.exception("background consolidation failed session=%s", req.session_id)
+
+        thread = threading.Thread(
+            target=_run,
+            daemon=True,
+            name=f"consolidate-{req.session_id[:8]}",
+        )
+        thread.start()
+        return MemoryConsolidateResponse(status="started")
+
+    result = pipeline.consolidator.run(
+        turns=turns,
+        session_id=req.session_id,
+        retrieved_context=req.retrieved_context,
+        user_id=user_id,
+    )
+    return MemoryConsolidateResponse(
+        status="skipped" if result.get("skipped_reason") else "done",
+        entities_added=result.get("entities_added", 0),
+        skills_added=result.get("skills_added", 0),
+        facts_added=result.get("facts_added", 0),
+        has_novelty=result.get("has_novelty"),
+        skipped_reason=result.get("skipped_reason"),
+        steps=result.get("steps", []),
+    )
+
+
+# ── Memory: Search ──
+
+
+@router.post("/memory/search", response_model=MemorySearchResponse)
+async def memory_search(req: MemorySearchRequest, pipeline=Depends(get_pipeline), user=Depends(get_optional_user)):
+    """统一记忆检索：同时查询图谱和技能库。"""
+    user_id = user.user_id if user else ""
+    return run_memory_search(pipeline, req, user_id=user_id)
+
+
+# ── Memory: Synthesize ──
+
+
+@router.post("/memory/synthesize", response_model=MemorySynthesizeResponse)
+async def memory_synthesize(
+    req: MemorySynthesizeRequest,
+    pipeline=Depends(get_pipeline),
+    user=Depends(get_optional_user),
+):
+    """对多源检索结果进行 LLM-as-Judge 评分与融合，生成 background_context。
+
+    典型用法：衔接 POST /memory/search 的响应，将 graph_results / skill_results 传入。
+    输出的 background_context 和 skill_reuse_plan 可直接传给 POST /memory/reason。
+    """
+    return run_memory_synthesize(pipeline, req)
 
 
 # ── Memory: Reason ──
@@ -222,54 +308,8 @@ async def memory_consolidate(
         与 Pipeline 内部行为一致，适合生产调用（固化耗时通常超过 60 秒）。
     background=False：同步等待完成后返回详细结果，适合调试/验证。
     """
-    import threading
-
     user_id = user.user_id if user else ""
-    log = pipeline.wm_manager.session_store.get_or_create(
-        req.session_id, user_id=user_id
-    )
-    # 仅传入未被软删除的有效轮次
-    turns = [t for t in log.turns if not t.get("deleted", False)]
-    if not turns:
-        return MemoryConsolidateResponse(
-            status="skipped",
-            skipped_reason="session_empty",
-            steps=[{"name": "session_check", "status": "skipped", "detail": "会话无有效对话轮次"}],
-        )
-
-    if req.background:
-        # 后台线程触发（fire-and-forget），与 LycheePipeline.run() 内部行为一致
-        def _run() -> None:
-            try:
-                pipeline.consolidator.run(
-                    turns=turns,
-                    session_id=req.session_id,
-                    retrieved_context=req.retrieved_context,
-                    user_id=user_id,
-                )
-            except Exception:
-                logger.exception("background consolidation failed session=%s", req.session_id)
-
-        t = threading.Thread(target=_run, daemon=True, name=f"consolidate-{req.session_id[:8]}")
-        t.start()
-        return MemoryConsolidateResponse(status="started")
-
-    # 同步执行（background=False）
-    result = pipeline.consolidator.run(
-        turns=turns,
-        session_id=req.session_id,
-        retrieved_context=req.retrieved_context,
-        user_id=user_id,
-    )
-    return MemoryConsolidateResponse(
-        status="skipped" if result.get("skipped_reason") else "done",
-        entities_added=result.get("entities_added", 0),
-        skills_added=result.get("skills_added", 0),
-        facts_added=result.get("facts_added", 0),
-        has_novelty=result.get("has_novelty"),
-        skipped_reason=result.get("skipped_reason"),
-        steps=result.get("steps", []),
-    )
+    return run_memory_consolidate(pipeline, req, user_id=user_id)
 
 
 # ── Memory: Graph ──

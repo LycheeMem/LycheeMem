@@ -37,6 +37,7 @@ from src.api.routers.chat import router as chat_router
 from src.api.routers.memory import router as memory_router
 from src.api.routers.pipeline import router as pipeline_router
 from src.api.routers.session import router as session_router
+from src.mcp.server import register_mcp_routes
 
 logger = logging.getLogger("src.api")
 
@@ -112,6 +113,7 @@ def create_app(pipeline=None, *, user_store=None) -> FastAPI:
     app.include_router(session_router)
     app.include_router(memory_router)
     app.include_router(pipeline_router)
+    if pipeline is not None:
+        register_mcp_routes(app, app.state.pipeline)
 
     return app
-

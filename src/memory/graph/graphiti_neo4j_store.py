@@ -14,10 +14,27 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import datetime
+import re
 import uuid
 from typing import Any
 
 from src.memory.graph.graphiti_schema import CypherStatement, schema_statements
+
+
+_LUCENE_SPECIAL_CHARS_RE = re.compile(r'(?<!\\)([+\-!(){}\[\]^"~*?:\\/&|])')
+
+
+def escape_lucene_query(query: str) -> str:
+    """Escape Lucene special characters for Neo4j fulltext queries.
+
+    Neo4j fulltext indexes use Lucene query syntax, so raw user text like
+    ``CI/CD`` can raise TokenMgrError unless reserved characters are escaped.
+    """
+    text = str(query or "").strip()
+    if not text:
+        return ""
+    text = _LUCENE_SPECIAL_CHARS_RE.sub(r"\\\1", text)
+    return text
 
 
 class GraphitiNeo4jStore:
@@ -338,9 +355,15 @@ class GraphitiNeo4jStore:
     def fulltext_search_entities(
         self, *, query: str, limit: int = 10, user_id: str = ""
     ) -> list[dict[str, Any]]:
+        escaped_query = escape_lucene_query(query)
+        if not escaped_query:
+            return []
         with self._driver.session(database=self._database) as session:
             rs = session.run(
-                self.fulltext_search_entities_cypher(), q=query, limit=limit, user_id=user_id
+                self.fulltext_search_entities_cypher(),
+                q=escaped_query,
+                limit=limit,
+                user_id=user_id,
             )
             return [dict(r) for r in rs]
 
@@ -1044,9 +1067,15 @@ class GraphitiNeo4jStore:
     def fulltext_search_facts(
         self, *, query: str, limit: int = 10, user_id: str = ""
     ) -> list[dict[str, Any]]:
+        escaped_query = escape_lucene_query(query)
+        if not escaped_query:
+            return []
         with self._driver.session(database=self._database) as session:
             rs = session.run(
-                self.fulltext_search_facts_cypher(), q=query, limit=limit, user_id=user_id
+                self.fulltext_search_facts_cypher(),
+                q=escaped_query,
+                limit=limit,
+                user_id=user_id,
             )
             return [dict(r) for r in rs]
 
@@ -1150,8 +1179,16 @@ class GraphitiNeo4jStore:
         )
 
     def fulltext_search_communities(self, *, query: str, limit: int = 10, user_id: str = "") -> list[dict[str, Any]]:
+        escaped_query = escape_lucene_query(query)
+        if not escaped_query:
+            return []
         with self._driver.session(database=self._database) as session:
-            rs = session.run(self.fulltext_search_communities_cypher(), q=query, limit=limit, user_id=user_id)
+            rs = session.run(
+                self.fulltext_search_communities_cypher(),
+                q=escaped_query,
+                limit=limit,
+                user_id=user_id,
+            )
             return [dict(r) for r in rs]
 
     def vector_search_communities(
