@@ -9,8 +9,10 @@ uv.lock
 node_modules
 .next
 data
+appdata
 .ruff_cache
 .github
 dist
 logs
 import
+debug.md
