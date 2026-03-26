@@ -15,22 +15,22 @@ TOOLS_SCHEMA = [
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "检索问题，自然语言。",
+                    "description": "Natural-language memory query.",
                 },
                 "top_k": {
                     "type": "integer",
                     "default": 5,
-                    "description": "每个来源最多返回条数。",
+                    "description": "Maximum number of results to return per source.",
                 },
                 "include_graph": {
                     "type": "boolean",
                     "default": True,
-                    "description": "是否检索图谱记忆（实体、关系、事实）。",
+                    "description": "Whether to include graph memory: entities, relations, and facts.",
                 },
                 "include_skills": {
                     "type": "boolean",
                     "default": True,
-                    "description": "是否检索技能库（程序性工作流）。",
+                    "description": "Whether to include procedural skill memory.",
                 },
             },
             "required": ["query"],
@@ -48,15 +48,15 @@ TOOLS_SCHEMA = [
             "properties": {
                 "user_query": {
                     "type": "string",
-                    "description": "当前用户问题，用于相关性打分。",
+                    "description": "Current user query used for relevance scoring.",
                 },
                 "graph_results": {
                     "type": "array",
-                    "description": "来自 lychee_memory_search 的 graph_results。",
+                    "description": "graph_results returned by lychee_memory_search.",
                 },
                 "skill_results": {
                     "type": "array",
-                    "description": "来自 lychee_memory_search 的 skill_results。",
+                    "description": "skill_results returned by lychee_memory_search.",
                 },
             },
             "required": ["user_query", "graph_results", "skill_results"],
@@ -74,17 +74,17 @@ TOOLS_SCHEMA = [
             "properties": {
                 "session_id": {
                     "type": "string",
-                    "description": "当前会话 ID。",
+                    "description": "Existing session ID that already contains persisted turns.",
                 },
                 "retrieved_context": {
                     "type": "string",
                     "default": "",
-                    "description": "本轮 synthesize 输出的 background_context，用于新颖性判断。",
+                    "description": "background_context from the current synthesize step, used for novelty checks.",
                 },
                 "background": {
                     "type": "boolean",
                     "default": True,
-                    "description": "true 表示后台异步执行，false 表示同步等待完成。",
+                    "description": "True runs consolidation asynchronously; false waits for completion.",
                 },
             },
             "required": ["session_id"],

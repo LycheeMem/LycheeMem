@@ -18,28 +18,35 @@ LycheeMem is a cognitive memory system for long-horizon AI agents, providing per
 ---
 
 <div align="center" style="margin: 20px 0; font-size: 14px; color: #586069;">
+  <a href="#news" style="text-decoration: none; color: #0366d6; margin: 0 8px;">News</a>
+  •
+  <a href="#coming-soon" style="text-decoration: none; color: #0366d6; margin: 0 8px;">Coming Soon</a>
+  •
   <a href="#memory-architecture" style="text-decoration: none; color: #0366d6; margin: 0 8px;">Memory Architecture</a>
   •
   <a href="#pipeline" style="text-decoration: none; color: #0366d6; margin: 0 8px;">Pipeline</a>
   •
   <a href="#quick-start" style="text-decoration: none; color: #0366d6; margin: 0 8px;">Quick Start</a>
   •
-  <a href="#api-reference" style="text-decoration: none; color: #0366d6; margin: 0 8px;">API Reference</a>
-  •
   <a href="#web-demo" style="text-decoration: none; color: #0366d6; margin: 0 8px;">Web Demo</a>
+  •
+  <a href="#mcp" style="text-decoration: none; color: #0366d6; margin: 0 8px;">MCP</a>
+  •
+  <a href="#api-reference" style="text-decoration: none; color: #0366d6; margin: 0 8px;">API Reference</a>
 </div>
 
 ---
 
 ## 🔥 News
 
-• [03/23/2026] 🎉 **LycheeMem is now Open Source!** [GitHub Repository →](https://github.com/LycheeMem/LycheeMem)
+- [03/26/2026] MCP support is available at [/mcp](#mcp) !
+- [03/23/2026] LycheeMem is now open source: [GitHub Repository](https://github.com/LycheeMem/LycheeMem)
 
 ---
 
 ## 🚀 Coming Soon
 
-📢 **OpenClaw Plugin is Coming!** — Save your tokens and optimize memory efficiency! Stay tuned!
+📢 **OpenClaw Plugin and Skill is Coming!** — Save your tokens and optimize memory efficiency! Stay tuned!
 
 ---
 
@@ -274,6 +281,128 @@ The API is served at `http://localhost:8000`. Interactive docs at `/docs`.
 
 ---
 
+## 🎨 Web Demo
+
+A frontend demo is included under `web-demo/`. It provides a chat interface alongside live views of the knowledge graph, skill library, and working memory state.
+
+```bash
+cd web-demo
+npm install
+npm run dev      # served at http://localhost:5173
+```
+
+> Make sure the backend is running on port 8000 (or update proxy settings in `web-demo/vite.config.ts`) before starting the frontend.
+
+---
+
+## MCP
+
+LycheeMem also exposes an HTTP MCP endpoint at `http://localhost:8000/mcp`.
+
+- Available tools: `lychee_memory_search`, `lychee_memory_synthesize`, `lychee_memory_consolidate`
+- Use `Authorization: Bearer <token>` if you want per-user memory isolation
+- `lychee_memory_consolidate` only works for sessions that were already written through `/chat` or `/memory/reason`
+
+### MCP Transport
+
+- `POST /mcp` handles JSON-RPC requests
+- `GET /mcp` exposes the SSE stream used by some MCP clients
+- The server returns `Mcp-Session-Id` during `initialize`; reuse that header on later requests
+
+### Authentication
+
+If you want isolated memory per user, first obtain a JWT token from `/auth/register` or `/auth/login`, then send:
+
+```text
+Authorization: Bearer <token>
+```
+
+Without a token, requests run with an empty `user_id`, so anonymous traffic shares the same namespace.
+
+### Client Configuration
+
+For any MCP client that supports remote HTTP servers, configure the MCP URL as:
+
+```text
+http://localhost:8000/mcp
+```
+
+Generic config example:
+
+```json
+{
+  "mcpServers": {
+    "lycheemem": {
+      "url": "http://localhost:8000/mcp",
+      "headers": {
+        "Authorization": "Bearer <token>"
+      }
+    }
+  }
+}
+```
+
+### Manual JSON-RPC Flow
+
+1. Call `initialize`
+2. Reuse the returned `Mcp-Session-Id`
+3. Send `initialized`
+4. Call `tools/list`
+5. Call `tools/call`
+
+Initialize example:
+
+```bash
+curl -i -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2025-03-26",
+      "capabilities": {},
+      "clientInfo": {
+        "name": "debug-client",
+        "version": "0.1.0"
+      }
+    }
+  }'
+```
+
+Tool call example:
+
+```bash
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -H "Mcp-Session-Id: <session-id>" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/call",
+    "params": {
+      "name": "lychee_memory_search",
+      "arguments": {
+        "query": "what tools do I use for database backups",
+        "top_k": 5,
+        "include_graph": true,
+        "include_skills": true
+      }
+    }
+  }'
+```
+
+### Recommended MCP Usage Pattern
+
+1. Use `/chat` or `/memory/reason` with a stable `session_id` to write conversation turns.
+2. Use `lychee_memory_search` to retrieve relevant long-term memory.
+3. Use `lychee_memory_synthesize` to compress retrieval results into `background_context`.
+4. After the conversation ends, call `lychee_memory_consolidate` with the same `session_id`.
+
+---
+
 ## 🔌 API Reference
 
 ### `POST /memory/search` — Unified Memory Retrieval
@@ -377,17 +506,3 @@ python examples/api_pipeline_demo.py --username alice --password secret123 \
 # Use a fixed session_id (useful for accumulating history across multiple runs)
 python examples/api_pipeline_demo.py --session-id my-test-session
 ```
-
----
-
-## 🎨 Web Demo
-
-A frontend demo is included under `web-demo/`. It provides a chat interface alongside live views of the knowledge graph, skill library, and working memory state.
-
-```bash
-cd web-demo
-npm install
-npm run dev      # served at http://localhost:5173
-```
-
-> Make sure the backend is running on port 8000 (or update proxy settings in `web-demo/vite.config.ts`) before starting the frontend.
