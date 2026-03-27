@@ -37,6 +37,8 @@ LycheeMem is a cognitive memory system for long-horizon AI agents, providing per
 
 ---
 
+<a id="news"></a>
+
 ## 🔥 News
 
 - [03/27/2026] OpenClaw Plugin is now available at [/openclaw-plugin](#openclaw-plugin) ! [Setup guide →](openclaw-plugin/INSTALL_OPENCLAW.md)
@@ -44,6 +46,8 @@ LycheeMem is a cognitive memory system for long-horizon AI agents, providing per
 - [03/23/2026] LycheeMem is now open source: [GitHub Repository →](https://github.com/LycheeMem/LycheeMem)
 
 ---
+
+<a id="memory-architecture"></a>
 
 ## 📚 Memory Architecture
 
@@ -145,6 +149,8 @@ Skill retrieval uses **HyDE (Hypothetical Document Embeddings)**: the query is f
 
 ---
 
+<a id="pipeline"></a>
+
 ## ⚙️ Pipeline
 
 Every request passes through a fixed sequence of five agents. Four are synchronous stages in the LangGraph pipeline; one is a background post-processing task.
@@ -209,6 +215,8 @@ Triggered immediately after `ReasoningAgent` completes, runs in a thread pool an
 4. Optionally triggers periodic `refresh_communities_for_session()`.
 
 ---
+
+<a id="quick-start"></a>
 
 ## ⚡ Quick Start
 
@@ -276,6 +284,8 @@ The API is served at `http://localhost:8000`. Interactive docs at `/docs`.
 
 ---
 
+<a id="web-demo"></a>
+
 ## 🎨 Web Demo
 
 A frontend demo is included under `web-demo/`. It provides a chat interface alongside live views of the knowledge graph, skill library, and working memory state.
@@ -289,6 +299,8 @@ npm run dev      # served at http://localhost:5173
 > Make sure the backend is running on port 8000 (or update proxy settings in `web-demo/vite.config.ts`) before starting the frontend.
 
 ---
+
+<a id="openclaw-plugin"></a>
 
 ## 🐾 OpenClaw Plugin
 
@@ -426,6 +438,8 @@ curl -X POST http://localhost:8000/mcp \
 4. After the conversation ends, call `lychee_memory_consolidate` with the same `session_id`.
 
 ---
+
+<a id="api-reference"></a>
 
 ## 🔌 API Reference
 
