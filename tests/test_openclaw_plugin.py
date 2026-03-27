@@ -109,3 +109,113 @@ def test_plugin_search_and_synthesize_over_mcp():
     assert search_result["total"] == 2
     assert synthesize_result["background_context"] == "Short background"
     assert call_count["initialize"] == 1
+
+
+def test_plugin_smart_search_over_mcp():
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = request.read().decode()
+        if request.url.path != "/mcp":
+            raise AssertionError(f"unexpected path: {request.url.path}")
+
+        if '"method":"initialize"' in payload or '"method": "initialize"' in payload:
+            return httpx.Response(
+                200,
+                headers={"Mcp-Session-Id": "mcp-session-1"},
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "init",
+                    "result": {"protocolVersion": "2025-03-26"},
+                },
+            )
+        if '"method":"initialized"' in payload or '"method": "initialized"' in payload:
+            return httpx.Response(200, json={"jsonrpc": "2.0"})
+        if '"name":"lychee_memory_smart_search"' in payload or '"name": "lychee_memory_smart_search"' in payload:
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "lychee_memory_smart_search",
+                    "result": {
+                        "structuredContent": {
+                            "query": "long-term project context",
+                            "mode": "compact",
+                            "graph_results": [{"anchor": {"node_id": "graphiti_context"}}],
+                            "skill_results": [{"id": "skill-1"}],
+                            "total": 2,
+                            "synthesized": True,
+                            "background_context": "Short background",
+                            "skill_reuse_plan": [{"skill_id": "skill-1"}],
+                            "provenance": [{"fact_id": "fact-1"}],
+                            "kept_count": 1,
+                            "dropped_count": 1,
+                        }
+                    },
+                },
+            )
+        raise AssertionError(f"unexpected payload: {payload}")
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.Client(transport=transport, timeout=5.0)
+    client = LycheeMemPluginClient(
+        PluginConfig(base_url="http://lychee.local", transport="mcp", timeout=5.0),
+        http_client=http_client,
+    )
+
+    result = client.smart_search("long-term project context", mode="compact")
+
+    assert result["mode"] == "compact"
+    assert result["synthesized"] is True
+    assert result["background_context"] == "Short background"
+    assert result["total"] == 2
+
+
+def test_plugin_append_turn_over_mcp():
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = request.read().decode()
+        if request.url.path != "/mcp":
+            raise AssertionError(f"unexpected path: {request.url.path}")
+
+        if '"method":"initialize"' in payload or '"method": "initialize"' in payload:
+            return httpx.Response(
+                200,
+                headers={"Mcp-Session-Id": "mcp-session-1"},
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "init",
+                    "result": {"protocolVersion": "2025-03-26"},
+                },
+            )
+        if '"method":"initialized"' in payload or '"method": "initialized"' in payload:
+            return httpx.Response(200, json={"jsonrpc": "2.0"})
+        if '"name":"lychee_memory_append_turn"' in payload or '"name": "lychee_memory_append_turn"' in payload:
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "lychee_memory_append_turn",
+                    "result": {
+                        "structuredContent": {
+                            "status": "appended",
+                            "session_id": "session-1",
+                            "turn_count": 2,
+                        }
+                    },
+                },
+            )
+        raise AssertionError(f"unexpected payload: {payload}")
+
+    transport = httpx.MockTransport(handler)
+    http_client = httpx.Client(transport=transport, timeout=5.0)
+    client = LycheeMemPluginClient(
+        PluginConfig(base_url="http://lychee.local", transport="mcp", timeout=5.0),
+        http_client=http_client,
+    )
+
+    result = client.append_turn(
+        session_id="session-1",
+        role="assistant",
+        content="已记录",
+    )
+
+    assert result["status"] == "appended"
+    assert result["turn_count"] == 2

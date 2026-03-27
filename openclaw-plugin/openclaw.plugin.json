@@ -23,6 +23,30 @@
       "apiToken": {
         "type": "string",
         "default": ""
+      },
+      "enableHostLifecycle": {
+        "type": "boolean",
+        "default": true
+      },
+      "enablePromptPresence": {
+        "type": "boolean",
+        "default": true
+      },
+      "enableAutoAppendTurns": {
+        "type": "boolean",
+        "default": true
+      },
+      "enableBoundaryConsolidation": {
+        "type": "boolean",
+        "default": true
+      },
+      "enableProactiveConsolidation": {
+        "type": "boolean",
+        "default": true
+      },
+      "proactiveConsolidationCooldownSeconds": {
+        "type": "number",
+        "default": 180
       }
     }
   },
@@ -46,6 +70,36 @@
       "label": "API Token",
       "sensitive": true,
       "placeholder": "Bearer token for authenticated LycheeMem access"
+    },
+    "enableHostLifecycle": {
+      "label": "Enable Host Lifecycle",
+      "advanced": true,
+      "help": "Automatically wire OpenClaw lifecycle events into LycheeMem append/consolidate flows."
+    },
+    "enablePromptPresence": {
+      "label": "Inject Prompt Presence",
+      "advanced": true,
+      "help": "Add cached system guidance so LycheeMem is treated as the default long-term memory layer."
+    },
+    "enableAutoAppendTurns": {
+      "label": "Auto Append Turns",
+      "advanced": true,
+      "help": "Mirror natural-language user and assistant messages into LycheeMem automatically."
+    },
+    "enableBoundaryConsolidation": {
+      "label": "Boundary Consolidation",
+      "advanced": true,
+      "help": "Trigger background consolidation on /new, /reset, and /stop boundaries."
+    },
+    "enableProactiveConsolidation": {
+      "label": "Proactive Consolidation",
+      "advanced": true,
+      "help": "Also trigger background consolidation after important new long-term knowledge appears in the conversation."
+    },
+    "proactiveConsolidationCooldownSeconds": {
+      "label": "Proactive Cooldown",
+      "advanced": true,
+      "help": "Minimum seconds between proactive consolidations in the same LycheeMem session."
     }
   }
 }

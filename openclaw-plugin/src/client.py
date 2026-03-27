@@ -61,6 +61,35 @@ class LycheeMemPluginClient:
         self._raise_for_status(response, "LycheeMem search failed")
         return response.json()
 
+    def smart_search(
+        self,
+        query: str,
+        *,
+        top_k: int = 5,
+        include_graph: bool = True,
+        include_skills: bool = True,
+        synthesize: bool = True,
+        mode: str = "compact",
+    ) -> dict[str, Any]:
+        payload = {
+            "query": query,
+            "top_k": top_k,
+            "include_graph": include_graph,
+            "include_skills": include_skills,
+            "synthesize": synthesize,
+            "mode": mode,
+        }
+        if self.config.transport == "mcp":
+            return self._call_mcp_tool("lychee_memory_smart_search", payload)
+
+        response = self._http.post(
+            f"{self.config.base_url.rstrip('/')}/memory/smart-search",
+            json=payload,
+            headers=self._headers(),
+        )
+        self._raise_for_status(response, "LycheeMem smart_search failed")
+        return response.json()
+
     def synthesize(
         self,
         *,
@@ -82,6 +111,31 @@ class LycheeMemPluginClient:
             headers=self._headers(),
         )
         self._raise_for_status(response, "LycheeMem synthesize failed")
+        return response.json()
+
+    def append_turn(
+        self,
+        *,
+        session_id: str,
+        role: str,
+        content: str,
+        token_count: int = 0,
+    ) -> dict[str, Any]:
+        payload = {
+            "session_id": session_id,
+            "role": role,
+            "content": content,
+            "token_count": token_count,
+        }
+        if self.config.transport == "mcp":
+            return self._call_mcp_tool("lychee_memory_append_turn", payload)
+
+        response = self._http.post(
+            f"{self.config.base_url.rstrip('/')}/memory/append-turn",
+            json=payload,
+            headers=self._headers(),
+        )
+        self._raise_for_status(response, "LycheeMem append_turn failed")
         return response.json()
 
     def consolidate(

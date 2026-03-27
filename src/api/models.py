@@ -284,6 +284,15 @@ class MemorySearchResponse(BaseModel):
     total: int
 
 
+class MemorySmartSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=1000)
+    top_k: int = Field(default=5, ge=1, le=50)
+    include_graph: bool = True
+    include_skills: bool = True
+    synthesize: bool = True
+    mode: str = Field(default="compact", pattern="^(raw|full|compact)$")
+
+
 # ─── Memory Synthesize ───
 
 
@@ -302,6 +311,20 @@ class MemorySynthesizeResponse(BaseModel):
     """记忆合成响应。"""
 
     background_context: str
+    skill_reuse_plan: list[dict[str, Any]] = []
+    provenance: list[dict[str, Any]] = []
+    kept_count: int = 0
+    dropped_count: int = 0
+
+
+class MemorySmartSearchResponse(BaseModel):
+    query: str
+    mode: str = "compact"
+    graph_results: list[dict[str, Any]]
+    skill_results: list[dict[str, Any]]
+    total: int
+    synthesized: bool = False
+    background_context: str = ""
     skill_reuse_plan: list[dict[str, Any]] = []
     provenance: list[dict[str, Any]] = []
     kept_count: int = 0
@@ -336,6 +359,24 @@ class MemoryReasonResponse(BaseModel):
     response: str
     session_id: str
     wm_token_usage: int = 0
+
+
+# ─── Memory Append Turn ───
+
+
+class MemoryAppendTurnRequest(BaseModel):
+    """向 LycheeMem session store 追加外部宿主对话轮次。"""
+
+    session_id: str = Field(..., min_length=1, max_length=128)
+    role: str = Field(..., min_length=1, max_length=32)
+    content: str = Field(..., min_length=1, max_length=100_000)
+    token_count: int = Field(default=0, ge=0, le=1_000_000)
+
+
+class MemoryAppendTurnResponse(BaseModel):
+    status: str = "appended"
+    session_id: str
+    turn_count: int = 0
 
 
 # ─── Memory Consolidate ───

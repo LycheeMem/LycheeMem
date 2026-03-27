@@ -19,3 +19,6 @@ services:
       - ./data:/data        # 挂载数据目录（重要：防止容器删除后数据丢失）
       - ./logs:/logs        # 挂载日志目录
       - ./import:/var/lib/neo4j/import # 如果你有CSV文件想导入，可以放这里
+
+
+      
