@@ -20,8 +20,6 @@ LycheeMem is a cognitive memory system for long-horizon AI agents, providing per
 <div align="center" style="margin: 20px 0; font-size: 14px; color: #586069;">
   <a href="#news" style="text-decoration: none; color: #0366d6; margin: 0 8px;">News</a>
   •
-  <a href="#coming-soon" style="text-decoration: none; color: #0366d6; margin: 0 8px;">Coming Soon</a>
-  •
   <a href="#memory-architecture" style="text-decoration: none; color: #0366d6; margin: 0 8px;">Memory Architecture</a>
   •
   <a href="#pipeline" style="text-decoration: none; color: #0366d6; margin: 0 8px;">Pipeline</a>
@@ -29,6 +27,8 @@ LycheeMem is a cognitive memory system for long-horizon AI agents, providing per
   <a href="#quick-start" style="text-decoration: none; color: #0366d6; margin: 0 8px;">Quick Start</a>
   •
   <a href="#web-demo" style="text-decoration: none; color: #0366d6; margin: 0 8px;">Web Demo</a>
+  •
+  <a href="#openclaw-plugin" style="text-decoration: none; color: #0366d6; margin: 0 8px;">OpenClaw Plugin</a>
   •
   <a href="#mcp" style="text-decoration: none; color: #0366d6; margin: 0 8px;">MCP</a>
   •
@@ -39,14 +39,9 @@ LycheeMem is a cognitive memory system for long-horizon AI agents, providing per
 
 ## 🔥 News
 
+- [03/27/2026] OpenClaw Plugin is now available at [/openclaw-plugin](#openclaw-plugin) ! [Setup guide →](openclaw-plugin/INSTALL_OPENCLAW.md)
 - [03/26/2026] MCP support is available at [/mcp](#mcp) !
-- [03/23/2026] LycheeMem is now open source: [GitHub Repository](https://github.com/LycheeMem/LycheeMem)
-
----
-
-## 🚀 Coming Soon
-
-📢 **OpenClaw Plugin and Skill is Coming!** — Save your tokens and optimize memory efficiency! Stay tuned!
+- [03/23/2026] LycheeMem is now open source: [GitHub Repository →](https://github.com/LycheeMem/LycheeMem)
 
 ---
 
@@ -292,6 +287,35 @@ npm run dev      # served at http://localhost:5173
 ```
 
 > Make sure the backend is running on port 8000 (or update proxy settings in `web-demo/vite.config.ts`) before starting the frontend.
+
+---
+
+## 🐾 OpenClaw Plugin
+
+LycheeMem ships a native [OpenClaw](https://openclaw.ai) plugin that gives any OpenClaw session persistent long-term memory with zero manual wiring.
+
+**What the plugin provides:**
+
+- `lychee_memory_smart_search` — default long-term memory retrieval entry point
+- **Automatic turn mirroring** via hooks — the model does **not** need to call `append_turn` manually
+  - User messages are appended automatically
+  - Assistant messages are appended automatically
+- `/new`, `/reset`, `/stop`, and `session_end` automatically trigger boundary consolidation
+- Proactive consolidation on strong long-term knowledge signals
+
+**Under normal operation:**
+- The model only calls `lychee_memory_smart_search` when recalling long-term context
+- The model may call `lychee_memory_consolidate` manually when an immediate persist is warranted
+- The model does **not** need to call `lychee_memory_append_turn` at all
+
+### Quick Install
+
+```bash
+openclaw plugins install "/path/to/LycheeMem/openclaw-plugin"
+openclaw gateway restart
+```
+
+See the full setup guide: [openclaw-plugin/INSTALL_OPENCLAW.md](openclaw-plugin/INSTALL_OPENCLAW.md)
 
 ---
 
