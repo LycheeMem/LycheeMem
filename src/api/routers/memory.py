@@ -14,6 +14,8 @@ from src.api.models import (
     FactEdgesResponse,
     GraphEdgeAddRequest,
     GraphNodeAddRequest,
+    MemoryAppendTurnRequest,
+    MemoryAppendTurnResponse,
     GraphResponse,
     MemoryConsolidateRequest,
     MemoryConsolidateResponse,
@@ -21,6 +23,8 @@ from src.api.models import (
     MemoryReasonResponse,
     MemorySearchRequest,
     MemorySearchResponse,
+    MemorySmartSearchRequest,
+    MemorySmartSearchResponse,
     MemorySynthesizeRequest,
     MemorySynthesizeResponse,
     SkillsResponse,
@@ -148,6 +152,104 @@ def run_memory_synthesize(
     )
 
 
+def run_memory_smart_search(
+    pipeline,
+    req: MemorySmartSearchRequest,
+    *,
+    user_id: str = "",
+) -> MemorySmartSearchResponse:
+    """执行 one-shot 检索；可选自动 synthesize，便于宿主快速试验效果。"""
+    search_result = run_memory_search(
+        pipeline,
+        MemorySearchRequest(
+            query=req.query,
+            top_k=req.top_k,
+            include_graph=req.include_graph,
+            include_skills=req.include_skills,
+        ),
+        user_id=user_id,
+    )
+
+    if not req.synthesize:
+        return MemorySmartSearchResponse(
+            query=search_result.query,
+            mode=req.mode,
+            graph_results=search_result.graph_results,
+            skill_results=search_result.skill_results,
+            total=search_result.total,
+            synthesized=False,
+        )
+
+    if req.mode == "raw":
+        return MemorySmartSearchResponse(
+            query=search_result.query,
+            mode=req.mode,
+            graph_results=search_result.graph_results,
+            skill_results=search_result.skill_results,
+            total=search_result.total,
+            synthesized=False,
+        )
+
+    synth_result = run_memory_synthesize(
+        pipeline,
+        MemorySynthesizeRequest(
+            user_query=req.query,
+            graph_results=search_result.graph_results,
+            skill_results=search_result.skill_results,
+        ),
+    )
+    if req.mode == "compact":
+        return MemorySmartSearchResponse(
+            query=search_result.query,
+            mode=req.mode,
+            graph_results=[],
+            skill_results=[],
+            total=search_result.total,
+            synthesized=True,
+            background_context=synth_result.background_context,
+            skill_reuse_plan=synth_result.skill_reuse_plan,
+            provenance=synth_result.provenance,
+            kept_count=synth_result.kept_count,
+            dropped_count=synth_result.dropped_count,
+        )
+
+    return MemorySmartSearchResponse(
+        query=search_result.query,
+        mode=req.mode,
+        graph_results=search_result.graph_results,
+        skill_results=search_result.skill_results,
+        total=search_result.total,
+        synthesized=True,
+        background_context=synth_result.background_context,
+        skill_reuse_plan=synth_result.skill_reuse_plan,
+        provenance=synth_result.provenance,
+        kept_count=synth_result.kept_count,
+        dropped_count=synth_result.dropped_count,
+    )
+
+
+def run_memory_append_turn(
+    pipeline,
+    req: MemoryAppendTurnRequest,
+    *,
+    user_id: str = "",
+) -> MemoryAppendTurnResponse:
+    """向 session store 追加单条宿主对话轮次，供后续 consolidate 使用。"""
+    pipeline.wm_manager.session_store.append_turn(
+        req.session_id,
+        req.role,
+        req.content,
+        token_count=req.token_count,
+        user_id=user_id,
+    )
+    log = pipeline.wm_manager.session_store.get_or_create(req.session_id, user_id=user_id)
+    return MemoryAppendTurnResponse(
+        status="appended",
+        session_id=req.session_id,
+        turn_count=len(log.turns),
+    )
+
+
 def run_memory_consolidate(
     pipeline,
     req: MemoryConsolidateRequest,
@@ -216,6 +318,17 @@ async def memory_search(req: MemorySearchRequest, pipeline=Depends(get_pipeline)
     return run_memory_search(pipeline, req, user_id=user_id)
 
 
+@router.post("/memory/smart-search", response_model=MemorySmartSearchResponse)
+async def memory_smart_search(
+    req: MemorySmartSearchRequest,
+    pipeline=Depends(get_pipeline),
+    user=Depends(get_optional_user),
+):
+    """实验性 one-shot 检索包装器：search，可选自动 synthesize。"""
+    user_id = user.user_id if user else ""
+    return run_memory_smart_search(pipeline, req, user_id=user_id)
+
+
 # ── Memory: Synthesize ──
 
 
@@ -231,6 +344,20 @@ async def memory_synthesize(
     输出的 background_context 和 skill_reuse_plan 可直接传给 POST /memory/reason。
     """
     return run_memory_synthesize(pipeline, req)
+
+
+# ── Memory: Append Turn ──
+
+
+@router.post("/memory/append-turn", response_model=MemoryAppendTurnResponse)
+async def memory_append_turn(
+    req: MemoryAppendTurnRequest,
+    pipeline=Depends(get_pipeline),
+    user=Depends(get_optional_user),
+):
+    """追加单条外部宿主对话轮次，为后续 consolidate 提供 transcript bridge。"""
+    user_id = user.user_id if user else ""
+    return run_memory_append_turn(pipeline, req, user_id=user_id)
 
 
 # ── Memory: Reason ──
