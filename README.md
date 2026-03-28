@@ -13,7 +13,7 @@
 </div>
 
 
-LycheeMem is a cognitive memory system for long-horizon AI agents, providing persistent, structured, and temporally-aware memory. It models memory the way humans use it — distinguishing what you remember *happening* from what you have come to *know* — and makes those memories available at inference time through a multi-stage reasoning pipeline.
+LycheeMem is a compact memory framework for LLM agents. It starts from efficient conversational memory—through structured organization, lightweight consolidation, and adaptive retrieval—and gradually extends toward action-aware, usage-aware memory for more capable agentic systems.
 
 ---
 
@@ -73,11 +73,11 @@ LycheeMem organizes memory into three complementary stores:
         </ul>
       </td>
       <td>
-        <p>(Compact Action-Aware Store)</p>
+        <p>(Typed Action Store)</p>
         <ul>
-          <li>7 MemoryUnit types</li>
-          <li>Online Pragmatic Synthesis</li>
-          <li>Action-Aware Retrieval Planning</li>
+          <li>7 MemoryRecord types</li>
+          <li>Record Fusion</li>
+          <li>Task-Aware Retrieval Planning</li>
           <li>RL-ready usage statistics</li>
         </ul>
       </td>
@@ -103,11 +103,11 @@ Compression produces *summary anchors* (past context, distilled) + *raw recent t
 
 ### 🗺️ Semantic Memory — Compact Semantic Memory
 
-Semantic memory uses an **action-aware compact encoding** scheme. The storage layer is SQLite (FTS5 full-text search) + LanceDB (vector index).
+Semantic memory is organised around **typed, action-annotated MemoryRecords**. The storage layer is SQLite (FTS5 full-text search) + LanceDB (vector index).
 
-#### Memory Unit Types
+#### Memory Record Types
 
-Each memory entry is stored as a `MemoryUnit`. The `memory_type` field distinguishes seven semantic categories:
+Each memory entry is stored as a `MemoryRecord`. The `memory_type` field distinguishes seven semantic categories:
 
 | Type | Description |
 |------|-------------|
@@ -119,33 +119,33 @@ Each memory entry is stored as a `MemoryUnit`. The `memory_type` field distingui
 | `failure_pattern` | Previously failed action paths and their causes |
 | `tool_affordance` | Capabilities and applicable scenarios of tools/APIs |
 
-Beyond text, every `MemoryUnit` carries **action-facing metadata** (`tool_tags`, `constraint_tags`, `failure_tags`, `affordance_tags`) and **usage statistics** (`retrieval_count`, `action_success_count`, etc.) to seed future reinforcement-learning signals.
+Beyond text, every `MemoryRecord` carries **action-facing metadata** (`tool_tags`, `constraint_tags`, `failure_tags`, `affordance_tags`) and **usage statistics** (`retrieval_count`, `action_success_count`, etc.) to seed future reinforcement-learning signals.
 
-Related `MemoryUnit`s can be merged online by the **Pragmatic Synthesizer** into a denser `SynthesizedUnit`; synthesized entries are ranked above source fragments during retrieval.
+Related `MemoryRecord`s can be fused online by the **Record Fusion Engine** into a denser `CompositeRecord`; composite entries are ranked above source fragments during retrieval.
 
 #### Four-Module Pipeline
 
-##### Module 1: Compact Semantic Encoding
+##### Module 1: Typed Memory Encoding
 
-A three-stage sequential pipeline that converts conversation turns into a list of `MemoryUnit`s:
+A single-pass pipeline that converts conversation turns into a list of `MemoryRecord`s:
 
-1. **Atomic extraction** — LLM extracts minimal self-contained facts; each memory entry stands alone as a complete sentence.
+1. **Typed extraction** — LLM extracts self-contained facts and assigns a semantic category to each record.
 2. **Decontextualization** — Pronouns and context-dependent phrases are expanded into full expressions, so each unit is understandable without the original dialogue.
-3. **Action metadata annotation** — LLM annotates each unit with `memory_type`, `tool_tags`, `constraint_tags`, `failure_tags`, `affordance_tags`, and other structured labels.
+3. **Action metadata annotation** — LLM annotates each record with `memory_type`, `tool_tags`, `constraint_tags`, `failure_tags`, `affordance_tags`, and other structured labels.
 
-`unit_id = SHA256(normalized_text)` — naturally idempotent; duplicate content is deduplicated automatically.
+`record_id = SHA256(normalized_text)` — naturally idempotent; duplicate content is deduplicated automatically.
 
-##### Module 2: Pragmatic Memory Synthesis
+##### Module 2: Record Fusion
 
 Triggered online after each consolidation:
 
-1. FTS detects existing entries whose text is similar to the new units (candidate pool).
+1. FTS detects existing entries whose text is similar to the new records (candidate pool).
 2. LLM judges whether the candidate pool is worth merging (`synthesis_judge`).
-3. If yes, LLM executes the merge and produces a `SynthesizedUnit` written to both SQLite and LanceDB; original units are retained.
+3. If yes, LLM executes the merge and produces a `CompositeRecord` written to both SQLite and LanceDB; original records are retained.
 
-##### Module 3: Action-Aware Retrieval Planning
+##### Module 3: Task-Aware Retrieval Planning
 
-Before retrieval, `ActionAwareRetrievalPlanner` analyses the user query and emits a `RetrievalPlan`:
+Before retrieval, `TaskAwareRetrievalPlanner` analyses the user query and emits a `SearchPlan`:
 
 - `mode`: `answer` (factual Q&A) / `action` (needs execution) / `mixed`
 - `semantic_queries`: content-facing search terms
@@ -156,11 +156,11 @@ Before retrieval, `ActionAwareRetrievalPlanner` analyses the user query and emit
 
 The plan drives five-channel recall -> Scorer ranking:
 
-1. **FTS channel** — SQLite FTS5 keyword recall over `MemoryUnit` + `SynthesizedUnit`
+1. **FTS channel** — SQLite FTS5 keyword recall over `MemoryRecord` + `CompositeRecord`
 2. **Semantic vector channel** — LanceDB ANN over `semantic_text` embeddings
 3. **Normalised vector channel** — LanceDB ANN over `normalized_text` embeddings (for pragmatic queries)
 4. **Tag filter channel** — exact filter by `tool_hints` / `constraint_tags`
-5. **Temporal channel** — filter by `RetrievalPlan.temporal_filter` time window
+5. **Temporal channel** — filter by `SearchPlan.temporal_filter` time window
 
 Scorer combines all signals using the formula:
 
@@ -232,7 +232,7 @@ Rule-based agent (no LLM prompt). Appends the user turn to the session log, coun
 
 ### Stage 2 — SearchCoordinator
 
-`ActionAwareRetrievalPlanner` first analyses the user query and produces a `RetrievalPlan` containing `mode`, `semantic_queries`, `pragmatic_queries`, `tool_hints`, and more. Five parallel recall channels (FTS full-text, semantic vector, normalised vector, tag filter, temporal filter) then query SQLite + LanceDB, and the resulting candidates are ranked by the six-dimensional Scorer formula before being merged into `background_context`. Skill sub-queries use HyDE embedding against the skill store.
+`TaskAwareRetrievalPlanner` first analyses the user query and produces a `SearchPlan` containing `mode`, `semantic_queries`, `pragmatic_queries`, `tool_hints`, and more. Five parallel recall channels (FTS full-text, semantic vector, normalised vector, tag filter, temporal filter) then query SQLite + LanceDB, and the resulting candidates are ranked by the six-dimensional Scorer formula before being merged into `background_context`. Skill sub-queries use HyDE embedding against the skill store.
 
 ### Stage 3 — SynthesizerAgent
 
@@ -247,7 +247,7 @@ Receives `compressed_history`, `background_context`, and `skill_reuse_plan` and 
 Triggered immediately after `ReasoningAgent` completes, runs in a thread pool and **does not block the response**. It:
 
 1. Performs a **novelty check** — LLM judges whether the conversation introduced new information worth persisting. Skips consolidation for pure retrieval exchanges.
-2. **Compact consolidation** — calls `CompactSemanticEngine.ingest_conversation()`, which runs the three-stage encoder (atomic extraction → decontextualization → action metadata annotation), writes `MemoryUnit`s to SQLite + LanceDB, then triggers online Pragmatic Synthesis to merge similar entries into `SynthesizedUnit`s.
+2. **Compact consolidation** — calls `CompactSemanticEngine.ingest_conversation()`, which runs a single-pass encoder (typed extraction → decontextualization → action metadata annotation), writes `MemoryRecord`s to SQLite + LanceDB, then triggers Record Fusion to merge related entries into `CompositeRecord`s.
 3. **Skill extraction** — identifies successful tool-usage patterns in the conversation and adds skill entries to the skill store. Runs in parallel with compact consolidation (ThreadPoolExecutor).
 
 ---

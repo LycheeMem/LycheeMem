@@ -70,7 +70,7 @@ def create_pipeline(
         sqlite_db_path=getattr(settings, "compact_memory_db_path", "data/compact_memory.db"),
         vector_db_path=getattr(settings, "compact_vector_db_path", "data/compact_vector"),
         dedup_threshold=getattr(settings, "compact_dedup_threshold", 0.85),
-        synthesis_min_units=getattr(settings, "compact_synthesis_min_units", 2),
+        synthesis_min_records=getattr(settings, "compact_synthesis_min_records", 2),
         synthesis_similarity=getattr(settings, "compact_synthesis_similarity", 0.75),
         embedding_dim=getattr(settings, "embedding_dim", 1536),
     )

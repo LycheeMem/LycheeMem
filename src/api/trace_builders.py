@@ -44,15 +44,15 @@ def _build_search_trace(result: dict[str, Any]) -> SearchCoordinatorTrace:
                 if not isinstance(pv, dict):
                     continue
                 semantic_text = str(pv.get("semantic_text") or "").strip()
-                unit_id = str(pv.get("unit_id") or "").strip()
+                record_id = str(pv.get("record_id") or "").strip()
                 memory_type = str(pv.get("memory_type") or "")
                 score = float(pv.get("score") or 0.0)
                 entities = pv.get("entities") or []
                 entity_summary = ", ".join(str(e) for e in entities[:3]) if entities else ""
-                display_name = semantic_text[:120] if semantic_text else unit_id
+                display_name = semantic_text[:120] if semantic_text else record_id
                 graph_hits.append(
                     GraphMemoryHit(
-                        node_id=unit_id,
+                        node_id=record_id,
                         name=display_name,
                         label=memory_type,
                         score=score,
@@ -132,7 +132,7 @@ def _build_synthesizer_trace(result: dict[str, Any]) -> SynthesizerTrace:
         if not isinstance(source_eps, list):
             source_eps = []
         
-        # 优先使用 provenance item 中的 source（compact 为 "unit"/"synth"，graphiti 为具体类型）
+        # 优先使用 provenance item 中的 source（compact 为 "record"/"composite"，graphiti 为具体类型）
         # 如果 source 为 graphiti_retrieval，说明这是从 search_coordinator 传来的包装结构
         wrapper_source = str(p.get("source") or "")
         legacy_summary = str(p.get("summary") or "")

@@ -24,9 +24,9 @@ class SemanticSearchResult:
 class ConsolidationResult:
     """固化返回的统一结构。"""
 
-    units_added: int
-    units_merged: int
-    units_expired: int
+    records_added: int
+    records_merged: int
+    records_expired: int
     steps: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -56,7 +56,7 @@ class BaseSemanticMemoryEngine(ABC):
             top_k: 返回条目上限。
             query_embedding: 预计算的 query 向量。
             user_id: 用户 ID（多用户隔离）。
-            retrieval_plan: Action-Aware Retrieval Plan 的 dict 表示（可选）。
+            retrieval_plan: Task-Aware Retrieval Plan (SearchPlan) 的 dict 表示（可选）。
 
         Returns:
             SemanticSearchResult 包含格式化 context 和 provenance。
@@ -90,7 +90,7 @@ class BaseSemanticMemoryEngine(ABC):
         """清空指定用户的所有语义记忆。
 
         Returns:
-            dict 包含删除计数，如 {"units_deleted": N, "synth_deleted": M}。
+            dict 包含删除计数，如 {"records_deleted": N, "composites_deleted": M}。
         """
 
     @abstractmethod
@@ -98,5 +98,5 @@ class BaseSemanticMemoryEngine(ABC):
         """导出全量数据用于调试 / 前端展示。
 
         Returns:
-            dict 包含 units / synthesized / stats 等。
+            dict 包含 records / composites / stats 等。
         """

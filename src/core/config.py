@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     compact_memory_db_path: str = "data/compact_memory.db"
     compact_vector_db_path: str = "data/compact_vector"
     compact_dedup_threshold: float = 0.85
-    compact_synthesis_min_units: int = 2
+    compact_synthesis_min_records: int = 2
     compact_synthesis_similarity: float = 0.75
 
     # ─── File Skill Store (轻量级向量持久化) ───

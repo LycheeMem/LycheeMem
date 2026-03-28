@@ -1,10 +1,10 @@
 """SQLite + FTS5 结构化存储。
 
 职责：
-- memory_units 表：MemoryUnit 主存储
-- synthesized_units 表：SynthesizedUnit 合成条目
-- memory_units_fts：FTS5 全文索引（覆盖 normalized_text + entities + tags）
-- synthesized_units_fts：FTS5 全文索引
+- memory_records 表：MemoryRecord 主存储
+- composite_records 表：CompositeRecord 聚合条目
+- memory_records_fts：FTS5 全文索引（覆盖 normalized_text + entities + tags）
+- composite_records_fts：FTS5 全文索引
 - usage_logs 表：检索使用记录
 
 所有写操作线程安全（sqlite3 + threading.Lock）。
@@ -18,7 +18,7 @@ import sqlite3
 import threading
 from typing import Any
 
-from src.memory.semantic.models import MemoryUnit, SynthesizedUnit, UsageLog
+from src.memory.semantic.models import MemoryRecord, CompositeRecord, UsageLog
 
 
 def _json_dumps(obj: Any) -> str:
@@ -65,8 +65,8 @@ class SQLiteSemanticStore:
         with self._lock:
             c = self._conn
             c.executescript("""
-                CREATE TABLE IF NOT EXISTS memory_units (
-                    unit_id          TEXT PRIMARY KEY,
+                CREATE TABLE IF NOT EXISTS memory_records (
+                    record_id        TEXT PRIMARY KEY,
                     memory_type      TEXT NOT NULL,
                     semantic_text    TEXT NOT NULL,
                     normalized_text  TEXT NOT NULL,
@@ -94,12 +94,12 @@ class SQLiteSemanticStore:
                     expired_reason   TEXT NOT NULL DEFAULT ''
                 );
 
-                CREATE TABLE IF NOT EXISTS synthesized_units (
-                    synth_id         TEXT PRIMARY KEY,
+                CREATE TABLE IF NOT EXISTS composite_records (
+                    composite_id     TEXT PRIMARY KEY,
                     memory_type      TEXT NOT NULL,
                     semantic_text    TEXT NOT NULL,
                     normalized_text  TEXT NOT NULL,
-                    source_unit_ids  TEXT NOT NULL DEFAULT '[]',
+                    source_record_ids TEXT NOT NULL DEFAULT '[]',
                     synthesis_reason TEXT NOT NULL DEFAULT '',
                     entities         TEXT NOT NULL DEFAULT '[]',
                     temporal         TEXT NOT NULL DEFAULT '{}',
@@ -126,24 +126,24 @@ class SQLiteSemanticStore:
                     timestamp        TEXT NOT NULL,
                     query            TEXT NOT NULL,
                     retrieval_plan   TEXT NOT NULL DEFAULT '{}',
-                    retrieved_unit_ids TEXT NOT NULL DEFAULT '[]',
-                    kept_unit_ids    TEXT NOT NULL DEFAULT '[]',
+                    retrieved_record_ids TEXT NOT NULL DEFAULT '[]',
+                    kept_record_ids  TEXT NOT NULL DEFAULT '[]',
                     final_response_excerpt TEXT NOT NULL DEFAULT '',
                     user_feedback    TEXT NOT NULL DEFAULT '',
                     action_outcome   TEXT NOT NULL DEFAULT ''
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_mu_user_id ON memory_units(user_id);
-                CREATE INDEX IF NOT EXISTS idx_mu_memory_type ON memory_units(memory_type);
-                CREATE INDEX IF NOT EXISTS idx_mu_expired ON memory_units(expired);
-                CREATE INDEX IF NOT EXISTS idx_mu_created_at ON memory_units(created_at);
-                CREATE INDEX IF NOT EXISTS idx_su_user_id ON synthesized_units(user_id);
+                CREATE INDEX IF NOT EXISTS idx_mr_user_id ON memory_records(user_id);
+                CREATE INDEX IF NOT EXISTS idx_mr_memory_type ON memory_records(memory_type);
+                CREATE INDEX IF NOT EXISTS idx_mr_expired ON memory_records(expired);
+                CREATE INDEX IF NOT EXISTS idx_mr_created_at ON memory_records(created_at);
+                CREATE INDEX IF NOT EXISTS idx_cr_user_id ON composite_records(user_id);
                 CREATE INDEX IF NOT EXISTS idx_ul_session ON usage_logs(session_id);
             """)
 
             # 兼容旧库：若 source_role 列不存在则追加（ALTER TABLE 幂等）
             try:
-                c.execute("ALTER TABLE memory_units ADD COLUMN source_role TEXT NOT NULL DEFAULT ''")
+                c.execute("ALTER TABLE memory_records ADD COLUMN source_role TEXT NOT NULL DEFAULT ''")
                 c.commit()
             except sqlite3.OperationalError:
                 pass  # 列已存在
@@ -151,8 +151,8 @@ class SQLiteSemanticStore:
             # FTS5 虚拟表（分开创建避免 IF NOT EXISTS 不兼容问题）
             try:
                 c.execute("""
-                    CREATE VIRTUAL TABLE memory_units_fts USING fts5(
-                        unit_id UNINDEXED,
+                    CREATE VIRTUAL TABLE memory_records_fts USING fts5(
+                        record_id UNINDEXED,
                         normalized_text,
                         entities,
                         task_tags,
@@ -160,7 +160,7 @@ class SQLiteSemanticStore:
                         constraint_tags,
                         failure_tags,
                         affordance_tags,
-                        content=memory_units,
+                        content=memory_records,
                         content_rowid=rowid,
                         tokenize='unicode61'
                     )
@@ -170,14 +170,14 @@ class SQLiteSemanticStore:
 
             try:
                 c.execute("""
-                    CREATE VIRTUAL TABLE synthesized_units_fts USING fts5(
-                        synth_id UNINDEXED,
+                    CREATE VIRTUAL TABLE composite_records_fts USING fts5(
+                        composite_id UNINDEXED,
                         normalized_text,
                         entities,
                         task_tags,
                         tool_tags,
                         constraint_tags,
-                        content=synthesized_units,
+                        content=composite_records,
                         content_rowid=rowid,
                         tokenize='unicode61'
                     )
@@ -188,16 +188,16 @@ class SQLiteSemanticStore:
             c.commit()
 
     # ──────────────────────────────────────
-    # Memory Unit CRUD
+    # MemoryRecord CRUD
     # ──────────────────────────────────────
 
-    def upsert_unit(self, unit: MemoryUnit) -> None:
-        """写入或更新一个 MemoryUnit（幂等）。"""
+    def upsert_record(self, record: MemoryRecord) -> None:
+        """写入或更新一个 MemoryRecord（幂等）。"""
         with self._lock:
             self._conn.execute(
                 """
-                INSERT INTO memory_units (
-                    unit_id, memory_type, semantic_text, normalized_text,
+                INSERT INTO memory_records (
+                    record_id, memory_type, semantic_text, normalized_text,
                     entities, temporal, task_tags, tool_tags,
                     constraint_tags, failure_tags, affordance_tags,
                     confidence, evidence_turn_range, source_session, source_role, user_id,
@@ -217,7 +217,7 @@ class SQLiteSemanticStore:
                     ?,
                     ?, ?, ?
                 )
-                ON CONFLICT(unit_id) DO UPDATE SET
+                ON CONFLICT(record_id) DO UPDATE SET
                     memory_type = excluded.memory_type,
                     semantic_text = excluded.semantic_text,
                     normalized_text = excluded.normalized_text,
@@ -237,81 +237,81 @@ class SQLiteSemanticStore:
                     expired_reason = excluded.expired_reason
                 """,
                 (
-                    unit.unit_id, unit.memory_type,
-                    unit.semantic_text, unit.normalized_text,
-                    _json_dumps(unit.entities), _json_dumps(unit.temporal),
-                    _json_dumps(unit.task_tags), _json_dumps(unit.tool_tags),
-                    _json_dumps(unit.constraint_tags), _json_dumps(unit.failure_tags),
-                    _json_dumps(unit.affordance_tags),
-                    unit.confidence, _json_dumps(unit.evidence_turn_range),
-                    unit.source_session, unit.source_role, unit.user_id,
-                    unit.created_at, unit.updated_at,
-                    unit.retrieval_count, unit.retrieval_hit_count,
-                    unit.action_success_count, unit.action_fail_count,
-                    unit.last_retrieved_at,
-                    int(unit.expired), unit.expired_at, unit.expired_reason,
+                    record.record_id, record.memory_type,
+                    record.semantic_text, record.normalized_text,
+                    _json_dumps(record.entities), _json_dumps(record.temporal),
+                    _json_dumps(record.task_tags), _json_dumps(record.tool_tags),
+                    _json_dumps(record.constraint_tags), _json_dumps(record.failure_tags),
+                    _json_dumps(record.affordance_tags),
+                    record.confidence, _json_dumps(record.evidence_turn_range),
+                    record.source_session, record.source_role, record.user_id,
+                    record.created_at, record.updated_at,
+                    record.retrieval_count, record.retrieval_hit_count,
+                    record.action_success_count, record.action_fail_count,
+                    record.last_retrieved_at,
+                    int(record.expired), record.expired_at, record.expired_reason,
                 ),
             )
             # 同步 FTS5
             self._conn.execute(
-                "INSERT OR REPLACE INTO memory_units_fts(rowid, unit_id, "
+                "INSERT OR REPLACE INTO memory_records_fts(rowid, record_id, "
                 "normalized_text, entities, task_tags, tool_tags, "
                 "constraint_tags, failure_tags, affordance_tags) "
-                "SELECT rowid, unit_id, normalized_text, entities, task_tags, "
+                "SELECT rowid, record_id, normalized_text, entities, task_tags, "
                 "tool_tags, constraint_tags, failure_tags, affordance_tags "
-                "FROM memory_units WHERE unit_id = ?",
-                (unit.unit_id,),
+                "FROM memory_records WHERE record_id = ?",
+                (record.record_id,),
             )
             self._conn.commit()
 
-    def upsert_units(self, units: list[MemoryUnit]) -> None:
-        """批量写入 MemoryUnit。"""
-        for u in units:
-            self.upsert_unit(u)
+    def upsert_records(self, records: list[MemoryRecord]) -> None:
+        """批量写入 MemoryRecord。"""
+        for u in records:
+            self.upsert_record(u)
 
-    def get_unit(self, unit_id: str) -> MemoryUnit | None:
-        """按 ID 获取单个 MemoryUnit。"""
+    def get_record(self, record_id: str) -> MemoryRecord | None:
+        """按 ID 获取单个 MemoryRecord。"""
         row = self._conn.execute(
-            "SELECT * FROM memory_units WHERE unit_id = ?", (unit_id,)
+            "SELECT * FROM memory_records WHERE record_id = ?", (record_id,)
         ).fetchone()
         if row is None:
             return None
-        return self._row_to_unit(row)
+        return self._row_to_record(row)
 
-    def get_units_by_ids(self, unit_ids: list[str]) -> list[MemoryUnit]:
+    def get_records_by_ids(self, record_ids: list[str]) -> list[MemoryRecord]:
         """按 ID 列表批量获取。"""
-        if not unit_ids:
+        if not record_ids:
             return []
-        placeholders = ",".join("?" for _ in unit_ids)
+        placeholders = ",".join("?" for _ in record_ids)
         rows = self._conn.execute(
-            f"SELECT * FROM memory_units WHERE unit_id IN ({placeholders})",
-            unit_ids,
+            f"SELECT * FROM memory_records WHERE record_id IN ({placeholders})",
+            record_ids,
         ).fetchall()
-        return [self._row_to_unit(r) for r in rows]
+        return [self._row_to_record(r) for r in rows]
 
-    def delete_unit(self, unit_id: str, *, user_id: str = "") -> None:
-        """硬删除一个 MemoryUnit。"""
+    def delete_record(self, record_id: str, *, user_id: str = "") -> None:
+        """硬删除一个 MemoryRecord。"""
         with self._lock:
             if user_id:
                 self._conn.execute(
-                    "DELETE FROM memory_units WHERE unit_id = ? AND user_id = ?",
-                    (unit_id, user_id),
+                    "DELETE FROM memory_records WHERE record_id = ? AND user_id = ?",
+                    (record_id, user_id),
                 )
             else:
                 self._conn.execute(
-                    "DELETE FROM memory_units WHERE unit_id = ?", (unit_id,)
+                    "DELETE FROM memory_records WHERE record_id = ?", (record_id,)
                 )
             self._conn.commit()
 
-    def expire_unit(
-        self, unit_id: str, *, expired_at: str = "", expired_reason: str = "",
+    def expire_record(
+        self, record_id: str, *, expired_at: str = "", expired_reason: str = "",
     ) -> None:
         """软删除（标记过期）。"""
         with self._lock:
             self._conn.execute(
-                "UPDATE memory_units SET expired = 1, expired_at = ?, expired_reason = ? "
-                "WHERE unit_id = ?",
-                (expired_at, expired_reason, unit_id),
+                "UPDATE memory_records SET expired = 1, expired_at = ?, expired_reason = ? "
+                "WHERE record_id = ?",
+                (expired_at, expired_reason, record_id),
             )
             self._conn.commit()
 
@@ -319,22 +319,22 @@ class SQLiteSemanticStore:
         """清空指定用户的所有数据。"""
         with self._lock:
             c1 = self._conn.execute(
-                "SELECT COUNT(*) FROM memory_units WHERE user_id = ?", (user_id,)
+                "SELECT COUNT(*) FROM memory_records WHERE user_id = ?", (user_id,)
             ).fetchone()[0]
             c2 = self._conn.execute(
-                "SELECT COUNT(*) FROM synthesized_units WHERE user_id = ?", (user_id,)
+                "SELECT COUNT(*) FROM composite_records WHERE user_id = ?", (user_id,)
             ).fetchone()[0]
             self._conn.execute(
-                "DELETE FROM memory_units WHERE user_id = ?", (user_id,)
+                "DELETE FROM memory_records WHERE user_id = ?", (user_id,)
             )
             self._conn.execute(
-                "DELETE FROM synthesized_units WHERE user_id = ?", (user_id,)
+                "DELETE FROM composite_records WHERE user_id = ?", (user_id,)
             )
             self._conn.execute(
                 "DELETE FROM usage_logs WHERE user_id = ?", (user_id,)
             )
             self._conn.commit()
-        return {"units_deleted": c1, "synth_deleted": c2}
+        return {"records_deleted": c1, "composites_deleted": c2}
 
     # ──────────────────────────────────────
     # FTS5 全文检索
@@ -349,16 +349,16 @@ class SQLiteSemanticStore:
         memory_types: list[str] | None = None,
         include_expired: bool = False,
     ) -> list[dict[str, Any]]:
-        """BM25 全文召回 MemoryUnit。"""
+        """BM25 全文召回 MemoryRecord。"""
         fts_query = self._escape_fts_query(query)
         if not fts_query:
             return []
 
         sql = (
-            "SELECT m.*, bm25(memory_units_fts) AS fts_score "
-            "FROM memory_units_fts f "
-            "JOIN memory_units m ON f.rowid = m.rowid "
-            "WHERE memory_units_fts MATCH ? "
+            "SELECT m.*, bm25(memory_records_fts) AS fts_score "
+            "FROM memory_records_fts f "
+            "JOIN memory_records m ON f.rowid = m.rowid "
+            "WHERE memory_records_fts MATCH ? "
         )
         params: list[Any] = [fts_query]
 
@@ -385,16 +385,16 @@ class SQLiteSemanticStore:
         limit: int = 10,
         user_id: str = "",
     ) -> list[dict[str, Any]]:
-        """BM25 全文召回 SynthesizedUnit。"""
+        """BM25 全文召回复合记录。"""
         fts_query = self._escape_fts_query(query)
         if not fts_query:
             return []
 
         sql = (
-            "SELECT s.*, bm25(synthesized_units_fts) AS fts_score "
-            "FROM synthesized_units_fts f "
-            "JOIN synthesized_units s ON f.rowid = s.rowid "
-            "WHERE synthesized_units_fts MATCH ? "
+            "SELECT s.*, bm25(composite_records_fts) AS fts_score "
+            "FROM composite_records_fts f "
+            "JOIN composite_records s ON f.rowid = s.rowid "
+            "WHERE composite_records_fts MATCH ? "
         )
         params: list[Any] = [fts_query]
 
@@ -421,8 +421,8 @@ class SQLiteSemanticStore:
         user_id: str = "",
         include_expired: bool = False,
     ) -> list[dict[str, Any]]:
-        """按创建时间范围查询 MemoryUnit。"""
-        sql = "SELECT * FROM memory_units WHERE 1=1 "
+        """按创建时间范围查询 MemoryRecord。"""
+        sql = "SELECT * FROM memory_records WHERE 1=1 "
         params: list[Any] = []
 
         if user_id:
@@ -459,7 +459,7 @@ class SQLiteSemanticStore:
         include_expired: bool = False,
     ) -> list[dict[str, Any]]:
         """按 tag 字段做 LIKE 匹配查询。"""
-        sql = "SELECT * FROM memory_units WHERE 1=1 "
+        sql = "SELECT * FROM memory_records WHERE 1=1 "
         params: list[Any] = []
 
         if user_id:
@@ -488,28 +488,28 @@ class SQLiteSemanticStore:
         return [self._row_to_dict(r) for r in rows]
 
     # ──────────────────────────────────────
-    # Synthesized Unit CRUD
+    # CompositeRecord CRUD
     # ──────────────────────────────────────
 
-    def upsert_synthesized(self, unit: SynthesizedUnit) -> None:
-        """写入或更新 SynthesizedUnit。"""
+    def upsert_synthesized(self, composite: CompositeRecord) -> None:
+        """写入或更新 CompositeRecord。"""
         with self._lock:
             self._conn.execute(
                 """
-                INSERT INTO synthesized_units (
-                    synth_id, memory_type, semantic_text, normalized_text,
-                    source_unit_ids, synthesis_reason,
+                INSERT INTO composite_records (
+                    composite_id, memory_type, semantic_text, normalized_text,
+                    source_record_ids, synthesis_reason,
                     entities, temporal, task_tags, tool_tags,
                     constraint_tags, failure_tags, affordance_tags,
                     confidence, user_id, created_at, updated_at,
                     retrieval_count, retrieval_hit_count,
                     action_success_count, action_fail_count, last_retrieved_at
                 ) VALUES (?, ?, ?, ?,  ?, ?,  ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?,  ?, ?,  ?, ?, ?)
-                ON CONFLICT(synth_id) DO UPDATE SET
+                ON CONFLICT(composite_id) DO UPDATE SET
                     memory_type = excluded.memory_type,
                     semantic_text = excluded.semantic_text,
                     normalized_text = excluded.normalized_text,
-                    source_unit_ids = excluded.source_unit_ids,
+                    source_record_ids = excluded.source_record_ids,
                     synthesis_reason = excluded.synthesis_reason,
                     entities = excluded.entities,
                     temporal = excluded.temporal,
@@ -522,50 +522,50 @@ class SQLiteSemanticStore:
                     updated_at = excluded.updated_at
                 """,
                 (
-                    unit.synth_id, unit.memory_type,
-                    unit.semantic_text, unit.normalized_text,
-                    _json_dumps(unit.source_unit_ids), unit.synthesis_reason,
-                    _json_dumps(unit.entities), _json_dumps(unit.temporal),
-                    _json_dumps(unit.task_tags), _json_dumps(unit.tool_tags),
-                    _json_dumps(unit.constraint_tags), _json_dumps(unit.failure_tags),
-                    _json_dumps(unit.affordance_tags),
-                    unit.confidence, unit.user_id, unit.created_at, unit.updated_at,
-                    unit.retrieval_count, unit.retrieval_hit_count,
-                    unit.action_success_count, unit.action_fail_count,
-                    unit.last_retrieved_at,
+                    composite.composite_id, composite.memory_type,
+                    composite.semantic_text, composite.normalized_text,
+                    _json_dumps(composite.source_record_ids), composite.synthesis_reason,
+                    _json_dumps(composite.entities), _json_dumps(composite.temporal),
+                    _json_dumps(composite.task_tags), _json_dumps(composite.tool_tags),
+                    _json_dumps(composite.constraint_tags), _json_dumps(composite.failure_tags),
+                    _json_dumps(composite.affordance_tags),
+                    composite.confidence, composite.user_id, composite.created_at, composite.updated_at,
+                    composite.retrieval_count, composite.retrieval_hit_count,
+                    composite.action_success_count, composite.action_fail_count,
+                    composite.last_retrieved_at,
                 ),
             )
             # 同步 FTS5
             self._conn.execute(
-                "INSERT OR REPLACE INTO synthesized_units_fts(rowid, synth_id, "
+                "INSERT OR REPLACE INTO composite_records_fts(rowid, composite_id, "
                 "normalized_text, entities, task_tags, tool_tags, constraint_tags) "
-                "SELECT rowid, synth_id, normalized_text, entities, task_tags, "
+                "SELECT rowid, composite_id, normalized_text, entities, task_tags, "
                 "tool_tags, constraint_tags "
-                "FROM synthesized_units WHERE synth_id = ?",
-                (unit.synth_id,),
+                "FROM composite_records WHERE composite_id = ?",
+                (composite.composite_id,),
             )
             self._conn.commit()
 
     def get_synthesized_by_source(
-        self, source_unit_ids: list[str],
-    ) -> list[SynthesizedUnit]:
-        """查找包含指定 source_unit_id 的合成条目。"""
-        if not source_unit_ids:
+        self, source_record_ids: list[str],
+    ) -> list[CompositeRecord]:
+        """查找包含指定 source_record_id 的合成条目。"""
+        if not source_record_ids:
             return []
         rows = self._conn.execute(
-            "SELECT * FROM synthesized_units"
+            "SELECT * FROM composite_records"
         ).fetchall()
         results = []
         for r in rows:
-            stored_ids = _json_loads(r["source_unit_ids"])
-            if any(uid in stored_ids for uid in source_unit_ids):
+            stored_ids = _json_loads(r["source_record_ids"])
+            if any(uid in stored_ids for uid in source_record_ids):
                 results.append(self._row_to_synth(r))
         return results
 
-    def get_synthesized(self, synth_id: str) -> SynthesizedUnit | None:
-        """按 synth_id 获取单个 SynthesizedUnit。"""
+    def get_synthesized(self, composite_id: str) -> CompositeRecord | None:
+        """按 composite_id 获取单个 CompositeRecord。"""
         row = self._conn.execute(
-            "SELECT * FROM synthesized_units WHERE synth_id = ?", (synth_id,)
+            "SELECT * FROM composite_records WHERE composite_id = ?", (composite_id,)
         ).fetchone()
         if row is None:
             return None
@@ -581,16 +581,16 @@ class SQLiteSemanticStore:
         *,
         user_id: str = "",
         limit: int = 5,
-    ) -> list[MemoryUnit]:
+    ) -> list[MemoryRecord]:
         """FTS5 模糊匹配，用于写入时去重。"""
         fts_query = self._escape_fts_query(normalized_text)
         if not fts_query:
             return []
 
         sql = (
-            "SELECT m.* FROM memory_units_fts f "
-            "JOIN memory_units m ON f.rowid = m.rowid "
-            "WHERE memory_units_fts MATCH ? AND m.expired = 0 "
+            "SELECT m.* FROM memory_records_fts f "
+            "JOIN memory_records m ON f.rowid = m.rowid "
+            "WHERE memory_records_fts MATCH ? AND m.expired = 0 "
         )
         params: list[Any] = [fts_query]
         if user_id:
@@ -600,7 +600,7 @@ class SQLiteSemanticStore:
         params.append(limit)
 
         rows = self._conn.execute(sql, params).fetchall()
-        return [self._row_to_unit(r) for r in rows]
+        return [self._row_to_record(r) for r in rows]
 
     # ──────────────────────────────────────
     # Usage Logs
@@ -612,14 +612,14 @@ class SQLiteSemanticStore:
             self._conn.execute(
                 "INSERT OR IGNORE INTO usage_logs "
                 "(log_id, session_id, user_id, timestamp, query, "
-                "retrieval_plan, retrieved_unit_ids, kept_unit_ids, "
+                "retrieval_plan, retrieved_record_ids, kept_record_ids, "
                 "final_response_excerpt, user_feedback, action_outcome) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     log.log_id, log.session_id, log.user_id, log.timestamp,
                     log.query, _json_dumps(log.retrieval_plan),
-                    _json_dumps(log.retrieved_unit_ids),
-                    _json_dumps(log.kept_unit_ids),
+                    _json_dumps(log.retrieved_record_ids),
+                    _json_dumps(log.kept_record_ids),
                     log.final_response_excerpt,
                     log.user_feedback, log.action_outcome,
                 ),
@@ -643,8 +643,8 @@ class SQLiteSemanticStore:
                 timestamp=r["timestamp"],
                 query=r["query"],
                 retrieval_plan=_json_loads_dict(r["retrieval_plan"]),
-                retrieved_unit_ids=_json_loads(r["retrieved_unit_ids"]),
-                kept_unit_ids=_json_loads(r["kept_unit_ids"]),
+                retrieved_record_ids=_json_loads(r["retrieved_record_ids"]),
+                kept_record_ids=_json_loads(r["kept_record_ids"]),
                 final_response_excerpt=r["final_response_excerpt"],
                 user_feedback=r["user_feedback"],
                 action_outcome=r["action_outcome"],
@@ -656,61 +656,61 @@ class SQLiteSemanticStore:
     # 使用统计批量更新
     # ──────────────────────────────────────
 
-    def increment_retrieval_count(self, unit_ids: list[str]) -> None:
-        if not unit_ids:
+    def increment_retrieval_count(self, record_ids: list[str]) -> None:
+        if not record_ids:
             return
         with self._lock:
-            placeholders = ",".join("?" for _ in unit_ids)
+            placeholders = ",".join("?" for _ in record_ids)
             self._conn.execute(
-                f"UPDATE memory_units SET retrieval_count = retrieval_count + 1 "
-                f"WHERE unit_id IN ({placeholders})",
-                unit_ids,
+                f"UPDATE memory_records SET retrieval_count = retrieval_count + 1 "
+                f"WHERE record_id IN ({placeholders})",
+                record_ids,
             )
             self._conn.execute(
-                f"UPDATE synthesized_units SET retrieval_count = retrieval_count + 1 "
-                f"WHERE synth_id IN ({placeholders})",
-                unit_ids,
+                f"UPDATE composite_records SET retrieval_count = retrieval_count + 1 "
+                f"WHERE composite_id IN ({placeholders})",
+                record_ids,
             )
             self._conn.commit()
 
-    def increment_hit_count(self, unit_ids: list[str]) -> None:
-        if not unit_ids:
+    def increment_hit_count(self, record_ids: list[str]) -> None:
+        if not record_ids:
             return
         with self._lock:
-            placeholders = ",".join("?" for _ in unit_ids)
+            placeholders = ",".join("?" for _ in record_ids)
             self._conn.execute(
-                f"UPDATE memory_units SET retrieval_hit_count = retrieval_hit_count + 1 "
-                f"WHERE unit_id IN ({placeholders})",
-                unit_ids,
+                f"UPDATE memory_records SET retrieval_hit_count = retrieval_hit_count + 1 "
+                f"WHERE record_id IN ({placeholders})",
+                record_ids,
             )
             self._conn.execute(
-                f"UPDATE synthesized_units SET retrieval_hit_count = retrieval_hit_count + 1 "
-                f"WHERE synth_id IN ({placeholders})",
-                unit_ids,
-            )
-            self._conn.commit()
-
-    def increment_action_success(self, unit_ids: list[str]) -> None:
-        if not unit_ids:
-            return
-        with self._lock:
-            placeholders = ",".join("?" for _ in unit_ids)
-            self._conn.execute(
-                f"UPDATE memory_units SET action_success_count = action_success_count + 1 "
-                f"WHERE unit_id IN ({placeholders})",
-                unit_ids,
+                f"UPDATE composite_records SET retrieval_hit_count = retrieval_hit_count + 1 "
+                f"WHERE composite_id IN ({placeholders})",
+                record_ids,
             )
             self._conn.commit()
 
-    def increment_action_fail(self, unit_ids: list[str]) -> None:
-        if not unit_ids:
+    def increment_action_success(self, record_ids: list[str]) -> None:
+        if not record_ids:
             return
         with self._lock:
-            placeholders = ",".join("?" for _ in unit_ids)
+            placeholders = ",".join("?" for _ in record_ids)
             self._conn.execute(
-                f"UPDATE memory_units SET action_fail_count = action_fail_count + 1 "
-                f"WHERE unit_id IN ({placeholders})",
-                unit_ids,
+                f"UPDATE memory_records SET action_success_count = action_success_count + 1 "
+                f"WHERE record_id IN ({placeholders})",
+                record_ids,
+            )
+            self._conn.commit()
+
+    def increment_action_fail(self, record_ids: list[str]) -> None:
+        if not record_ids:
+            return
+        with self._lock:
+            placeholders = ",".join("?" for _ in record_ids)
+            self._conn.execute(
+                f"UPDATE memory_records SET action_fail_count = action_fail_count + 1 "
+                f"WHERE record_id IN ({placeholders})",
+                record_ids,
             )
             self._conn.commit()
 
@@ -720,32 +720,32 @@ class SQLiteSemanticStore:
 
     def export_all(self, *, user_id: str = "") -> dict[str, Any]:
         """导出全部数据用于调试/前端。"""
-        sql_mu = "SELECT * FROM memory_units"
-        sql_su = "SELECT * FROM synthesized_units"
+        sql_mu = "SELECT * FROM memory_records"
+        sql_su = "SELECT * FROM composite_records"
         params: list[Any] = []
         if user_id:
             sql_mu += " WHERE user_id = ?"
             sql_su += " WHERE user_id = ?"
             params = [user_id]
 
-        units = [self._row_to_dict(r) for r in self._conn.execute(sql_mu, params).fetchall()]
+        records = [self._row_to_dict(r) for r in self._conn.execute(sql_mu, params).fetchall()]
         synths = [self._row_to_dict(r) for r in self._conn.execute(sql_su, params).fetchall()]
 
         return {
-            "units": units,
-            "synthesized": synths,
-            "total_units": len(units),
-            "total_synthesized": len(synths),
+            "records": records,
+            "composites": synths,
+            "total_records": len(records),
+            "total_composites": len(synths),
         }
 
-    def count_units(self, *, user_id: str = "") -> int:
+    def count_records(self, *, user_id: str = "") -> int:
         if user_id:
             return self._conn.execute(
-                "SELECT COUNT(*) FROM memory_units WHERE user_id = ? AND expired = 0",
+                "SELECT COUNT(*) FROM memory_records WHERE user_id = ? AND expired = 0",
                 (user_id,),
             ).fetchone()[0]
         return self._conn.execute(
-            "SELECT COUNT(*) FROM memory_units WHERE expired = 0"
+            "SELECT COUNT(*) FROM memory_records WHERE expired = 0"
         ).fetchone()[0]
 
     # ──────────────────────────────────────
@@ -785,8 +785,8 @@ class SQLiteSemanticStore:
         for key in (
             "entities", "temporal", "task_tags", "tool_tags",
             "constraint_tags", "failure_tags", "affordance_tags",
-            "evidence_turn_range", "source_unit_ids",
-            "retrieval_plan", "retrieved_unit_ids", "kept_unit_ids",
+            "evidence_turn_range", "source_record_ids",
+            "retrieval_plan", "retrieved_record_ids", "kept_record_ids",
         ):
             if key in d and isinstance(d[key], str):
                 d[key] = _json_loads(d[key]) if key != "temporal" else _json_loads_dict(d[key])
@@ -795,10 +795,10 @@ class SQLiteSemanticStore:
         return d
 
     @staticmethod
-    def _row_to_unit(row: sqlite3.Row) -> MemoryUnit:
+    def _row_to_record(row: sqlite3.Row) -> MemoryRecord:
         d = dict(row)
-        return MemoryUnit(
-            unit_id=d["unit_id"],
+        return MemoryRecord(
+            record_id=d["record_id"],
             memory_type=d["memory_type"],
             semantic_text=d["semantic_text"],
             normalized_text=d["normalized_text"],
@@ -827,13 +827,13 @@ class SQLiteSemanticStore:
         )
 
     @staticmethod
-    def _row_to_synth(row: sqlite3.Row) -> SynthesizedUnit:
-        return SynthesizedUnit(
-            synth_id=row["synth_id"],
+    def _row_to_synth(row: sqlite3.Row) -> CompositeRecord:
+        return CompositeRecord(
+            composite_id=row["composite_id"],
             memory_type=row["memory_type"],
             semantic_text=row["semantic_text"],
             normalized_text=row["normalized_text"],
-            source_unit_ids=_json_loads(row["source_unit_ids"]),
+            source_record_ids=_json_loads(row["source_record_ids"]),
             synthesis_reason=row["synthesis_reason"],
             entities=_json_loads(row["entities"]),
             temporal=_json_loads_dict(row["temporal"]),

@@ -23,13 +23,13 @@ async def pipeline_status(pipeline=Depends(get_pipeline)):
     # Compact 后端：从 sqlite_store 计数
     if getattr(sc, "semantic_engine", None) is not None:
         try:
-            node_count = sc.semantic_engine._sqlite.count_units()
+            node_count = sc.semantic_engine._sqlite.count_records()
         except Exception:
             node_count = 0
-        # synthesized units 作为"边"的近似
+        # composite records 作为"边"的近似
         try:
             debug = sc.semantic_engine.export_debug(user_id="")
-            edge_count = len(debug.get("synthesized", []))
+            edge_count = len(debug.get("composites", []))
         except Exception:
             edge_count = 0
     else:

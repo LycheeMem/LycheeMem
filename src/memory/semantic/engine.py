@@ -2,7 +2,7 @@
 
 实现 BaseSemanticMemoryEngine，串联所有子模块：
 - search(): Planner → 5 通道召回 → Scorer → 格式化输出
-- ingest_conversation(): Novelty Check → Encoder → 去重写入 → Synthesizer
+- ingest_conversation(): Novelty Check → Encoder → 去重写入 → Fusion
 
 这是整个 Compact Semantic Memory 的核心入口。
 """
@@ -22,9 +22,9 @@ from src.memory.semantic.base import (
     ConsolidationResult,
     SemanticSearchResult,
 )
-from src.memory.semantic.encoder import CompactEncoder
-from src.memory.semantic.models import MemoryUnit, RetrievalPlan, UsageLog
-from src.memory.semantic.planner import ActionAwareRetrievalPlanner
+from src.memory.semantic.encoder import TypedMemoryEncoder
+from src.memory.semantic.models import MemoryRecord, SearchPlan, UsageLog
+from src.memory.semantic.planner import TaskAwareRetrievalPlanner
 from src.memory.semantic.prompts import (
     NOVELTY_CHECK_SYSTEM,
     RETRIEVAL_ADEQUACY_CHECK_SYSTEM,
@@ -32,7 +32,7 @@ from src.memory.semantic.prompts import (
 )
 from src.memory.semantic.scorer import MemoryScorer, ScoredCandidate, ScoringWeights
 from src.memory.semantic.sqlite_store import SQLiteSemanticStore
-from src.memory.semantic.synthesizer import PragmaticSynthesizer
+from src.memory.semantic.synthesizer import RecordFusionEngine
 from src.memory.semantic.vector_index import LanceVectorIndex
 
 
@@ -51,7 +51,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         sqlite_db_path: str = "data/compact_memory.db",
         vector_db_path: str = "data/compact_vector",
         dedup_threshold: float = 0.85,
-        synthesis_min_units: int = 2,
+        synthesis_min_records: int = 2,
         synthesis_similarity: float = 0.75,
         scorer_weights: ScoringWeights | None = None,
         embedding_dim: int = 0,
@@ -67,15 +67,15 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         )
 
         # 子模块
-        self._encoder = CompactEncoder(llm=llm)
-        self._planner = ActionAwareRetrievalPlanner(llm=llm)
+        self._encoder = TypedMemoryEncoder(llm=llm)
+        self._planner = TaskAwareRetrievalPlanner(llm=llm)
         self._scorer = MemoryScorer(weights=scorer_weights)
-        self._synthesizer = PragmaticSynthesizer(
+        self._synthesizer = RecordFusionEngine(
             llm=llm,
             sqlite_store=self._sqlite,
             vector_index=self._vector,
             similarity_threshold=synthesis_similarity,
-            min_units_for_synthesis=synthesis_min_units,
+            min_records_for_synthesis=synthesis_min_records,
         )
 
         self._dedup_threshold = dedup_threshold
@@ -152,7 +152,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 break
 
             # 用补充查询做额外召回（复用 _multi_channel_recall，注入 semantic_queries）
-            supplement_plan = RetrievalPlan(
+            supplement_plan = SearchPlan(
                 mode=plan.mode,
                 semantic_queries=additional_queries,
                 pragmatic_queries=[],
@@ -215,7 +215,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
     def _multi_channel_recall(
         self,
         *,
-        plan: RetrievalPlan,
+        plan: SearchPlan,
         query: str,
         user_id: str,
         query_embedding: list[float] | None,
@@ -235,11 +235,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 sq, user_id=user_id, limit=recall_limit,
             )
             for r in fts_results:
-                uid = r.get("unit_id", "")
+                uid = r.get("record_id", "")
                 if uid and uid not in seen_ids:
                     seen_ids.add(uid)
                     r["id"] = uid
-                    r["source"] = "unit"
+                    r["source"] = "record"
                     r["semantic_distance"] = 1.0 - min(1.0, abs(r.get("fts_score", 0)) / 20.0)
                     candidates.append(r)
 
@@ -248,11 +248,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 sq, user_id=user_id, limit=10,
             )
             for r in synth_fts:
-                sid = r.get("synth_id", "")
+                sid = r.get("composite_id", "")
                 if sid and sid not in seen_ids:
                     seen_ids.add(sid)
                     r["id"] = sid
-                    r["source"] = "synth"
+                    r["source"] = "composite"
                     r["semantic_distance"] = 1.0 - min(1.0, abs(r.get("fts_score", 0)) / 20.0)
                     candidates.append(r)
 
@@ -265,13 +265,13 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 limit=recall_limit,
             )
             for r in vec_results:
-                uid = r.get("unit_id", "")
+                uid = r.get("record_id", "")
                 if uid and uid not in seen_ids:
                     seen_ids.add(uid)
                     # 从 sqlite 获取完整数据
-                    full = self._sqlite.get_unit(uid)
+                    full = self._sqlite.get_record(uid)
                     if full:
-                        c = self._unit_to_candidate(full)
+                        c = self._record_to_candidate(full)
                         c["semantic_distance"] = r.get("_distance", 1.0)
                         candidates.append(c)
 
@@ -280,15 +280,15 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 sq, user_id=user_id, column="vector", limit=10,
             )
             for r in synth_vec:
-                sid = r.get("synth_id", "")
+                sid = r.get("composite_id", "")
                 if sid and sid not in seen_ids:
                     seen_ids.add(sid)
-                    # 直接按 synth_id 从 sqlite 获取完整数据
+                    # 直接按 composite_id 从 sqlite 获取完整数据
                     su = self._sqlite.get_synthesized(sid)
                     if su:
                         s = {
                             "id": sid,
-                            "source": "synth",
+                            "source": "composite",
                             "semantic_distance": r.get("_distance", 1.0),
                             "memory_type": su.memory_type,
                             "semantic_text": su.semantic_text,
@@ -318,12 +318,12 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 limit=recall_limit,
             )
             for r in prag_results:
-                uid = r.get("unit_id", "")
+                uid = r.get("record_id", "")
                 if uid and uid not in seen_ids:
                     seen_ids.add(uid)
-                    full = self._sqlite.get_unit(uid)
+                    full = self._sqlite.get_record(uid)
                     if full:
-                        c = self._unit_to_candidate(full)
+                        c = self._record_to_candidate(full)
                         c["semantic_distance"] = r.get("_distance", 1.0)
                         candidates.append(c)
 
@@ -336,11 +336,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 limit=recall_limit,
             )
             for r in tag_results:
-                uid = r.get("unit_id", "")
+                uid = r.get("record_id", "")
                 if uid and uid not in seen_ids:
                     seen_ids.add(uid)
                     r["id"] = uid
-                    r["source"] = "unit"
+                    r["source"] = "record"
                     r["semantic_distance"] = 0.5  # tag 匹配给中等距离
                     candidates.append(r)
 
@@ -353,11 +353,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 limit=recall_limit,
             )
             for r in time_results:
-                uid = r.get("unit_id", "")
+                uid = r.get("record_id", "")
                 if uid and uid not in seen_ids:
                     seen_ids.add(uid)
                     r["id"] = uid
-                    r["source"] = "unit"
+                    r["source"] = "record"
                     r["semantic_distance"] = 0.6  # 时间匹配给中等偏高距离
                     candidates.append(r)
 
@@ -379,7 +379,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         """完整固化流程：新颖性检查 → 编码 → 去重写入 → 合成。"""
         if not turns:
             return ConsolidationResult(
-                units_added=0, units_merged=0, units_expired=0, steps=[]
+                records_added=0, records_merged=0, records_expired=0, steps=[]
             )
 
         steps: list[dict[str, Any]] = []
@@ -393,7 +393,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         })
         if not has_novelty:
             return ConsolidationResult(
-                units_added=0, units_merged=0, units_expired=0, steps=steps
+                records_added=0, records_merged=0, records_expired=0, steps=steps
             )
 
         # Step 2: Compact Encoding
@@ -401,7 +401,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         previous = turns[:-4] if len(turns) > 4 else []
         current = turns[-4:] if len(turns) > 4 else turns
 
-        new_units = self._encoder.encode_conversation(
+        new_records = self._encoder.encode_conversation(
             current,
             previous_turns=previous,
             session_id=session_id,
@@ -411,88 +411,88 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         steps.append({
             "name": "compact_encoding",
             "status": "done",
-            "detail": f"抽取 {len(new_units)} 条 Memory Unit",
+            "detail": f"抽取 {len(new_records)} 条 MemoryRecord",
         })
 
-        if not new_units:
+        if not new_records:
             return ConsolidationResult(
-                units_added=0, units_merged=0, units_expired=0, steps=steps
+                records_added=0, records_merged=0, records_expired=0, steps=steps
             )
 
         # Step 3: 去重 + 写入
         actually_added = 0
-        for unit in new_units:
+        for record in new_records:
             # 检查是否已存在相似条目
             similar = self._sqlite.find_similar_by_normalized_text(
-                unit.normalized_text, user_id=user_id, limit=3,
+                record.normalized_text, user_id=user_id, limit=3,
             )
             is_duplicate = False
             for s in similar:
-                if s.unit_id == unit.unit_id:
+                if s.record_id == record.record_id:
                     is_duplicate = True
                     break
                 # 用向量相似度判断重复
                 try:
-                    vecs = self._embedder.embed([unit.normalized_text, s.normalized_text])
+                    vecs = self._embedder.embed([record.normalized_text, s.normalized_text])
                     sim = self._cosine_similarity(vecs[0], vecs[1])
                     if sim >= self._dedup_threshold:
                         is_duplicate = True
                         # 更新已有条目而非插入新的
                         s.updated_at = datetime.now(timezone.utc).isoformat()
                         s.confidence = min(1.0, s.confidence + 0.1)
-                        self._sqlite.upsert_unit(s)
+                        self._sqlite.upsert_record(s)
                         break
                 except Exception:
                     pass
 
             if not is_duplicate:
-                self._sqlite.upsert_unit(unit)
+                self._sqlite.upsert_record(record)
                 try:
                     self._vector.upsert(
-                        unit_id=unit.unit_id,
-                        user_id=unit.user_id,
-                        memory_type=unit.memory_type,
-                        semantic_text=unit.semantic_text,
-                        normalized_text=unit.normalized_text,
+                        record_id=record.record_id,
+                        user_id=record.user_id,
+                        memory_type=record.memory_type,
+                        semantic_text=record.semantic_text,
+                        normalized_text=record.normalized_text,
                     )
                 except Exception:
                     # 向量写入失败不阻断固化；已写 SQLite，FTS 仍可召回
                     import logging
                     logging.getLogger("src.memory.semantic.engine").warning(
-                        "vector upsert failed for unit %s", unit.unit_id, exc_info=True
+                        "vector upsert failed for record %s", record.record_id, exc_info=True
                     )
                 actually_added += 1
 
         steps.append({
             "name": "dedup_and_store",
             "status": "done",
-            "detail": f"去重后写入 {actually_added}/{len(new_units)} 条",
+            "detail": f"去重后写入 {actually_added}/{len(new_records)} 条",
         })
 
-        # Step 4: Pragmatic Synthesis（在线合成）
-        synth_units = []
+        # Step 4: Record Fusion（在线聚合）
+        composite_records = []
         if actually_added > 0:
-            synth_units = self._synthesizer.synthesize_on_ingest(
-                [u for u in new_units if not any(
-                    s.unit_id == u.unit_id
+            composite_records = self._synthesizer.synthesize_on_ingest(
+                [u for u in new_records if not any(
+                    s.record_id == u.record_id
                     for s in self._sqlite.find_similar_by_normalized_text(
                         u.normalized_text, user_id=user_id, limit=1,
                     )
-                    if s.unit_id != u.unit_id
+                    if s.record_id != u.record_id
                 )],
                 user_id=user_id,
             )
 
         steps.append({
-            "name": "pragmatic_synthesis",
+            "name": "record_fusion",
             "status": "done",
-            "detail": f"合成 {len(synth_units)} 条 Synthesized Unit",
+            "detail": f"聚合 {len(composite_records)} 条 CompositeRecord",
         })
 
         return ConsolidationResult(
-            units_added=actually_added,
-            units_merged=len(synth_units),
-            units_expired=0,
+            records_added=actually_added,
+            records_merged=len(composite_records),
+            records_expired=0,
             steps=steps,
         )
 
@@ -587,15 +587,15 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         except (json.JSONDecodeError, ValueError):
             return True  # 保守策略：解析失败则认为有新信息
 
-    def _dict_to_plan(self, d: dict[str, Any]) -> RetrievalPlan:
-        """dict → RetrievalPlan。"""
+    def _dict_to_plan(self, d: dict[str, Any]) -> SearchPlan:
+        """dict → SearchPlan。"""
         mode = d.get("mode", "answer")
         if mode not in ("answer", "action", "mixed"):
             mode = "answer"
         temporal_filter = d.get("temporal_filter")
         if temporal_filter and not isinstance(temporal_filter, dict):
             temporal_filter = None
-        return RetrievalPlan(
+        return SearchPlan(
             mode=mode,
             semantic_queries=d.get("semantic_queries", []),
             pragmatic_queries=d.get("pragmatic_queries", []),
@@ -608,28 +608,28 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         )
 
     @staticmethod
-    def _unit_to_candidate(unit: MemoryUnit) -> dict[str, Any]:
-        """MemoryUnit → scorer 需要的 candidate dict。"""
+    def _record_to_candidate(record: MemoryRecord) -> dict[str, Any]:
+        """MemoryRecord → scorer 需要的 candidate dict。"""
         return {
-            "id": unit.unit_id,
-            "source": "unit",
+            "id": record.record_id,
+            "source": "record",
             "semantic_distance": 0.5,  # 默认，由调用方覆盖
-            "memory_type": unit.memory_type,
-            "semantic_text": unit.semantic_text,
-            "normalized_text": unit.normalized_text,
-            "tool_tags": unit.tool_tags,
-            "constraint_tags": unit.constraint_tags,
-            "task_tags": unit.task_tags,
-            "failure_tags": unit.failure_tags,
-            "affordance_tags": unit.affordance_tags,
-            "created_at": unit.created_at,
-            "retrieval_count": unit.retrieval_count,
-            "retrieval_hit_count": unit.retrieval_hit_count,
-            "action_success_count": unit.action_success_count,
-            "action_fail_count": unit.action_fail_count,
-            "evidence_turn_range": unit.evidence_turn_range,
-            "temporal": unit.temporal,
-            "entities": unit.entities,
+            "memory_type": record.memory_type,
+            "semantic_text": record.semantic_text,
+            "normalized_text": record.normalized_text,
+            "tool_tags": record.tool_tags,
+            "constraint_tags": record.constraint_tags,
+            "task_tags": record.task_tags,
+            "failure_tags": record.failure_tags,
+            "affordance_tags": record.affordance_tags,
+            "created_at": record.created_at,
+            "retrieval_count": record.retrieval_count,
+            "retrieval_hit_count": record.retrieval_hit_count,
+            "action_success_count": record.action_success_count,
+            "action_fail_count": record.action_fail_count,
+            "evidence_turn_range": record.evidence_turn_range,
+            "temporal": record.temporal,
+            "entities": record.entities,
         }
 
     @staticmethod
@@ -670,7 +670,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         for sc in scored:
             d = sc.data
             provenance.append({
-                "unit_id": sc.id,
+                "record_id": sc.id,
                 "source": sc.source,
                 "memory_type": d.get("memory_type", ""),
                 "score": sc.final_score,
@@ -686,7 +686,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         query: str,
         session_id: str,
         user_id: str,
-        plan: RetrievalPlan,
+        plan: SearchPlan,
         retrieved_ids: list[str],
         kept_ids: list[str],
     ) -> None:
@@ -703,7 +703,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 "pragmatic_queries": plan.pragmatic_queries,
                 "depth": plan.depth,
             },
-            retrieved_unit_ids=retrieved_ids,
-            kept_unit_ids=kept_ids,
+            retrieved_record_ids=retrieved_ids,
+            kept_record_ids=kept_ids,
         )
         self._sqlite.insert_usage_log(log)

@@ -1,11 +1,11 @@
 """Compact Semantic Memory 的数据模型。
 
 定义两类核心对象：
-- MemoryUnit：经过去噪、指代消解、时间归一化后的最小自洽记忆单元
-- SynthesizedUnit：由多个 MemoryUnit 在线合成的高密度条目
+- MemoryRecord：经过去噪、指代消解、时间归一化后的最小自洽记忆记录
+- CompositeRecord：由多个 MemoryRecord 聚合形成的高密度记录
 
 以及辅助对象：
-- RetrievalPlan：Action-Aware 检索计划
+- SearchPlan：任务感知检索计划
 - UsageLog：检索使用记录（为 RL 阶段准备）
 """
 
@@ -34,9 +34,9 @@ VALID_MEMORY_TYPES = frozenset({
     MEMORY_TYPE_TOOL_AFFORDANCE,
 })
 
-SYNTH_TYPE_PREFERENCE = "synthesized_preference"
-SYNTH_TYPE_PATTERN = "synthesized_pattern"
-SYNTH_TYPE_CONSTRAINT = "synthesized_constraint"
+SYNTH_TYPE_PREFERENCE = "composite_preference"
+SYNTH_TYPE_PATTERN = "composite_pattern"
+SYNTH_TYPE_CONSTRAINT = "composite_constraint"
 SYNTH_TYPE_USAGE = "usage_pattern"
 
 VALID_SYNTH_TYPES = frozenset({
@@ -48,16 +48,14 @@ VALID_SYNTH_TYPES = frozenset({
 
 
 @dataclass
-class MemoryUnit:
-    """最小自洽记忆单元（Atomic Memory Unit）。
+class MemoryRecord:
+    """最小自洽记忆记录（Atomic Memory Record）。
 
     经过去噪、指代消解、时间归一化后的 context-independent 记忆条目。
-    每个 unit 脱离原始对话上下文也能被完整理解。
-
-    对应 idea 模块一（Compact Semantic Encoding）的输出。
+    每条 record 脱离原始对话上下文也能被完整理解。
     """
 
-    unit_id: str  # SHA256(normalized_text)，天然幂等
+    record_id: str  # SHA256(normalized_text)，天然幂等
     memory_type: str  # 取值见 VALID_MEMORY_TYPES
 
     # ── 文本 ──
@@ -77,7 +75,7 @@ class MemoryUnit:
     confidence: float = 1.0
     evidence_turn_range: list[int] = field(default_factory=list)  # [start_turn, end_turn]
     source_session: str = ""
-    source_role: str = ""  # "user" | "assistant" | "both" | ""：该 unit 主要出自哪一方
+    source_role: str = ""  # "user" | "assistant" | "both" | ""：该 record 主要出自哪一方
     user_id: str = ""
     created_at: str = ""  # ISO timestamp
     updated_at: str = ""
@@ -96,28 +94,26 @@ class MemoryUnit:
 
 
 @dataclass
-class SynthesizedUnit:
-    """合成记忆单元（Pragmatic Synthesis 输出）。
+class CompositeRecord:
+    """复合记忆记录。
 
-    由多个 MemoryUnit 在线合成的高密度条目。
-    合成后不删除 source units（保留细粒度检索能力），
-    但在检索排序中 synth unit 优先于碎片 units。
-
-    对应 idea 模块二（Pragmatic Memory Synthesis）的输出。
+    由多个 MemoryRecord 聚合形成的高密度条目。
+    聚合后不删除 source records（保留细粒度检索能力），
+    但在检索排序中 composite record 优先于碎片 records。
     """
 
-    synth_id: str
+    composite_id: str
     memory_type: str  # 取值见 VALID_SYNTH_TYPES
 
     # ── 文本 ──
     semantic_text: str
     normalized_text: str
 
-    # ── 合成来源 ──
-    source_unit_ids: list[str] = field(default_factory=list)
-    synthesis_reason: str = ""  # LLM 给出的合成理由
+    # ── 聚合来源 ──
+    source_record_ids: list[str] = field(default_factory=list)
+    synthesis_reason: str = ""  # LLM 给出的聚合理由
 
-    # ── 继承自 source units 的聚合元数据 ──
+    # ── 继承自 source records 的聚合元数据 ──
     entities: list[str] = field(default_factory=list)
     temporal: dict[str, Any] = field(default_factory=dict)
     task_tags: list[str] = field(default_factory=list)
@@ -140,8 +136,8 @@ class SynthesizedUnit:
 
 
 @dataclass
-class RetrievalPlan:
-    """Action-Aware Retrieval Plan（模块三 planner 输出）。
+class SearchPlan:
+    """任务感知检索计划。
 
     planner 分析当前请求后输出此结构，
     指导多通道召回和 scorer 打分。
@@ -172,8 +168,8 @@ class UsageLog:
     timestamp: str  # ISO
     query: str
     retrieval_plan: dict[str, Any] = field(default_factory=dict)
-    retrieved_unit_ids: list[str] = field(default_factory=list)  # 被召回的 unit IDs
-    kept_unit_ids: list[str] = field(default_factory=list)  # 被 synthesizer 最终保留的
+    retrieved_record_ids: list[str] = field(default_factory=list)  # 被召回的 record IDs
+    kept_record_ids: list[str] = field(default_factory=list)  # 被后续融合阶段最终保留的
     final_response_excerpt: str = ""
     user_feedback: str = ""  # "positive" | "negative" | "correction" | ""
     action_outcome: str = ""  # "success" | "fail" | "unknown"

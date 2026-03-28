@@ -1,13 +1,12 @@
-"""Memory Scorer（模块三 - 评分部分）。
+"""Memory Scorer（评分部分）。
 
-对多通道召回的候选 MemoryUnit / SynthesizedUnit 做综合评分：
+对多通道召回的候选 MemoryRecord / CompositeRecord 做综合评分：
 
     Score = α·SemanticRelevance + β·ActionUtility + γ·TemporalFit
           + δ·Recency + η·EvidenceDensity − λ·TokenCost
 
 所有系数在 0–1 范围内，用户可通过 config 调整。
 
-对应 idea 论文的 Module 3 中的 scoring 部分。
 """
 
 from __future__ import annotations
@@ -32,8 +31,8 @@ class ScoringWeights:
 @dataclass
 class ScoredCandidate:
     """评分后的候选条目。"""
-    id: str              # unit_id 或 synth_id
-    source: str          # "unit" 或 "synth"
+    id: str              # record_id 或 composite_id
+    source: str          # "record" 或 "composite"
     final_score: float = 0.0
     score_breakdown: dict[str, float] = field(default_factory=dict)
     # 原始数据引用
@@ -59,7 +58,7 @@ class MemoryScorer:
 
         每条 candidate dict 需要以下字段：
         - id: str
-        - source: "unit" | "synth"
+        - source: "record" | "composite"
         - semantic_distance: float (越小越相似，0=完美匹配)
         - memory_type: str
         - tool_tags: list[str]
@@ -121,7 +120,7 @@ class MemoryScorer:
 
             scored.append(ScoredCandidate(
                 id=c.get("id", ""),
-                source=c.get("source", "unit"),
+                source=c.get("source", "record"),
                 final_score=final,
                 score_breakdown=bd,
                 data=c,

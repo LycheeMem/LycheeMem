@@ -44,9 +44,17 @@ CONSOLIDATION_SYSTEM_PROMPT = """\
 
 说明：
 - 如果对话没有值得保存的复杂操作模式，`new_skills` 应为一个空数组；
-- 当你认为对话中包含稳定的用户偏好/事实/关系，适合写入图谱存储时，
-    请将 `should_extract_entities` 设为 true；否则为 false；
-- 忽略闲聊、重复说法、明显错误尝试等不值得长期保存的内容。
+- 满足以下任意一条，即应将 `should_extract_entities` 设为 true：
+    · 用户偏好、技术选型、编程习惯等个人或项目偏好
+    · 具体计划、日程安排、截止日期、里程碑
+    · 人员分工、小组成员、角色职责
+    · 客观事实（地点、项目名称、工具、组织关系、合同/协议等）
+    · 对已有信息的更新或纠正
+    · 操作流程、步骤约定、规范
+    · 用户明确要求记住的任何内容（如"帮我记住"、"你记一下"）
+- 只有对话内容是纯粹的寒暄、单纯查询已有信息、重复已知事实，或完全没有实质信息时，才设为 false。
+- **倾向于 true。只有非常确信对话中没有任何值得长期保存的新事实时，才返回 false。**
+- 忽略重复说法、明显错误尝试等不值得长期保存的内容。
 - **输出必须是严格 JSON**（不要代码块）。注意：JSON 字符串里不能出现裸换行，换行必须写成 `\\n`。
 
 技能文档（doc_markdown）要求：
@@ -101,6 +109,18 @@ assistant: 好的，我们可以聊点轻松的话题～
 {
     "new_skills": [],
     "should_extract_entities": false
+}
+
+【示例 4：团队分工 + 项目计划 + 截止日期，应固化】
+<session_log>
+user: 我们的推荐系统项目下个迭代（3.31）要做用户画像特征维度扩展。我、王明、赵琳负责这个模块。分工安排：王明负责新增行为特征埋点设计和数据上报，赵琳来处理特征的ETL加工逻辑，我需要完成推荐模型的特征适配和离线训练验证。前期预计2天内要完成设计评审。
+assistant: 好的，已记录。推荐系统下个迭代成员是你、王明和赵琳。特征维度扩展项目，3.31截止，分工确认。设计评审计划2天完成，我会提醒。
+</session_log>
+
+期望 JSON 输出示例：
+{
+    "new_skills": [],
+    "should_extract_entities": true
 }
 """
 
@@ -218,7 +238,7 @@ class ConsolidatorAgent(BaseAgent):
             ingest_result: _CR = (
                 ingest_future.result()
                 if ingest_future is not None
-                else _CR(units_added=0, units_merged=0, units_expired=0, steps=[{
+                else _CR(records_added=0, records_merged=0, records_expired=0, steps=[{
                     "name": "semantic_ingest", "status": "skipped",
                     "detail": "should_extract_entities=false，跳过语义固化",
                 }])
@@ -233,10 +253,10 @@ class ConsolidatorAgent(BaseAgent):
         })
 
         return {
-            "entities_added": ingest_result.units_added,
+            "entities_added": ingest_result.records_added,
             "skills_added": skills_added,
-            "facts_added": ingest_result.units_merged,
-            "has_novelty": ingest_result.units_added > 0 or ingest_result.units_merged > 0,
+            "facts_added": ingest_result.records_merged,
+            "has_novelty": ingest_result.records_added > 0 or ingest_result.records_merged > 0,
             "steps": steps,
         }
 

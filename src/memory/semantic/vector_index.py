@@ -1,8 +1,8 @@
 """LanceDB 向量索引。
 
 职责：
-- memory_units 表：MemoryUnit 的 semantic / normalized embedding
-- synthesized_units 表：SynthesizedUnit 的 embedding
+- memory_records 表：MemoryRecord 的 semantic / normalized embedding
+- composite_records 表：CompositeRecord 的 embedding
 - 提供 ANN 向量检索（semantic_query / pragmatic_query 两种向量）
 
 依赖 lancedb (已列入 pyproject.toml) + pyarrow。
@@ -19,11 +19,11 @@ import pyarrow as pa
 from src.embedder.base import BaseEmbedder
 
 
-def _make_mu_schema(dim: int) -> pa.Schema:
-    """构建 memory_units 表 schema。dim > 0 时使用 FixedSizeList（推荐）。"""
+def _make_record_schema(dim: int) -> pa.Schema:
+    """构建 memory_records 表 schema。dim > 0 时使用 FixedSizeList（推荐）。"""
     vec_type = pa.list_(pa.float32(), dim) if dim > 0 else pa.list_(pa.float32())
     return pa.schema([
-        pa.field("unit_id", pa.utf8()),
+        pa.field("record_id", pa.utf8()),
         pa.field("user_id", pa.utf8()),
         pa.field("memory_type", pa.utf8()),
         pa.field("vector", vec_type),
@@ -32,11 +32,11 @@ def _make_mu_schema(dim: int) -> pa.Schema:
     ])
 
 
-def _make_su_schema(dim: int) -> pa.Schema:
-    """构建 synthesized_units 表 schema。"""
+def _make_composite_schema(dim: int) -> pa.Schema:
+    """构建 composite_records 表 schema。"""
     vec_type = pa.list_(pa.float32(), dim) if dim > 0 else pa.list_(pa.float32())
     return pa.schema([
-        pa.field("synth_id", pa.utf8()),
+        pa.field("composite_id", pa.utf8()),
         pa.field("user_id", pa.utf8()),
         pa.field("memory_type", pa.utf8()),
         pa.field("vector", vec_type),
@@ -45,10 +45,10 @@ def _make_su_schema(dim: int) -> pa.Schema:
 
 
 class LanceVectorIndex:
-    """基于 LanceDB 的向量索引，ANN 检索 MemoryUnit / SynthesizedUnit。"""
+    """基于 LanceDB 的向量索引，ANN 检索 MemoryRecord / CompositeRecord。"""
 
-    MEMORY_TABLE = "memory_units"
-    SYNTH_TABLE = "synthesized_units"
+    MEMORY_TABLE = "memory_records"
+    SYNTH_TABLE = "composite_records"
 
     def __init__(
         self,
@@ -75,17 +75,16 @@ class LanceVectorIndex:
 
         - 若表不存在：按 embedding_dim 构建 schema 并创建。
         - 若表已存在但 vector 列是变长 list（旧 schema）且 embedding_dim 已知：
-          删除旧表并用正确 FixedSizeList schema 重建（旧数据已丢失不影响，
-          因为 0 向量根本无法检索）。
-        - 若 embedding_dim=0：建变长 list schema（兜底，仅用于无配置场景）。
+          删除旧表并用正确 FixedSizeList schema 重建。
+        - 若 embedding_dim=0：建变长 list schema（底存，仅用于无配置场景）。
         """
-        target_mu = _make_mu_schema(self._embedding_dim)
-        target_su = _make_su_schema(self._embedding_dim)
+        target_mr = _make_record_schema(self._embedding_dim)
+        target_cr = _make_composite_schema(self._embedding_dim)
         existing = set(self._db.table_names())
 
         for table_name, schema in [
-            (self.MEMORY_TABLE, target_mu),
-            (self.SYNTH_TABLE, target_su),
+            (self.MEMORY_TABLE, target_mr),
+            (self.SYNTH_TABLE, target_cr),
         ]:
             if table_name not in existing:
                 self._db.create_table(table_name, schema=schema)
@@ -104,12 +103,12 @@ class LanceVectorIndex:
 
 
     # ──────────────────────────────────────
-    # MemoryUnit 向量写入
+    # MemoryRecord 向量写入
     # ──────────────────────────────────────
 
     def upsert(
         self,
-        unit_id: str,
+        record_id: str,
         user_id: str,
         memory_type: str,
         semantic_text: str,
@@ -119,7 +118,7 @@ class LanceVectorIndex:
         semantic_vector: list[float] | None = None,
         normalized_vector: list[float] | None = None,
     ) -> None:
-        """写入 / 更新一条 MemoryUnit 的向量。
+        """写入 / 更新一条 MemoryRecord 的向量。
         
         如果未提供 vector，则使用 embedder 实时计算。
         """
@@ -133,11 +132,11 @@ class LanceVectorIndex:
         table = self._db.open_table(self.MEMORY_TABLE)
         # 先删除旧记录（如存在），再插入新记录
         try:
-            table.delete(f"unit_id = '{self._escape_sql(unit_id)}'")
+            table.delete(f"record_id = '{self._escape_sql(record_id)}'")
         except Exception:
             pass
         table.add([{
-            "unit_id": unit_id,
+            "record_id": record_id,
             "user_id": user_id,
             "memory_type": memory_type,
             "vector": semantic_vector,
@@ -149,9 +148,9 @@ class LanceVectorIndex:
         self,
         records: list[dict[str, Any]],
     ) -> None:
-        """批量写入 MemoryUnit 向量。
+        """批量写入 MemoryRecord 向量。
         
-        每条 record 需要: unit_id, user_id, memory_type, semantic_text, normalized_text。
+        每条 record 需要: record_id, user_id, memory_type, semantic_text, normalized_text。
         可选: semantic_vector, normalized_vector, expired。
         """
         if not records:
@@ -180,16 +179,16 @@ class LanceVectorIndex:
 
         table = self._db.open_table(self.MEMORY_TABLE)
         # 批量删除旧记录
-        ids = [r["unit_id"] for r in records]
-        for uid in ids:
+        ids = [r["record_id"] for r in records]
+        for rid in ids:
             try:
-                table.delete(f"unit_id = '{self._escape_sql(uid)}'")
+                table.delete(f"record_id = '{self._escape_sql(rid)}'")
             except Exception:
                 pass
 
         rows = [
             {
-                "unit_id": r["unit_id"],
+                "record_id": r["record_id"],
                 "user_id": r["user_id"],
                 "memory_type": r["memory_type"],
                 "vector": r["semantic_vector"],
@@ -211,7 +210,7 @@ class LanceVectorIndex:
         include_expired: bool = False,
         query_vector: list[float] | None = None,
     ) -> list[dict[str, Any]]:
-        """向量 ANN 检索 MemoryUnit。
+        """向量 ANN 检索 MemoryRecord。
 
         column: "vector"（语义检索） 或 "normalized_vector"（归一化/实用检索）
         """
@@ -245,7 +244,7 @@ class LanceVectorIndex:
 
         return [
             {
-                "unit_id": r.get("unit_id", ""),
+                "record_id": r.get("record_id", ""),
                 "user_id": r.get("user_id", ""),
                 "memory_type": r.get("memory_type", ""),
                 "_distance": r.get("_distance", 999.0),
@@ -254,12 +253,12 @@ class LanceVectorIndex:
         ]
 
     # ──────────────────────────────────────
-    # SynthesizedUnit 向量写入 / 检索
+    # CompositeRecord 向量写入 / 检索
     # ──────────────────────────────────────
 
     def upsert_synthesized(
         self,
-        synth_id: str,
+        composite_id: str,
         user_id: str,
         memory_type: str,
         semantic_text: str,
@@ -277,11 +276,11 @@ class LanceVectorIndex:
 
         table = self._db.open_table(self.SYNTH_TABLE)
         try:
-            table.delete(f"synth_id = '{self._escape_sql(synth_id)}'")
+            table.delete(f"composite_id = '{self._escape_sql(composite_id)}'")
         except Exception:
             pass
         table.add([{
-            "synth_id": synth_id,
+            "composite_id": composite_id,
             "user_id": user_id,
             "memory_type": memory_type,
             "vector": semantic_vector,
@@ -319,7 +318,7 @@ class LanceVectorIndex:
 
         return [
             {
-                "synth_id": r.get("synth_id", ""),
+                "composite_id": r.get("composite_id", ""),
                 "user_id": r.get("user_id", ""),
                 "memory_type": r.get("memory_type", ""),
                 "_distance": r.get("_distance", 999.0),
@@ -341,17 +340,17 @@ class LanceVectorIndex:
             except Exception:
                 pass
 
-    def delete_unit(self, unit_id: str) -> None:
+    def delete_record(self, record_id: str) -> None:
         try:
             table = self._db.open_table(self.MEMORY_TABLE)
-            table.delete(f"unit_id = '{self._escape_sql(unit_id)}'")
+            table.delete(f"record_id = '{self._escape_sql(record_id)}'")
         except Exception:
             pass
 
-    def mark_expired(self, unit_id: str) -> None:
+    def mark_expired(self, record_id: str) -> None:
         """标记过期（向量层面：删除后以 expired=True 重新插入开销大，直接删除即可，
         具体过期条目不参与 ANN 召回，靠 sqlite 侧查询）。"""
-        self.delete_unit(unit_id)
+        self.delete_record(record_id)
 
     # ──────────────────────────────────────
     # 工具

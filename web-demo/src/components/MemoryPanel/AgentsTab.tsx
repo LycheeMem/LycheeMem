@@ -126,7 +126,7 @@ function SearchContent({ search }: { search: PipelineTrace["search_coordinator"]
 function SynthContent({ synth }: { synth: PipelineTrace["synthesizer"] }) {
   // 将 provenance source 翻译为中文
   const sourceLabel: Record<string, string> = {
-    "unit": "语义单元",
+    "record": "语义记录",
     "synth": "合成记忆",
     "compact_semantic": "紧凑记忆库",
     "graphiti_retrieval": "图谱检索",
@@ -196,11 +196,12 @@ const STEP_NAME_LABELS: Record<string, string> = {
   compact_encoding: "紧凑编码",
   dedup_and_store: "去重与存储",
   pragmatic_synthesis: "实用合成",
+  record_fusion: "记录融合",
   semantic_ingest: "语义摄入",
   // 旧的或备用步骤名
   encoded_to_units: "编码为单元",
   deduplicated: "去重检查",
-  synthesized_units: "合成记忆",
+  composite_records: "复合记录",
   ingested_to_store: "写入存储",
   indexed_vectors: "向量索引",
 };

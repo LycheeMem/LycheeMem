@@ -414,11 +414,11 @@ async def get_graph(pipeline=Depends(get_pipeline), user=Depends(get_optional_us
         data = sc.semantic_engine.export_debug(user_id=user_id)
         nodes = []
         edges = []
-        for u in data.get("units", []):
+        for u in data.get("records", []):
             nodes.append({
-                "id": u.get("unit_id", ""),
+                "id": u.get("record_id", ""),
                 "name": u.get("normalized_text", "")[:80],
-                "label": u.get("memory_type", "unit"),
+                "label": u.get("memory_type", "record"),
                 "properties": {
                     "semantic_text": u.get("semantic_text", ""),
                     "entities": u.get("entities", []),
@@ -426,21 +426,21 @@ async def get_graph(pipeline=Depends(get_pipeline), user=Depends(get_optional_us
                     "created_at": u.get("created_at", ""),
                 },
             })
-        for s in data.get("synthesized", []):
+        for s in data.get("composites", []):
             nodes.append({
-                "id": s.get("synth_id", ""),
+                "id": s.get("composite_id", ""),
                 "name": s.get("normalized_text", "")[:80],
-                "label": s.get("memory_type", "synth"),
+                "label": s.get("memory_type", "composite"),
                 "properties": {
                     "semantic_text": s.get("semantic_text", ""),
-                    "source_unit_ids": s.get("source_unit_ids", []),
+                    "source_record_ids": s.get("source_record_ids", []),
                 },
             })
-            for src_id in s.get("source_unit_ids", []):
+            for src_id in s.get("source_record_ids", []):
                 edges.append({
-                    "source": s.get("synth_id", ""),
+                    "source": s.get("composite_id", ""),
                     "target": src_id,
-                    "relation": "synthesized_from",
+                    "relation": "composed_from",
                 })
         return GraphResponse(nodes=nodes, edges=edges)
     except Exception as exc:
@@ -463,9 +463,9 @@ async def search_graph(
         nodes = []
         for r in results:
             nodes.append({
-                "id": r.get("unit_id", ""),
+                "id": r.get("record_id", ""),
                 "name": r.get("normalized_text", "")[:80],
-                "label": r.get("memory_type", "unit"),
+                "label": r.get("memory_type", "record"),
                 "properties": {
                     "semantic_text": r.get("semantic_text", ""),
                     "entities": r.get("entities", []),
@@ -491,8 +491,8 @@ async def clear_all_graph(
         return DeleteResponse(
             message=(
                 f"Compact memory cleared "
-                f"(units_deleted={result.get('units_deleted', 0)}, "
-                f"synth_deleted={result.get('synth_deleted', 0)})."
+                f"(records_deleted={result.get('records_deleted', 0)}, "
+                f"composites_deleted={result.get('composites_deleted', 0)})."
             )
         )
     except Exception as exc:

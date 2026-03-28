@@ -1,8 +1,6 @@
-"""Compact Semantic Encoder（模块一）。
+"""Typed Memory Encoder。
 
-流水线：对话 → 单次 LLM 调用（抽取 + 指代消解 + action metadata 标注）→ MemoryUnit 列表
-
-对应 idea 论文的 Module 1: Compact Semantic Encoding。
+流水线：对话 → 单次 LLM 调用（类型化提取 + 指代消解 + action metadata 标注）→ MemoryRecord 列表。
 """
 
 from __future__ import annotations
@@ -13,12 +11,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 from src.llm.base import BaseLLM
-from src.memory.semantic.models import MemoryUnit, VALID_MEMORY_TYPES
+from src.memory.semantic.models import MemoryRecord, VALID_MEMORY_TYPES
 from src.memory.semantic.prompts import COMPACT_ENCODING_SYSTEM
 
 
-class CompactEncoder:
-    """紧凑语义编码器：将对话轮次编码为 MemoryUnit 列表。"""
+class TypedMemoryEncoder:
+    """类型化记忆编码器：将对话轮次编码为 MemoryRecord 列表。"""
 
     def __init__(self, llm: BaseLLM):
         self._llm = llm
@@ -30,7 +28,7 @@ class CompactEncoder:
         previous_turns: list[dict[str, Any]] | None = None,
         session_id: str = "",
         user_id: str = "",
-    ) -> list[MemoryUnit]:
+    ) -> list[MemoryRecord]:
         """单次 LLM 调用完成抽取 + 指代消解 + action metadata 标注。
 
         Args:
@@ -40,16 +38,16 @@ class CompactEncoder:
             user_id: 用户 ID
 
         Returns:
-            编码完成的 MemoryUnit 列表
+            编码完成的 MemoryRecord 列表
         """
-        raw_units = self._encode_units(current_turns, previous_turns or [])
-        if not raw_units:
+        raw_records = self._encode_records(current_turns, previous_turns or [])
+        if not raw_records:
             return []
 
         now_iso = datetime.now(timezone.utc).isoformat()
-        results: list[MemoryUnit] = []
+        results: list[MemoryRecord] = []
 
-        for raw in raw_units:
+        for raw in raw_records:
             semantic_text = raw.get("semantic_text", "")
             if not semantic_text.strip():
                 continue
@@ -64,10 +62,10 @@ class CompactEncoder:
             raw_src = raw.get("source_role", "")
             source_role = raw_src if raw_src in ("user", "assistant", "both") else ""
 
-            unit_id = self._make_unit_id(normalized_text)
+            record_id = self._make_record_id(normalized_text)
 
-            unit = MemoryUnit(
-                unit_id=unit_id,
+            record = MemoryRecord(
+                record_id=record_id,
                 memory_type=memory_type,
                 semantic_text=semantic_text,
                 normalized_text=normalized_text,
@@ -86,7 +84,7 @@ class CompactEncoder:
                 created_at=now_iso,
                 updated_at=now_iso,
             )
-            results.append(unit)
+            results.append(record)
 
         return results
 
@@ -94,12 +92,12 @@ class CompactEncoder:
     # 单次 LLM 编码（抽取 + 指代消解 + metadata）
     # ──────────────────────────────────────
 
-    def _encode_units(
+    def _encode_records(
         self,
         current_turns: list[dict[str, Any]],
         previous_turns: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """单次 LLM 调用：输出包含全部字段的 unit 列表。"""
+        """单次 LLM 调用：输出包含全部字段的 record 列表。"""
         prev_text = self._format_section(previous_turns) if previous_turns else "（无上文）"
         curr_text = self._format_section(current_turns)
 
@@ -115,9 +113,9 @@ class CompactEncoder:
 
         try:
             parsed = self._parse_json(response)
-            units = parsed.get("units", [])
-            if isinstance(units, list):
-                return units
+            records = parsed.get("records", [])
+            if isinstance(records, list):
+                return records
         except (ValueError, json.JSONDecodeError):
             pass
         return []
@@ -127,7 +125,7 @@ class CompactEncoder:
     # ──────────────────────────────────────
 
     @staticmethod
-    def _make_unit_id(normalized_text: str) -> str:
+    def _make_record_id(normalized_text: str) -> str:
         """SHA256(normalized_text) 作为幂等 ID。"""
         return hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
 
