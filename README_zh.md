@@ -77,7 +77,7 @@ LycheeMem 将记忆组织为三个相辅相成的存储库：
         <ul>
           <li>7 类 MemoryRecord</li>
           <li>Record 融合</li>
-          <li>任务感知检索规划</li>
+          <li>行动感知检索规划</li>
           <li>RL-ready 使用统计</li>
         </ul>
       </td>
@@ -125,12 +125,12 @@ LycheeMem 将记忆组织为三个相辅相成的存储库：
 
 #### 四模块流水线
 
-##### 模块一：Typed Memory Encoding（类型化记忆编码）
+##### 模块一：Compact Semantic Encoding（类型化记忆编码）
 
 单次编码流水线，将对话轮次转换为 `MemoryRecord` 列表：
 
 1. **类型化提取** —— LLM 从对话中提取自洽事实，并为每条记录分配语义类别。
-2. **指代消解** —— 将代词和上下文依赖短语展开为完整表述，使每条 unit 脱离原始对话也能被理解。
+2. **指代消解** —— 将代词和上下文依赖短语展开为完整表述，使每条 record 脱离原始对话也能被理解。
 3. **行动元数据标注** —— LLM 为每条 record 打 `memory_type`、`tool_tags`、`constraint_tags`、`failure_tags`、`affordance_tags` 等结构化标签。
 
 `record_id = SHA256(normalized_text)`，天然幂等，重复内容自动去重。
@@ -143,9 +143,9 @@ LycheeMem 将记忆组织为三个相辅相成的存储库：
 2. LLM 判断候选池是否值得合并（`synthesis_judge`）。
 3. 若判断为是，LLM 执行合并并生成 `CompositeRecord`，写入 SQLite + LanceDB；原始 record 保留不删除。
 
-##### 模块三：Task-Aware Retrieval Planning（任务感知检索规划）
+##### 模块三：Action-Aware Search Planning（行动感知检索规划）
 
-检索前由 `TaskAwareRetrievalPlanner` 分析用户查询，输出 `SearchPlan`：
+搜索前由 `ActionAwareSearchPlanner` 分析用户查询，输出 `SearchPlan`：
 
 - `mode`：`answer`（事实回答）/ `action`（需要执行操作）/ `mixed`
 - `semantic_queries`：面向内容的检索词列表
@@ -154,7 +154,7 @@ LycheeMem 将记忆组织为三个相辅相成的存储库：
 - `required_constraints`：缺失的约束条件
 - `missing_slots`：缺失的参数/slot
 
-再经五通道召回 → Scorer 排序：
+再经五通道召回：
 
 1. **FTS 全文通道** —— SQLite FTS5 关键词召回 `MemoryRecord` + `CompositeRecord`
 2. **语义向量通道** —— LanceDB ANN 查询 `semantic_text` 嵌入
@@ -162,7 +162,9 @@ LycheeMem 将记忆组织为三个相辅相成的存储库：
 4. **标签过滤通道** —— 按 `tool_hints`/`constraint_tags` 精确过滤
 5. **时间通道** —— 按 `SearchPlan.temporal_filter` 过滤时间区间内的记忆
 
-Scorer 按以下公式综合评分并排序：
+##### 模块四：Multi-Dimensional Scorer（多维度打分）
+
+全通道候选汇聚后去重，由 `MemoryScorer` 按加权线性公式综合评分并排序：
 
 $$\text{Score} = \alpha \cdot S_\text{sem} + \beta \cdot S_\text{action} + \gamma \cdot S_\text{temporal} + \delta \cdot S_\text{recency} + \eta \cdot S_\text{evidence} - \lambda \cdot C_\text{token}$$
 
@@ -232,7 +234,7 @@ $$\text{Score} = \alpha \cdot S_\text{sem} + \beta \cdot S_\text{action} + \gamm
 
 ### 阶段 2 —— SearchCoordinator
 
-首先由 `TaskAwareRetrievalPlanner` 分析用户查询，生成包含 `mode`、`semantic_queries`、`pragmatic_queries`、`tool_hints` 等字段的检索计划。随后通过五通道并行召回（FTS 全文、语义向量、归一化向量、标签过滤、时间过滤）在 SQLite + LanceDB 中取出候选，经 Scorer 按六维公式排序后，合并为 `background_context` 供下游使用。技能子查询使用 HyDE 嵌入查询技能库。
+首先由 `ActionAwareSearchPlanner` 分析用户查询，生成包含 `mode`、`semantic_queries`、`pragmatic_queries`、`tool_hints` 等字段的搜索计划。随后通过五通道并行召回（FTS 全文、语义向量、归一化向量、标签过滤、时间过滤）在 SQLite + LanceDB 中取出候选，经 Scorer 按六维公式排序后，合并为 `background_context` 供下游使用。技能子查询使用 HyDE 嵌入查询技能库。
 
 ### 阶段 3 —— SynthesizerAgent
 

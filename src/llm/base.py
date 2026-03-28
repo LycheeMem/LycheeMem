@@ -1,12 +1,32 @@
 """LLM 统一抽象基类。"""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from contextvars import ContextVar
 from typing import Any
+
+# ── Per-turn token 累计器 ──────────────────────────────────────────────────────
+# 每轮 pipeline 调用开始时，由 LycheePipeline 设置一个可变 dict 到此 ContextVar；
+# asyncio.to_thread 会复制 Context（包含对同一 dict 对象的引用），因此子线程中的
+# 累加操作会直接修改该 dict，调用方能看到最新值（不需要线程锁，dict 字段 += 受 GIL 保护）。
+# 当 ContextVar 为 None（默认）时，_accumulate_usage 为空操作。
+_token_accumulator: ContextVar[dict[str, int] | None] = ContextVar(
+    "_token_accumulator", default=None
+)
 
 
 class BaseLLM(ABC):
     """所有 LLM 适配器的统一接口。"""
+
+    @staticmethod
+    def _accumulate_usage(input_tokens: int, output_tokens: int) -> None:
+        """将本次 LLM 调用的 token 计入当前 turn 的累计器（累计器未激活时为空操作）。"""
+        acc = _token_accumulator.get()
+        if acc is not None:
+            acc["input"] += input_tokens
+            acc["output"] += output_tokens
 
     @abstractmethod
     def generate(

@@ -376,14 +376,51 @@ html, body {
   color: var(--text-primary);
 }
 
-.msg-assistant .msg-meta {
+.msg-meta {
   margin-top: 8px;
-  padding-top: 6px;
+  padding: 6px 0;
   border-top: 1px solid var(--border);
   font-size: 10px;
   color: var(--text-muted);
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
+}
+
+.token-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px;
+  background: rgba(99, 102, 241, 0.1);
+  border-radius: 3px;
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  color: #6366f1;
+  white-space: nowrap;
+}
+
+.memory-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px;
+  background: rgba(16, 185, 129, 0.1);
+  border-radius: 3px;
+  border: 1px solid rgba(16, 185, 129, 0.2);
+  color: #10b981;
+  white-space: nowrap;
+}
+
+.wm-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px;
+  background: rgba(245, 158, 11, 0.1);
+  border-radius: 3px;
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  color: #f59e0b;
+  white-space: nowrap;
 }
 
 /* ─── Markdown 渲染样式 ─── */

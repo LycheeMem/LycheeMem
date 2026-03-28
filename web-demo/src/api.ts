@@ -1,14 +1,14 @@
 import type {
-  AuthUser,
-  ConsolidatorTrace,
-  GraphData,
-  GraphEdge,
-  GraphNode,
-  PipelineStatus,
-  PipelineTrace,
-  SessionInfo,
-  SkillItem,
-  Turn,
+    AuthUser,
+    ConsolidatorTrace,
+    GraphData,
+    GraphEdge,
+    GraphNode,
+    PipelineStatus,
+    PipelineTrace,
+    SessionInfo,
+    SkillItem,
+    Turn,
 } from "./types";
 
 const API = "";
@@ -122,6 +122,8 @@ export async function sendChatMessage(
   response: string;
   wm_token_usage?: number;
   memories_retrieved?: number;
+  turn_input_tokens?: number;
+  turn_output_tokens?: number;
   trace?: PipelineTrace | null;
 }> {
   const r = await fetch(`${API}/chat/complete`, {
@@ -161,8 +163,8 @@ export interface StreamDoneEvent {
   type: "done";
   session_id: string;
   memories_retrieved: number;
-  wm_token_usage: number;
-  trace: PipelineTrace;
+  wm_token_usage: number;  turn_input_tokens?: number;
+  turn_output_tokens?: number;  trace: PipelineTrace;
 }
 
 export type StreamEvent = StreamStepEvent | StreamTokenEvent | StreamAnswerEvent | StreamDoneEvent;

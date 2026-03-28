@@ -231,5 +231,7 @@ def _build_chat_response(session_id: str, result: dict[str, Any]) -> ChatRespons
         response=result.get("final_response", ""),
         memories_retrieved=memories,
         wm_token_usage=result.get("wm_token_usage", 0),
+        turn_input_tokens=result.get("turn_input_tokens", 0),
+        turn_output_tokens=result.get("turn_output_tokens", 0),
         trace=_build_trace(result),
     )

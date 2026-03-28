@@ -10,6 +10,8 @@ export interface AuthUser {
 export interface MessageMeta {
   memories_retrieved: number;
   wm_token_usage: number;
+  turn_input_tokens?: number;   // 本轮输入 token
+  turn_output_tokens?: number;  // 本轮输出 token
   trace?: PipelineTrace | null;
 }
 

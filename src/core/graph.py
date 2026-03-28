@@ -24,6 +24,7 @@ from src.agents.search_coordinator import SearchCoordinator
 from src.agents.synthesizer_agent import SynthesizerAgent
 from src.agents.wm_manager import WMManager
 from src.core.state import PipelineState
+from src.llm.base import _token_accumulator
 
 logger = logging.getLogger("src.pipeline")
 
@@ -154,12 +155,22 @@ class LycheePipeline:
         Returns:
             完整的 PipelineState（包含 final_response 等所有字段）。
         """
-        initial_state: dict[str, Any] = {
-            "user_query": user_query,
-            "session_id": session_id,
-            "user_id": user_id,
-        }
-        result = self._graph.invoke(initial_state)
+        counter: dict[str, int] = {"input": 0, "output": 0}
+        tok = _token_accumulator.set(counter)
+        try:
+            initial_state: dict[str, Any] = {
+                "user_query": user_query,
+                "session_id": session_id,
+                "user_id": user_id,
+            }
+            result = self._graph.invoke(initial_state)
+        finally:
+            # 先读取计数，再复位——确保后台固化线程启动后的 LLM 调用不计入本轮
+            in_tok, out_tok = counter["input"], counter["output"]
+            _token_accumulator.reset(tok)
+
+        result["turn_input_tokens"] = in_tok
+        result["turn_output_tokens"] = out_tok
 
         # 后台线程触发固化（fire-and-forget，不阻塞响应返回）
         if result.get("consolidation_pending"):
@@ -201,59 +212,77 @@ class LycheePipeline:
           {"type": "step", "step": <node_name>, "status": "done", ...extra}
           {"type": "done", "result": <full_state>}
         """
-        state: dict[str, Any] = {"user_query": user_query, "session_id": session_id, "user_id": user_id}
+        counter: dict[str, int] = {"input": 0, "output": 0}
+        tok = _token_accumulator.set(counter)
+        _tok_reset = False
 
-        patch = await asyncio.to_thread(self._wm_manager_node, state)
-        state.update(patch)
-        yield {
-            "type": "step",
-            "step": "wm_manager",
-            "status": "done",
-            "wm_token_usage": patch.get("wm_token_usage", 0),
-            "patch": patch,
-        }
+        def _reset_once() -> None:
+            nonlocal _tok_reset
+            if not _tok_reset:
+                _tok_reset = True
+                _token_accumulator.reset(tok)
 
-        patch = await asyncio.to_thread(self._search_node, state)
-        state.update(patch)
-        yield {"type": "step", "step": "search", "status": "done", "patch": patch}
+        try:
+            state: dict[str, Any] = {"user_query": user_query, "session_id": session_id, "user_id": user_id}
 
-        patch = await asyncio.to_thread(self._synthesize_node, state)
-        state.update(patch)
-        yield {"type": "step", "step": "synthesize", "status": "done", "patch": patch}
+            patch = await asyncio.to_thread(self._wm_manager_node, state)
+            state.update(patch)
+            yield {
+                "type": "step",
+                "step": "wm_manager",
+                "status": "done",
+                "wm_token_usage": patch.get("wm_token_usage", 0),
+                "patch": patch,
+            }
 
-        # reason 阶段：流式生成，逐 token yield，最后再发 step:reason 完成事件
-        streaming_response = ""
-        async for token in self.reasoner.astream(
-            user_query=state["user_query"],
-            compressed_history=state.get("compressed_history", []),
-            background_context=state.get("background_context", ""),
-            skill_reuse_plan=state.get("skill_reuse_plan", []),
-            retrieved_skills=state.get("retrieved_skills", []),
-        ):
-            streaming_response += token
-            yield {"type": "token", "content": token}
+            patch = await asyncio.to_thread(self._search_node, state)
+            state.update(patch)
+            yield {"type": "step", "step": "search", "status": "done", "patch": patch}
 
-        # 写回 assistant turn（保持与同步路径一致）
-        await asyncio.to_thread(
-            self.wm_manager.append_assistant_turn,
-            state["session_id"],
-            streaming_response,
-            user_id,
-        )
-        patch = {"final_response": streaming_response, "consolidation_pending": True}
-        state.update(patch)
-        yield {"type": "step", "step": "reason", "status": "done", "patch": patch}
+            patch = await asyncio.to_thread(self._synthesize_node, state)
+            state.update(patch)
+            yield {"type": "step", "step": "synthesize", "status": "done", "patch": patch}
 
-        if state.get("consolidation_pending"):
-            asyncio.create_task(
-                self._aconsolidate(
-                    session_id,
-                    retrieved_context=str(state.get("background_context") or ""),
-                    user_id=user_id,
-                )
+            # reason 阶段：流式生成，逐 token yield，最后再发 step:reason 完成事件
+            streaming_response = ""
+            async for token in self.reasoner.astream(
+                user_query=state["user_query"],
+                compressed_history=state.get("compressed_history", []),
+                background_context=state.get("background_context", ""),
+                skill_reuse_plan=state.get("skill_reuse_plan", []),
+                retrieved_skills=state.get("retrieved_skills", []),
+            ):
+                streaming_response += token
+                yield {"type": "token", "content": token}
+
+            # 写回 assistant turn（保持与同步路径一致）
+            await asyncio.to_thread(
+                self.wm_manager.append_assistant_turn,
+                state["session_id"],
+                streaming_response,
+                user_id,
             )
+            patch = {"final_response": streaming_response, "consolidation_pending": True}
+            state.update(patch)
+            yield {"type": "step", "step": "reason", "status": "done", "patch": patch}
 
-        yield {"type": "done", "result": dict(state)}
+            # 读取 token 计数并复位——在后台固化任务创建之前完成，确保固化的 LLM 调用不计入本轮
+            state["turn_input_tokens"] = counter["input"]
+            state["turn_output_tokens"] = counter["output"]
+            _reset_once()
+
+            if state.get("consolidation_pending"):
+                asyncio.create_task(
+                    self._aconsolidate(
+                        session_id,
+                        retrieved_context=str(state.get("background_context") or ""),
+                        user_id=user_id,
+                    )
+                )
+
+            yield {"type": "done", "result": dict(state)}
+        finally:
+            _reset_once()
 
     def consolidate(
         self, session_id: str, retrieved_context: str = "", user_id: str = ""

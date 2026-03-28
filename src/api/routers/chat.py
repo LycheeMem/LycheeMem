@@ -86,6 +86,8 @@ async def chat_stream(req: ChatRequest, pipeline=Depends(get_pipeline), user=Dep
                 "session_id": req.session_id,
                 "memories_retrieved": memories,
                 "wm_token_usage": final_result.get("wm_token_usage", 0),
+                "turn_input_tokens": final_result.get("turn_input_tokens", 0),
+                "turn_output_tokens": final_result.get("turn_output_tokens", 0),
                 "trace": trace.model_dump(),
             }
         )

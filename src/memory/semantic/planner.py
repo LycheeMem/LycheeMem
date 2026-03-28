@@ -1,4 +1,4 @@
-"""Task-Aware Retrieval Planner。
+"""Action-Aware Search Planner。
 
 分析用户查询 + 上下文，输出结构化 SearchPlan，
 指导下游多通道召回和 scorer 打分。
@@ -14,8 +14,8 @@ from src.memory.semantic.models import SearchPlan
 from src.memory.semantic.prompts import RETRIEVAL_PLANNING_SYSTEM
 
 
-class TaskAwareRetrievalPlanner:
-    """任务感知检索规划器。"""
+class ActionAwareSearchPlanner:
+    """行动感知检索规划器。"""
 
     def __init__(self, llm: BaseLLM):
         self._llm = llm

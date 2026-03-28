@@ -40,3 +40,7 @@ class PipelineState(TypedDict, total=False):
 
     # ─── 固化器 (异步后台，不阻塞主流程) ───
     consolidation_pending: bool
+
+    # ─── 本轮 token 统计（主流程所有 LLM 调用之和，不含后台固化） ───
+    turn_input_tokens: int   # 输入 token 总量
+    turn_output_tokens: int  # 输出 token 总量

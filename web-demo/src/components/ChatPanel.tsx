@@ -110,6 +110,8 @@ export default function ChatPanel() {
               meta: {
                 memories_retrieved: data.memories_retrieved || 0,
                 wm_token_usage: data.wm_token_usage || 0,
+                turn_input_tokens: data.turn_input_tokens,
+                turn_output_tokens: data.turn_output_tokens,
                 trace: data.trace || null,
               },
             });
@@ -202,11 +204,29 @@ export default function ChatPanel() {
 
       <div id="chat-messages" className="chat-messages" ref={messagesRef}>
         {messages.map((msg, i) => (
-          <div key={i} className={`msg msg-${msg.role}`}>
-            {msg.role === "user" ? (
-              <span className="msg-user-text">{msg.content}</span>
-            ) : (
-              <MarkdownRenderer content={msg.content} />
+          <div key={i}>
+            <div className={`msg msg-${msg.role}`}>
+              {msg.role === "user" ? (
+                <span className="msg-user-text">{msg.content}</span>
+              ) : (
+                <MarkdownRenderer content={msg.content} />
+              )}
+            </div>
+            {/* 显示 token 统计（仅 assistant 消息） */}
+            {msg.role === "assistant" && msg.meta && (
+              <div className="msg-meta">
+                {/* {msg.meta.turn_input_tokens !== undefined && msg.meta.turn_output_tokens !== undefined && (
+                  <span className="token-stat">
+                    📊 输入: {msg.meta.turn_input_tokens} | 输出: {msg.meta.turn_output_tokens}
+                  </span>
+                )} */}
+                {/* {msg.meta.memories_retrieved > 0 && (
+                  <span className="memory-stat">🧠 检索: {msg.meta.memories_retrieved}</span>
+                )}
+                {msg.meta.wm_token_usage > 0 && (
+                  <span className="wm-stat">💾 WM占用: {msg.meta.wm_token_usage}</span>
+                )} */}
+              </div>
             )}
           </div>
         ))}

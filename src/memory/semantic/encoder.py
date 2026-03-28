@@ -1,4 +1,4 @@
-"""Typed Memory Encoder。
+"""Compact Semantic Encoder。
 
 流水线：对话 → 单次 LLM 调用（类型化提取 + 指代消解 + action metadata 标注）→ MemoryRecord 列表。
 """
@@ -15,8 +15,8 @@ from src.memory.semantic.models import MemoryRecord, VALID_MEMORY_TYPES
 from src.memory.semantic.prompts import COMPACT_ENCODING_SYSTEM
 
 
-class TypedMemoryEncoder:
-    """类型化记忆编码器：将对话轮次编码为 MemoryRecord 列表。"""
+class CompactSemanticEncoder:
+    """Compact Semantic Encoder：将对话轮次编码为 MemoryRecord 列表。"""
 
     def __init__(self, llm: BaseLLM):
         self._llm = llm

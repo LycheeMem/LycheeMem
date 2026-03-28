@@ -22,9 +22,9 @@ from src.memory.semantic.base import (
     ConsolidationResult,
     SemanticSearchResult,
 )
-from src.memory.semantic.encoder import TypedMemoryEncoder
+from src.memory.semantic.encoder import CompactSemanticEncoder
 from src.memory.semantic.models import MemoryRecord, SearchPlan, UsageLog
-from src.memory.semantic.planner import TaskAwareRetrievalPlanner
+from src.memory.semantic.planner import ActionAwareSearchPlanner
 from src.memory.semantic.prompts import (
     NOVELTY_CHECK_SYSTEM,
     RETRIEVAL_ADEQUACY_CHECK_SYSTEM,
@@ -67,8 +67,8 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         )
 
         # 子模块
-        self._encoder = TypedMemoryEncoder(llm=llm)
-        self._planner = TaskAwareRetrievalPlanner(llm=llm)
+        self._encoder = CompactSemanticEncoder(llm=llm)
+        self._planner = ActionAwareSearchPlanner(llm=llm)
         self._scorer = MemoryScorer(weights=scorer_weights)
         self._synthesizer = RecordFusionEngine(
             llm=llm,

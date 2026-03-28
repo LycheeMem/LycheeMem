@@ -1,17 +1,17 @@
 """Compact Semantic Memory 所有 LLM Prompt 模板。
 
 LycheeMem 记忆链路的提示词实现：
-- 模块一（Typed Memory Encoding）：类型化提取、指代消解、归一化、action metadata 标注
+- 模块一（Compact Semantic Encoding）：类型化提取、指代消解、归一化、action metadata 标注
 - 模块二（Record Fusion）：融合判断 + 融合执行
-- 模块三（Task-Aware Retrieval Planning）：检索规划 + 充分性反思 + 补充查询生成
+- 模块三（Action-Aware Search Planning）：检索规划 + 充分性反思 + 补充查询生成
 """
 
 # ════════════════════════════════════════════════════════════════
-# 模块一：Typed Memory Encoding
+# 模块一：Compact Semantic Encoding
 # ════════════════════════════════════════════════════════════════
 
 COMPACT_ENCODING_SYSTEM = """\
-你是一个「类型化记忆编码器（Typed Memory Encoder）」。
+你是一个「Compact Semantic Encoder」。
 
 你的任务：从一段对话日志中，抽取**所有值得长期记忆的原子事实/偏好/事件/约束/流程/失败模式**，
 并将每条信息**一次性**编码为完整的 Memory Record（含语义文本、归一化表述及行动元数据）。
@@ -638,11 +638,11 @@ SYNTHESIS_EXECUTE_SYSTEM = """\
 
 
 # ════════════════════════════════════════════════════════════════
-# 模块三：Task-Aware Retrieval Planning
+# 模块三：Action-Aware Search Planning
 # ════════════════════════════════════════════════════════════════
 
 RETRIEVAL_PLANNING_SYSTEM = """\
-你是一个「任务感知检索规划器（Task-Aware Retrieval Planner）」。
+你是一个「行动感知检索规划器（Action-Aware Retrieval Planner）」。
 
 你的任务：分析用户的查询（以及可选的最近对话上下文），
 生成一个结构化的检索计划，指导下游多通道记忆检索。

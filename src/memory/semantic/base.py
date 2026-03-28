@@ -56,7 +56,7 @@ class BaseSemanticMemoryEngine(ABC):
             top_k: 返回条目上限。
             query_embedding: 预计算的 query 向量。
             user_id: 用户 ID（多用户隔离）。
-            retrieval_plan: Task-Aware Retrieval Plan (SearchPlan) 的 dict 表示（可选）。
+            retrieval_plan: Action-Aware Retrieval Plan 的 dict 表示（可选）。
 
         Returns:
             SemanticSearchResult 包含格式化 context 和 provenance。

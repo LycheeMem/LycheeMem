@@ -5,7 +5,7 @@
 - CompositeRecord：由多个 MemoryRecord 聚合形成的高密度记录
 
 以及辅助对象：
-- SearchPlan：任务感知检索计划
+- SearchPlan：行动感知检索计划
 - UsageLog：检索使用记录（为 RL 阶段准备）
 """
 
@@ -137,7 +137,7 @@ class CompositeRecord:
 
 @dataclass
 class SearchPlan:
-    """任务感知检索计划。
+    """行动感知检索计划。
 
     planner 分析当前请求后输出此结构，
     指导多通道召回和 scorer 打分。

@@ -85,6 +85,12 @@ class LiteLLMLLM(BaseLLM):
                 response_format=response_format,
             ),
         )
+        usage = getattr(resp, "usage", None)
+        if usage:
+            self._accumulate_usage(
+                getattr(usage, "prompt_tokens", 0) or 0,
+                getattr(usage, "completion_tokens", 0) or 0,
+            )
         return resp.choices[0].message.content or ""
     
     async def agenerate(
@@ -103,6 +109,12 @@ class LiteLLMLLM(BaseLLM):
                 response_format=response_format,
             ),
         )
+        usage = getattr(resp, "usage", None)
+        if usage:
+            self._accumulate_usage(
+                getattr(usage, "prompt_tokens", 0) or 0,
+                getattr(usage, "completion_tokens", 0) or 0,
+            )
         return resp.choices[0].message.content or ""
 
     async def astream_generate(
@@ -112,17 +124,28 @@ class LiteLLMLLM(BaseLLM):
         max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
         """真实 token 流式生成，逐 chunk yield 字符串。"""
+        kwargs = self._build_kwargs(
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=None,
+        )
+        # stream_options 让 LiteLLM 在最后一个 chunk 中附带 usage 信息。
+        # 部分不支持该参数的 provider 会通过 drop_params=True 自动忽略。
+        kwargs["stream_options"] = {"include_usage": True}
         response = await litellm.acompletion(
             model=self.model,
             messages=messages,
             stream=True,
-            **self._build_kwargs(
-                temperature=temperature,
-                max_tokens=max_tokens,
-                response_format=None,
-            ),
+            **kwargs,
         )
         async for chunk in response:
+            # 最后一个含 usage 的 chunk（content 可能为空）
+            usage = getattr(chunk, "usage", None)
+            if usage:
+                pt = getattr(usage, "prompt_tokens", 0) or 0
+                ct = getattr(usage, "completion_tokens", 0) or 0
+                if pt or ct:
+                    self._accumulate_usage(pt, ct)
             delta = chunk.choices[0].delta
             if delta and delta.content:
                 yield delta.content

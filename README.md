@@ -77,7 +77,7 @@ LycheeMem organizes memory into three complementary stores:
         <ul>
           <li>7 MemoryRecord types</li>
           <li>Record Fusion</li>
-          <li>Task-Aware Retrieval Planning</li>
+          <li>Action-Aware Search Planning</li>
           <li>RL-ready usage statistics</li>
         </ul>
       </td>
@@ -125,12 +125,12 @@ Related `MemoryRecord`s can be fused online by the **Record Fusion Engine** into
 
 #### Four-Module Pipeline
 
-##### Module 1: Typed Memory Encoding
+##### Module 1: Compact Semantic Encoding
 
 A single-pass pipeline that converts conversation turns into a list of `MemoryRecord`s:
 
 1. **Typed extraction** — LLM extracts self-contained facts and assigns a semantic category to each record.
-2. **Decontextualization** — Pronouns and context-dependent phrases are expanded into full expressions, so each unit is understandable without the original dialogue.
+2. **Decontextualization** — Pronouns and context-dependent phrases are expanded into full expressions, so each record is understandable without the original dialogue.
 3. **Action metadata annotation** — LLM annotates each record with `memory_type`, `tool_tags`, `constraint_tags`, `failure_tags`, `affordance_tags`, and other structured labels.
 
 `record_id = SHA256(normalized_text)` — naturally idempotent; duplicate content is deduplicated automatically.
@@ -143,9 +143,9 @@ Triggered online after each consolidation:
 2. LLM judges whether the candidate pool is worth merging (`synthesis_judge`).
 3. If yes, LLM executes the merge and produces a `CompositeRecord` written to both SQLite and LanceDB; original records are retained.
 
-##### Module 3: Task-Aware Retrieval Planning
+##### Module 3: Action-Aware Search Planning
 
-Before retrieval, `TaskAwareRetrievalPlanner` analyses the user query and emits a `SearchPlan`:
+Before retrieval, `ActionAwareRetrievalPlanner` analyses the user query and emits a `SearchPlan`:
 
 - `mode`: `answer` (factual Q&A) / `action` (needs execution) / `mixed`
 - `semantic_queries`: content-facing search terms
@@ -154,7 +154,7 @@ Before retrieval, `TaskAwareRetrievalPlanner` analyses the user query and emits 
 - `required_constraints`: constraints that are missing
 - `missing_slots`: parameters / slots that are absent
 
-The plan drives five-channel recall -> Scorer ranking:
+The plan drives five-channel recall:
 
 1. **FTS channel** — SQLite FTS5 keyword recall over `MemoryRecord` + `CompositeRecord`
 2. **Semantic vector channel** — LanceDB ANN over `semantic_text` embeddings
@@ -162,7 +162,9 @@ The plan drives five-channel recall -> Scorer ranking:
 4. **Tag filter channel** — exact filter by `tool_hints` / `constraint_tags`
 5. **Temporal channel** — filter by `SearchPlan.temporal_filter` time window
 
-Scorer combines all signals using the formula:
+##### Module 4: Multi-Dimensional Scorer
+
+Candidates from all channels are de-duplicated and ranked by `MemoryScorer` using a weighted linear combination:
 
 $$\text{Score} = \alpha \cdot S_\text{sem} + \beta \cdot S_\text{action} + \gamma \cdot S_\text{temporal} + \delta \cdot S_\text{recency} + \eta \cdot S_\text{evidence} - \lambda \cdot C_\text{token}$$
 
@@ -232,7 +234,7 @@ Rule-based agent (no LLM prompt). Appends the user turn to the session log, coun
 
 ### Stage 2 — SearchCoordinator
 
-`TaskAwareRetrievalPlanner` first analyses the user query and produces a `SearchPlan` containing `mode`, `semantic_queries`, `pragmatic_queries`, `tool_hints`, and more. Five parallel recall channels (FTS full-text, semantic vector, normalised vector, tag filter, temporal filter) then query SQLite + LanceDB, and the resulting candidates are ranked by the six-dimensional Scorer formula before being merged into `background_context`. Skill sub-queries use HyDE embedding against the skill store.
+`ActionAwareRetrievalPlanner` first analyses the user query and produces a `SearchPlan` containing `mode`, `semantic_queries`, `pragmatic_queries`, `tool_hints`, and more. Five parallel recall channels (FTS full-text, semantic vector, normalised vector, tag filter, temporal filter) then query SQLite + LanceDB, and the resulting candidates are ranked by the six-dimensional Scorer formula before being merged into `background_context`. Skill sub-queries use HyDE embedding against the skill store.
 
 ### Stage 3 — SynthesizerAgent
 

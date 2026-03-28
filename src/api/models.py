@@ -152,6 +152,8 @@ class ChatResponse(BaseModel):
     response: str
     memories_retrieved: int = 0
     wm_token_usage: int = 0
+    turn_input_tokens: int = 0   # 本轮主流程消耗的输入 token 总量
+    turn_output_tokens: int = 0  # 本轮主流程消耗的输出 token 总量
     trace: PipelineTrace | None = None
 
 
