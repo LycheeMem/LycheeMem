@@ -302,7 +302,7 @@ npm run dev      # 服务启动于 http://localhost:5173
 
 <a id="openclaw-插件"></a>
 
-## 🐾 OpenClaw 插件
+## 🦞 OpenClaw 插件
 
 LycheeMem 提供原生 [OpenClaw](https://openclaw.ai) 插件，让任何 OpenClaw 会话无需手动配置即可获得持久化长期记忆。
 

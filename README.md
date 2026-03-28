@@ -302,7 +302,7 @@ npm run dev      # served at http://localhost:5173
 
 <a id="openclaw-plugin"></a>
 
-## 🐾 OpenClaw Plugin
+## 🦞 OpenClaw Plugin
 
 LycheeMem ships a native [OpenClaw](https://openclaw.ai) plugin that gives any OpenClaw session persistent long-term memory with zero manual wiring.
 

@@ -2,6 +2,7 @@
 Pipeline 工厂：一键组装所有组件。
 
 提供 `create_pipeline()` 入口，注入所有依赖。
+支持两种语义记忆后端：graphiti（Neo4j 图谱）/ compact（SQLite+LanceDB）。
 """
 
 from __future__ import annotations
@@ -69,7 +70,80 @@ def create_pipeline(
         min_recent_turns=min_recent_turns,
     )
 
-    # Graphiti Engine（唯一图谱实现，强制 Neo4j）
+    # ── 语义记忆后端选择 ──
+    semantic_backend = getattr(settings, "semantic_memory_backend", "compact")
+
+    if semantic_backend == "compact":
+        semantic_engine, graphiti_engine = _create_compact_backend(
+            llm=llm, embedder=embedder, settings=settings,
+        )
+    else:
+        semantic_engine, graphiti_engine = _create_graphiti_backend(
+            llm=llm, embedder=embedder, settings=settings, embedding_dim=embedding_dim,
+        )
+
+    # 5 个认知组件
+    wm_manager = WMManager(session_store=session_store, compressor=compressor)
+    search_coordinator = SearchCoordinator(
+        llm=llm,
+        embedder=embedder,
+        skill_store=skill_store,
+        semantic_engine=semantic_engine,
+        graphiti_engine=graphiti_engine,
+        graph_top_k=graph_top_k,
+        skill_top_k=skill_top_k,
+    )
+    synthesizer = SynthesizerAgent(llm=llm)
+    reasoner = ReasoningAgent(llm=llm)
+
+    consolidator = ConsolidatorAgent(
+        llm=llm,
+        embedder=embedder,
+        skill_store=skill_store,
+        semantic_engine=semantic_engine,
+        graphiti_engine=graphiti_engine,
+        community_refresh_every=settings.graphiti_community_refresh_every if graphiti_engine else 0,
+    )
+
+    return LycheePipeline(
+        wm_manager=wm_manager,
+        search_coordinator=search_coordinator,
+        synthesizer=synthesizer,
+        reasoner=reasoner,
+        consolidator=consolidator,
+    )
+
+
+def _create_compact_backend(
+    *,
+    llm: BaseLLM,
+    embedder: BaseEmbedder,
+    settings,
+) -> tuple:
+    """创建 Compact Semantic Memory 后端。返回 (semantic_engine, None)。"""
+    from src.memory.semantic.engine import CompactSemanticEngine
+    from src.memory.semantic.scorer import ScoringWeights
+
+    engine = CompactSemanticEngine(
+        llm=llm,
+        embedder=embedder,
+        sqlite_db_path=getattr(settings, "compact_memory_db_path", "data/compact_memory.db"),
+        vector_db_path=getattr(settings, "compact_vector_db_path", "data/compact_vector"),
+        dedup_threshold=getattr(settings, "compact_dedup_threshold", 0.85),
+        synthesis_min_units=getattr(settings, "compact_synthesis_min_units", 2),
+        synthesis_similarity=getattr(settings, "compact_synthesis_similarity", 0.75),
+    )
+    return engine, None
+
+
+def _create_graphiti_backend(
+    *,
+    llm: BaseLLM,
+    embedder: BaseEmbedder,
+    settings,
+    embedding_dim: int,
+) -> tuple:
+    """创建 Graphiti (Neo4j) 后端。返回 (None, graphiti_engine)。"""
     from src.memory.graph.graphiti_engine import GraphitiEngine
     from src.memory.graph.graphiti_neo4j_store import GraphitiNeo4jStore
 
@@ -100,12 +174,11 @@ def create_pipeline(
             vector_dim=vector_dim,
         )
 
-    # Optional: cross-encoder rerank（复用主 LLM 适配器，不直接调用 provider SDK）
     cross_encoder = None
     if bool(getattr(settings, "graphiti_cross_encoder_enabled", False)):
         if llm is None:
             raise RuntimeError("Graphiti cross-encoder requires a valid llm adapter")
-        from src.memory.graph.cross_encoder import LLMCrossEncoderReranker  # noqa: PLC0415
+        from src.memory.graph.cross_encoder import LLMCrossEncoderReranker
 
         cross_encoder = LLMCrossEncoderReranker(llm=llm)
 
@@ -121,32 +194,4 @@ def create_pipeline(
         mmr_lambda=float(getattr(settings, "graphiti_mmr_lambda", 0.5)),
         bfs_recent_episode_limit=int(getattr(settings, "graphiti_bfs_recent_episode_limit", 4)),
     )
-
-    # 5 个认知组件
-    wm_manager = WMManager(session_store=session_store, compressor=compressor)
-    search_coordinator = SearchCoordinator(
-        llm=llm,
-        embedder=embedder,
-        skill_store=skill_store,
-        graphiti_engine=graphiti_engine,
-        graph_top_k=graph_top_k,
-        skill_top_k=skill_top_k,
-    )
-    synthesizer = SynthesizerAgent(llm=llm)
-    reasoner = ReasoningAgent(llm=llm)
-
-    consolidator = ConsolidatorAgent(
-        llm=llm,
-        embedder=embedder,
-        skill_store=skill_store,
-        graphiti_engine=graphiti_engine,
-        community_refresh_every=settings.graphiti_community_refresh_every,
-    )
-
-    return LycheePipeline(
-        wm_manager=wm_manager,
-        search_coordinator=search_coordinator,
-        synthesizer=synthesizer,
-        reasoner=reasoner,
-        consolidator=consolidator,
-    )
+    return None, graphiti_engine

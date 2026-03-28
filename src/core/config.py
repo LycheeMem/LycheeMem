@@ -48,9 +48,17 @@ class Settings(BaseSettings):
 
     # ─── 存储后端选择 ───
     session_backend: str = "sqlite"  # "memory" | "sqlite"
+    semantic_memory_backend: str = "compact"  # "graphiti" | "compact"
 
     # ─── SQLite (会话持久化) ───
     sqlite_db_path: str = "lychee_memos_sessions.db"
+
+    # ─── Compact Semantic Memory ───
+    compact_memory_db_path: str = "data/compact_memory.db"
+    compact_vector_db_path: str = "data/compact_vector"
+    compact_dedup_threshold: float = 0.85
+    compact_synthesis_min_units: int = 2
+    compact_synthesis_similarity: float = 0.75
 
     # ─── Neo4j (图谱持久化) ───
     neo4j_uri: str = "bolt://localhost:7687"

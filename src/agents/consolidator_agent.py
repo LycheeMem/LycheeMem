@@ -3,8 +3,12 @@
 
 异步后台进程，在每次交互结束后：
 1. 分析完整对话记录
-2. 提取新的事实/偏好变化 → 更新图谱
+2. 提取新的事实/偏好变化 → 更新语义记忆
 3. 提取成功的工具调用链 → 存入技能库
+
+支持两种语义记忆后端：
+- compact（BaseSemanticMemoryEngine）：调用 engine.ingest_conversation()
+- graphiti（GraphitiEngine）：Episode → Semantic Build → Community（遗留路径）
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from src.memory.procedural.file_skill_store import FileSkillStore
 
 if TYPE_CHECKING:
     from src.memory.graph.graphiti_engine import GraphitiEngine
+    from src.memory.semantic.base import BaseSemanticMemoryEngine
 
 NOVELTY_CHECK_SYSTEM_PROMPT = """\
 你是一个「记忆新颖性评估器（Memory Novelty Assessor）」。
@@ -143,33 +148,36 @@ assistant: 好的，我们可以聊点轻松的话题～
 
 
 class ConsolidatorAgent(BaseAgent):
-    """记忆固化 Agent：异步分析对话并更新长期记忆。"""
+    """记忆固化 Agent：异步分析对话并更新长期记忆。
+
+    支持两种语义记忆后端（互斥，由 factory 注入）：
+    - semantic_engine (BaseSemanticMemoryEngine): compact 后端
+    - graphiti_engine (GraphitiEngine): 遗留 graphiti 后端
+    """
 
     def __init__(
         self,
         llm: BaseLLM,
         embedder: BaseEmbedder,
         skill_store: FileSkillStore,
-        graphiti_engine: "GraphitiEngine",
+        semantic_engine: "BaseSemanticMemoryEngine | None" = None,
+        graphiti_engine: "GraphitiEngine | None" = None,
         community_refresh_every: int = 50,
     ):
         super().__init__(llm=llm, prompt_template=CONSOLIDATION_SYSTEM_PROMPT)
         self.embedder = embedder
         self.skill_store = skill_store
+        self.semantic_engine = semantic_engine
         self.graphiti_engine = graphiti_engine
 
         self._graphiti_last_episode_ingested: dict[str, int] = {}
         self._graphiti_last_semantic: dict[str, int] = {}
 
-        # Paper §2.3: periodic full-graph community refresh.
-        # Every _community_refresh_every semantic turns processed globally,
-        # refresh_all_communities() corrects drift from incremental dynamic
-        # extension (neighbor-voting).  0 = disabled.
         self._community_refresh_every: int = max(0, community_refresh_every)
         self._total_episodes_since_community_refresh: int = 0
 
         self._graphiti_semantic_builder = None
-        if hasattr(self.graphiti_engine, "store"):
+        if self.graphiti_engine is not None and hasattr(self.graphiti_engine, "store"):
             from src.memory.graph.graphiti_semantic import GraphitiSemanticBuilder
 
             self._graphiti_semantic_builder = GraphitiSemanticBuilder(
@@ -177,6 +185,10 @@ class ConsolidatorAgent(BaseAgent):
                 embedder=self.embedder,
                 store=self.graphiti_engine.store,
             )
+
+    @property
+    def _use_compact(self) -> bool:
+        return self.semantic_engine is not None
 
     @staticmethod
     def _episode_id(*, session_id: str, turn_index: int, role: str, content: str) -> str:
@@ -222,7 +234,7 @@ class ConsolidatorAgent(BaseAgent):
 
         Args:
             turns: 完整的对话轮次列表。
-            session_id: 会话 ID（必填，Graphiti 需要）。
+            session_id: 会话 ID。
             retrieved_context: Pipeline 检索阶段合成的已有记忆上下文，
                 用于与本轮对话比对，判断是否有新信息需要固化。
 
@@ -233,8 +245,99 @@ class ConsolidatorAgent(BaseAgent):
             return {"entities_added": 0, "skills_added": 0, "steps": []}
 
         if not session_id:
-            raise RuntimeError("session_id is required for Graphiti consolidation")
+            raise RuntimeError("session_id is required for consolidation")
 
+        if self._use_compact:
+            return self._run_compact(
+                turns=turns,
+                session_id=session_id,
+                retrieved_context=retrieved_context,
+                user_id=user_id,
+            )
+        return self._run_graphiti(
+            turns=turns,
+            session_id=session_id,
+            retrieved_context=retrieved_context,
+            user_id=user_id,
+        )
+
+    def _run_compact(
+        self,
+        *,
+        turns: list[dict[str, Any]],
+        session_id: str,
+        retrieved_context: str = "",
+        user_id: str = "",
+    ) -> dict[str, Any]:
+        """Compact 后端路径：semantic_engine.ingest_conversation() + 技能抽取。"""
+        steps: list[dict[str, Any]] = []
+        conversation_text = "\n".join(f"{t['role']}: {t['content']}" for t in turns)
+
+        # 并行：semantic ingest（左路）+ LLM 技能分析（右路）
+        def _do_ingest():
+            return self.semantic_engine.ingest_conversation(
+                turns=turns,
+                session_id=session_id,
+                user_id=user_id,
+                retrieved_context=retrieved_context,
+            )
+
+        def _do_llm_analysis():
+            response = self._call_llm(
+                conversation_text,
+                system_content=self.prompt_template,
+                add_time_basis=True,
+            )
+            return self._safe_parse(response)
+
+        def _write_skills(analysis: dict[str, Any]) -> int:
+            count = 0
+            for skill in analysis.get("new_skills", []):
+                intent = skill.get("intent", "")
+                doc_markdown = skill.get("doc_markdown", "")
+                if intent and doc_markdown:
+                    embedding = self.embedder.embed_query(intent)
+                    self.skill_store.add(
+                        [{"intent": intent, "embedding": embedding, "doc_markdown": doc_markdown}],
+                        user_id=user_id,
+                    )
+                    count += 1
+            return count
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            ingest_future = executor.submit(_do_ingest)
+            llm_future = executor.submit(_do_llm_analysis)
+
+            analysis = llm_future.result()
+            skill_future = executor.submit(_write_skills, analysis)
+
+            ingest_result = ingest_future.result()
+            skills_added = skill_future.result()
+
+        steps.extend(ingest_result.steps)
+        steps.append({
+            "name": "skill_extraction",
+            "status": "done",
+            "detail": f"{skills_added} 个技能" if skills_added else "无新技能",
+        })
+
+        return {
+            "entities_added": ingest_result.units_added,
+            "skills_added": skills_added,
+            "facts_added": ingest_result.units_merged,
+            "has_novelty": ingest_result.units_added > 0 or ingest_result.units_merged > 0,
+            "steps": steps,
+        }
+
+    def _run_graphiti(
+        self,
+        *,
+        turns: list[dict[str, Any]],
+        session_id: str,
+        retrieved_context: str = "",
+        user_id: str = "",
+    ) -> dict[str, Any]:
+        """Graphiti 后端路径（遗留）。"""
         steps: list[dict[str, Any]] = []
 
         # ── 新颖性检查：对话是否引入了已有记忆未覆盖的新信息 ──

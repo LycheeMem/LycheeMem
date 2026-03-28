@@ -1,20 +1,25 @@
 """
 检索协调器 (Memory Search Coordinator)。
 
-无需路由决策，每次请求均同时检索图谱和技能库：
-- 对图谱：关键词匹配 / 多跳子查询
-- 对技能库：HyDE → embedding → 向量检索
+支持两种语义记忆后端：
+- compact（BaseSemanticMemoryEngine）：直接调用 engine.search()
+- graphiti（GraphitiEngine）：关键词匹配 / 多跳子查询（遗留路径）
+
+对技能库：HyDE → embedding → 向量检索（两种后端共用）。
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from src.agents.base_agent import BaseAgent
 from src.embedder.base import BaseEmbedder
 from src.llm.base import BaseLLM
-from src.memory.graph.graphiti_engine import GraphitiEngine
 from src.memory.procedural.file_skill_store import FileSkillStore
+
+if TYPE_CHECKING:
+    from src.memory.graph.graphiti_engine import GraphitiEngine
+    from src.memory.semantic.base import BaseSemanticMemoryEngine
 
 HYDE_SYSTEM_PROMPT = """\
 你是一个「HyDE 假设性回答生成器」。
@@ -113,14 +118,20 @@ RETRIEVAL_PLAN_PROMPT = """\
 
 
 class SearchCoordinator(BaseAgent):
-    """检索协调器：每次请求均同时检索图谱和技能库。"""
+    """检索协调器：每次请求均同时检索语义记忆和技能库。
+
+    支持两种语义记忆后端（互斥，由 factory 注入）：
+    - semantic_engine (BaseSemanticMemoryEngine): compact 后端
+    - graphiti_engine (GraphitiEngine): 遗留 graphiti 后端
+    """
 
     def __init__(
         self,
         llm: BaseLLM,
         embedder: BaseEmbedder,
         skill_store: FileSkillStore,
-        graphiti_engine: GraphitiEngine,
+        semantic_engine: "BaseSemanticMemoryEngine | None" = None,
+        graphiti_engine: "GraphitiEngine | None" = None,
         graph_top_k: int = 3,
         skill_top_k: int = 3,
         skill_reuse_threshold: float = 0.85,
@@ -128,38 +139,90 @@ class SearchCoordinator(BaseAgent):
         super().__init__(llm=llm, prompt_template=HYDE_SYSTEM_PROMPT)
         self.embedder = embedder
         self.skill_store = skill_store
+        self.semantic_engine = semantic_engine
         self.graphiti_engine = graphiti_engine
         self.graph_top_k = graph_top_k
         self.skill_top_k = skill_top_k
         self.skill_reuse_threshold = skill_reuse_threshold
+
+    @property
+    def _use_compact(self) -> bool:
+        return self.semantic_engine is not None
 
     def run(
         self,
         user_query: str,
         **kwargs,
     ) -> dict[str, Any]:
-        """同时检索图谱和技能库（含结构化检索规划）。
+        """同时检索语义记忆和技能库。
 
-        流程：
-        1. LLM 生成面向不同源的子查询
-        2. 分别检索图谱和技能库
-        3. 合并结果
-
-        Args:
-            user_query: 用户查询。
+        compact 后端：直接调用 semantic_engine.search()
+        graphiti 后端：LLM 子查询规划 → 分别检索图谱和技能库 → 合并
 
         Returns:
             dict 包含：retrieved_graph_memories, retrieved_skills
         """
-        sub_queries = self._plan_retrieval(user_query)
-
-        graph_queries = sub_queries.get("graph") or [user_query]
-        skill_queries = sub_queries.get("skill") or [user_query]
-
         session_id = kwargs.get("session_id")
         if session_id is not None:
             session_id = str(session_id)
         user_id = kwargs.get("user_id", "")
+
+        if self._use_compact:
+            return self._run_compact(user_query, session_id=session_id, user_id=user_id)
+
+        return self._run_graphiti(user_query, session_id=session_id, user_id=user_id)
+
+    def _run_compact(
+        self,
+        user_query: str,
+        *,
+        session_id: str | None = None,
+        user_id: str = "",
+    ) -> dict[str, Any]:
+        """Compact 后端路径：semantic_engine.search() + 技能库。"""
+        result = self.semantic_engine.search(
+            query=user_query,
+            session_id=session_id,
+            top_k=self.graph_top_k,
+            user_id=user_id,
+        )
+
+        # 将 SemanticSearchResult 转为 pipeline 期望的格式
+        graph_memories = []
+        if result.context.strip():
+            graph_memories = [
+                {
+                    "anchor": {
+                        "node_id": "compact_context",
+                        "name": "CompactSemanticMemory",
+                        "label": "Context",
+                        "score": 1.0,
+                    },
+                    "subgraph": {"nodes": [], "edges": []},
+                    "constructed_context": result.context,
+                    "provenance": result.provenance,
+                }
+            ]
+
+        skill_results = self._search_skills(user_query, user_id=user_id)
+
+        return {
+            "retrieved_graph_memories": graph_memories,
+            "retrieved_skills": skill_results,
+        }
+
+    def _run_graphiti(
+        self,
+        user_query: str,
+        *,
+        session_id: str | None = None,
+        user_id: str = "",
+    ) -> dict[str, Any]:
+        """Graphiti 后端路径（遗留）。"""
+        sub_queries = self._plan_retrieval(user_query)
+
+        graph_queries = sub_queries.get("graph") or [user_query]
+        skill_queries = sub_queries.get("skill") or [user_query]
 
         return {
             "retrieved_graph_memories": self._search_graph(
