@@ -36,6 +36,10 @@ COMPACT_ENCODING_SYSTEM = """\
    - procedure：操作流程/步骤（"部署时先 build 再 push"）
    - failure_pattern：失败经验/教训（"直接 pip install 会导致版本冲突"）
    - tool_affordance：工具能力/限制（"GPT-4 的上下文窗口是 128K"）
+8. **source_role 判断**：
+   - "user"：该事实/偏好由用户（role=user）直接陈述，例如用户说"我喜欢 X"、"我们项目用 Y"
+   - "assistant"：该陈述由 AI（role=assistant）给出，用户未明确确认，例如 AI 解释某个概念或给出建议
+   - "both"：用户提出问题或需求，AI 给出回应，双方对同一信息都有贡献，或用户明确确认了 AI 的陈述
 
 输出格式（严格 JSON，无代码块）：
 {
@@ -45,7 +49,8 @@ COMPACT_ENCODING_SYSTEM = """\
             "semantic_text": "经过指代消解的完整语义文本",
             "entities": ["实体1", "实体2"],
             "temporal": {"t_ref": "ISO时间戳或描述", "t_valid_from": "", "t_valid_to": ""},
-            "evidence_turns": [0, 1]
+            "evidence_turns": [0, 1],
+            "source_role": "user|assistant|both"
         }
     ]
 }
@@ -54,6 +59,10 @@ COMPACT_ENCODING_SYSTEM = """\
 - entities 要提取所有出现的具体名称。
 - temporal 中，t_ref 是信息产生的参考时间，t_valid_from/to 是信息的有效期（如有）。无时间信息则留空字符串。
 - evidence_turns 标记该信息来源于 CURRENT_TURNS 中的第几轮（0-indexed）。
+- source_role 标记该 unit 的信息主要来自哪一方：
+  - "user"：用户直接陈述的事实、偏好、需求、约束等（可信度高）
+  - "assistant"：AI 给出的陈述、建议、解释（可能含幻觉，置信度应稍低）
+  - "both"：用户与 AI 共同确认或交叉验证的信息
 - 如果对话中完全没有值得记忆的信息，返回 {"units": []}。
 """
 

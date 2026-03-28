@@ -80,6 +80,7 @@ class SQLiteSemanticStore:
                     confidence       REAL NOT NULL DEFAULT 1.0,
                     evidence_turn_range TEXT NOT NULL DEFAULT '[]',
                     source_session   TEXT NOT NULL DEFAULT '',
+                    source_role      TEXT NOT NULL DEFAULT '',
                     user_id          TEXT NOT NULL DEFAULT '',
                     created_at       TEXT NOT NULL DEFAULT '',
                     updated_at       TEXT NOT NULL DEFAULT '',
@@ -140,6 +141,13 @@ class SQLiteSemanticStore:
                 CREATE INDEX IF NOT EXISTS idx_ul_session ON usage_logs(session_id);
             """)
 
+            # 兼容旧库：若 source_role 列不存在则追加（ALTER TABLE 幂等）
+            try:
+                c.execute("ALTER TABLE memory_units ADD COLUMN source_role TEXT NOT NULL DEFAULT ''")
+                c.commit()
+            except sqlite3.OperationalError:
+                pass  # 列已存在
+
             # FTS5 虚拟表（分开创建避免 IF NOT EXISTS 不兼容问题）
             try:
                 c.execute("""
@@ -192,7 +200,7 @@ class SQLiteSemanticStore:
                     unit_id, memory_type, semantic_text, normalized_text,
                     entities, temporal, task_tags, tool_tags,
                     constraint_tags, failure_tags, affordance_tags,
-                    confidence, evidence_turn_range, source_session, user_id,
+                    confidence, evidence_turn_range, source_session, source_role, user_id,
                     created_at, updated_at,
                     retrieval_count, retrieval_hit_count,
                     action_success_count, action_fail_count,
@@ -202,7 +210,7 @@ class SQLiteSemanticStore:
                     ?, ?, ?, ?,
                     ?, ?, ?, ?,
                     ?, ?, ?,
-                    ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
                     ?, ?,
                     ?, ?,
                     ?, ?,
@@ -222,6 +230,7 @@ class SQLiteSemanticStore:
                     affordance_tags = excluded.affordance_tags,
                     confidence = excluded.confidence,
                     evidence_turn_range = excluded.evidence_turn_range,
+                    source_role = excluded.source_role,
                     updated_at = excluded.updated_at,
                     expired = excluded.expired,
                     expired_at = excluded.expired_at,
@@ -235,7 +244,7 @@ class SQLiteSemanticStore:
                     _json_dumps(unit.constraint_tags), _json_dumps(unit.failure_tags),
                     _json_dumps(unit.affordance_tags),
                     unit.confidence, _json_dumps(unit.evidence_turn_range),
-                    unit.source_session, unit.user_id,
+                    unit.source_session, unit.source_role, unit.user_id,
                     unit.created_at, unit.updated_at,
                     unit.retrieval_count, unit.retrieval_hit_count,
                     unit.action_success_count, unit.action_fail_count,
@@ -787,32 +796,34 @@ class SQLiteSemanticStore:
 
     @staticmethod
     def _row_to_unit(row: sqlite3.Row) -> MemoryUnit:
+        d = dict(row)
         return MemoryUnit(
-            unit_id=row["unit_id"],
-            memory_type=row["memory_type"],
-            semantic_text=row["semantic_text"],
-            normalized_text=row["normalized_text"],
-            entities=_json_loads(row["entities"]),
-            temporal=_json_loads_dict(row["temporal"]),
-            task_tags=_json_loads(row["task_tags"]),
-            tool_tags=_json_loads(row["tool_tags"]),
-            constraint_tags=_json_loads(row["constraint_tags"]),
-            failure_tags=_json_loads(row["failure_tags"]),
-            affordance_tags=_json_loads(row["affordance_tags"]),
-            confidence=float(row["confidence"]),
-            evidence_turn_range=_json_loads(row["evidence_turn_range"]),
-            source_session=row["source_session"],
-            user_id=row["user_id"],
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-            retrieval_count=int(row["retrieval_count"]),
-            retrieval_hit_count=int(row["retrieval_hit_count"]),
-            action_success_count=int(row["action_success_count"]),
-            action_fail_count=int(row["action_fail_count"]),
-            last_retrieved_at=row["last_retrieved_at"],
-            expired=bool(row["expired"]),
-            expired_at=row["expired_at"],
-            expired_reason=row["expired_reason"],
+            unit_id=d["unit_id"],
+            memory_type=d["memory_type"],
+            semantic_text=d["semantic_text"],
+            normalized_text=d["normalized_text"],
+            entities=_json_loads(d["entities"]),
+            temporal=_json_loads_dict(d["temporal"]),
+            task_tags=_json_loads(d["task_tags"]),
+            tool_tags=_json_loads(d["tool_tags"]),
+            constraint_tags=_json_loads(d["constraint_tags"]),
+            failure_tags=_json_loads(d["failure_tags"]),
+            affordance_tags=_json_loads(d["affordance_tags"]),
+            confidence=float(d["confidence"]),
+            evidence_turn_range=_json_loads(d["evidence_turn_range"]),
+            source_session=d["source_session"],
+            source_role=d.get("source_role", ""),
+            user_id=d["user_id"],
+            created_at=d["created_at"],
+            updated_at=d["updated_at"],
+            retrieval_count=int(d["retrieval_count"]),
+            retrieval_hit_count=int(d["retrieval_hit_count"]),
+            action_success_count=int(d["action_success_count"]),
+            action_fail_count=int(d["action_fail_count"]),
+            last_retrieved_at=d["last_retrieved_at"],
+            expired=bool(d["expired"]),
+            expired_at=d["expired_at"],
+            expired_reason=d["expired_reason"],
         )
 
     @staticmethod

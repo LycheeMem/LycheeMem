@@ -77,6 +77,7 @@ class MemoryUnit:
     confidence: float = 1.0
     evidence_turn_range: list[int] = field(default_factory=list)  # [start_turn, end_turn]
     source_session: str = ""
+    source_role: str = ""  # "user" | "assistant" | "both" | ""：该 unit 主要出自哪一方
     user_id: str = ""
     created_at: str = ""  # ISO timestamp
     updated_at: str = ""

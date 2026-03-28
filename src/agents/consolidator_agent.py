@@ -120,7 +120,6 @@ class ConsolidatorAgent(BaseAgent):
         self.skill_store = skill_store
         self.semantic_engine = semantic_engine
 
-    @staticmethod
     def run(
         self,
         turns: list[dict[str, Any]],
@@ -161,11 +160,33 @@ class ConsolidatorAgent(BaseAgent):
         retrieved_context: str = "",
         user_id: str = "",
     ) -> dict[str, Any]:
-        """Compact 后端路径：semantic_engine.ingest_conversation() + 技能抽取。"""
+        """Compact 后端路径：LLM 分析 → 条件语义固化 + 技能抽取。
+
+        流程（串行+并行结合）：
+        1. LLM 分析对话，输出 should_extract_entities + new_skills（串行，因为 ingest 依赖其结果）
+        2. 若 should_extract_entities=True，则执行 semantic_engine.ingest_conversation()
+           与 _write_skills() 并行（两者互不依赖）
+        3. should_extract_entities=False 时跳过语义固化，只写技能（如有）
+        """
         steps: list[dict[str, Any]] = []
         conversation_text = "\n".join(f"{t['role']}: {t['content']}" for t in turns)
 
-        # 并行：semantic ingest（左路）+ LLM 技能分析（右路）
+        # ── Step 1: LLM 整体分析（串行，结果决定后续步骤） ──
+        response = self._call_llm(
+            conversation_text,
+            system_content=self.prompt_template,
+            add_time_basis=True,
+        )
+        analysis = self._safe_parse(response)
+        should_extract: bool = bool(analysis.get("should_extract_entities", True))
+
+        steps.append({
+            "name": "consolidation_analysis",
+            "status": "done",
+            "detail": "提取语义" if should_extract else "跳过语义固化（LLM 判定无值得固化的事实）",
+        })
+
+        # ── Step 2: 条件语义固化 & 技能抽取（并行） ──
         def _do_ingest():
             return self.semantic_engine.ingest_conversation(
                 turns=turns,
@@ -174,15 +195,7 @@ class ConsolidatorAgent(BaseAgent):
                 retrieved_context=retrieved_context,
             )
 
-        def _do_llm_analysis():
-            response = self._call_llm(
-                conversation_text,
-                system_content=self.prompt_template,
-                add_time_basis=True,
-            )
-            return self._safe_parse(response)
-
-        def _write_skills(analysis: dict[str, Any]) -> int:
+        def _write_skills() -> int:
             count = 0
             for skill in analysis.get("new_skills", []):
                 intent = skill.get("intent", "")
@@ -196,15 +209,21 @@ class ConsolidatorAgent(BaseAgent):
                     count += 1
             return count
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            ingest_future = executor.submit(_do_ingest)
-            llm_future = executor.submit(_do_llm_analysis)
+        from src.memory.semantic.base import ConsolidationResult as _CR
 
-            analysis = llm_future.result()
-            skill_future = executor.submit(_write_skills, analysis)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            ingest_future = executor.submit(_do_ingest) if should_extract else None
+            skill_future = executor.submit(_write_skills)
 
-            ingest_result = ingest_future.result()
-            skills_added = skill_future.result()
+            ingest_result: _CR = (
+                ingest_future.result()
+                if ingest_future is not None
+                else _CR(units_added=0, units_merged=0, units_expired=0, steps=[{
+                    "name": "semantic_ingest", "status": "skipped",
+                    "detail": "should_extract_entities=false，跳过语义固化",
+                }])
+            )
+            skills_added: int = skill_future.result()
 
         steps.extend(ingest_result.steps)
         steps.append({

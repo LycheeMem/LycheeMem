@@ -69,6 +69,10 @@ class CompactEncoder:
                 memory_type = "fact"
             metadata = self._annotate_action_metadata(decontextualized, memory_type)
 
+            # source_role：来自 LLM 抽取阶段的标注，合法值为 user/assistant/both
+            raw_src = raw.get("source_role", "")
+            source_role = raw_src if raw_src in ("user", "assistant", "both") else ""
+
             normalized_text = metadata.get("normalized_text", decontextualized)
             unit_id = self._make_unit_id(normalized_text)
 
@@ -87,6 +91,7 @@ class CompactEncoder:
                 confidence=1.0,
                 evidence_turn_range=raw.get("evidence_turns", []),
                 source_session=session_id,
+                source_role=source_role,
                 user_id=user_id,
                 created_at=now_iso,
                 updated_at=now_iso,
