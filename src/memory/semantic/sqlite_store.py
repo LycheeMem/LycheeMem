@@ -553,6 +553,15 @@ class SQLiteSemanticStore:
                 results.append(self._row_to_synth(r))
         return results
 
+    def get_synthesized(self, synth_id: str) -> SynthesizedUnit | None:
+        """按 synth_id 获取单个 SynthesizedUnit。"""
+        row = self._conn.execute(
+            "SELECT * FROM synthesized_units WHERE synth_id = ?", (synth_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_synth(row)
+
     # ──────────────────────────────────────
     # 重复检测
     # ──────────────────────────────────────
@@ -736,15 +745,30 @@ class SQLiteSemanticStore:
 
     @staticmethod
     def _escape_fts_query(query: str) -> str:
-        """转义 FTS5 查询中的特殊字符。"""
+        """将查询文本转为 FTS5 OR 查询，同时添加前缀通配符提升召回率。
+
+        例：'machine learning cat' → '"machine" OR "machine"* OR "learning" OR "learning"* OR "cat" OR "cat"*'
+        使用 OR 而非隐式 AND，避免多词查询因缺少某个词而返回 0 结果。
+        前缀通配符 * 支持前缀匹配，对中文实体词有一定帮助。
+        """
         if not query or not query.strip():
             return ""
-        # 按空格分词，用双引号包裹每个 token 防止特殊字符问题
-        tokens = query.strip().split()
+        # 按空格分词；忽略空 token
+        tokens = [t.strip() for t in query.strip().split() if t.strip()]
         if not tokens:
             return ""
-        escaped = " ".join(f'"{t}"' for t in tokens if t.strip())
-        return escaped
+        # 每个 token 产生两项：精确匹配 + 前缀通配；用 OR 连接所有项
+        parts: list[str] = []
+        for t in tokens:
+            # 去掉 token 中 FTS5 保留特殊字符，只保留字母/数字/中文
+            safe = t.replace('"', '').replace("'", "").replace("*", "")
+            if not safe:
+                continue
+            parts.append(f'"{safe}"')       # 精确 token 匹配
+            parts.append(f'"{safe}"*')      # 前缀通配符
+        if not parts:
+            return ""
+        return " OR ".join(parts)
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:

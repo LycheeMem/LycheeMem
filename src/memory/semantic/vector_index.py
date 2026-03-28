@@ -18,26 +18,30 @@ import pyarrow as pa
 
 from src.embedder.base import BaseEmbedder
 
-# ──────────────────────────────────────
-# Schema 定义
-# ──────────────────────────────────────
 
-_MU_SCHEMA = pa.schema([
-    pa.field("unit_id", pa.utf8()),
-    pa.field("user_id", pa.utf8()),
-    pa.field("memory_type", pa.utf8()),
-    pa.field("vector", pa.list_(pa.float32())),          # semantic_text 的 embedding
-    pa.field("normalized_vector", pa.list_(pa.float32())),  # normalized_text 的 embedding
-    pa.field("expired", pa.bool_()),
-])
+def _make_mu_schema(dim: int) -> pa.Schema:
+    """构建 memory_units 表 schema。dim > 0 时使用 FixedSizeList（推荐）。"""
+    vec_type = pa.list_(pa.float32(), dim) if dim > 0 else pa.list_(pa.float32())
+    return pa.schema([
+        pa.field("unit_id", pa.utf8()),
+        pa.field("user_id", pa.utf8()),
+        pa.field("memory_type", pa.utf8()),
+        pa.field("vector", vec_type),
+        pa.field("normalized_vector", vec_type),
+        pa.field("expired", pa.bool_()),
+    ])
 
-_SU_SCHEMA = pa.schema([
-    pa.field("synth_id", pa.utf8()),
-    pa.field("user_id", pa.utf8()),
-    pa.field("memory_type", pa.utf8()),
-    pa.field("vector", pa.list_(pa.float32())),
-    pa.field("normalized_vector", pa.list_(pa.float32())),
-])
+
+def _make_su_schema(dim: int) -> pa.Schema:
+    """构建 synthesized_units 表 schema。"""
+    vec_type = pa.list_(pa.float32(), dim) if dim > 0 else pa.list_(pa.float32())
+    return pa.schema([
+        pa.field("synth_id", pa.utf8()),
+        pa.field("user_id", pa.utf8()),
+        pa.field("memory_type", pa.utf8()),
+        pa.field("vector", vec_type),
+        pa.field("normalized_vector", vec_type),
+    ])
 
 
 class LanceVectorIndex:
@@ -50,9 +54,11 @@ class LanceVectorIndex:
         self,
         db_path: str = "lychee_compact_vector",
         embedder: BaseEmbedder | None = None,
+        embedding_dim: int = 0,
     ):
         self._db_path = db_path
         self._embedder = embedder
+        self._embedding_dim = embedding_dim  # 0 = 自动检测 / 使用变长 list
         os.makedirs(db_path, exist_ok=True)
         self._db = lancedb.connect(db_path)
         self._ensure_tables()
@@ -65,11 +71,37 @@ class LanceVectorIndex:
     # ──────────────────────────────────────
 
     def _ensure_tables(self) -> None:
+        """创建或验证 LanceDB 表。
+
+        - 若表不存在：按 embedding_dim 构建 schema 并创建。
+        - 若表已存在但 vector 列是变长 list（旧 schema）且 embedding_dim 已知：
+          删除旧表并用正确 FixedSizeList schema 重建（旧数据已丢失不影响，
+          因为 0 向量根本无法检索）。
+        - 若 embedding_dim=0：建变长 list schema（兜底，仅用于无配置场景）。
+        """
+        target_mu = _make_mu_schema(self._embedding_dim)
+        target_su = _make_su_schema(self._embedding_dim)
         existing = set(self._db.table_names())
-        if self.MEMORY_TABLE not in existing:
-            self._db.create_table(self.MEMORY_TABLE, schema=_MU_SCHEMA)
-        if self.SYNTH_TABLE not in existing:
-            self._db.create_table(self.SYNTH_TABLE, schema=_SU_SCHEMA)
+
+        for table_name, schema in [
+            (self.MEMORY_TABLE, target_mu),
+            (self.SYNTH_TABLE, target_su),
+        ]:
+            if table_name not in existing:
+                self._db.create_table(table_name, schema=schema)
+            elif self._embedding_dim > 0:
+                # 检查现有 vector 列类型是否为 FixedSizeList
+                try:
+                    tbl = self._db.open_table(table_name)
+                    existing_schema = tbl.schema
+                    vec_field = existing_schema.field("vector")
+                    if not pa.types.is_fixed_size_list(vec_field.type):
+                        # 旧 variable-length schema — 重建
+                        self._db.drop_table(table_name)
+                        self._db.create_table(table_name, schema=schema)
+                except Exception:
+                    pass  # 无法检查则保持现有状态
+
 
     # ──────────────────────────────────────
     # MemoryUnit 向量写入

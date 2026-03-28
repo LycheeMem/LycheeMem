@@ -50,13 +50,16 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         synthesis_min_units: int = 2,
         synthesis_similarity: float = 0.75,
         scorer_weights: ScoringWeights | None = None,
+        embedding_dim: int = 0,
     ):
         self._llm = llm
         self._embedder = embedder
 
         # 存储层
         self._sqlite = SQLiteSemanticStore(db_path=sqlite_db_path)
-        self._vector = LanceVectorIndex(db_path=vector_db_path, embedder=embedder)
+        self._vector = LanceVectorIndex(
+            db_path=vector_db_path, embedder=embedder, embedding_dim=embedding_dim
+        )
 
         # 子模块
         self._encoder = CompactEncoder(llm=llm)
@@ -219,17 +222,31 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 sid = r.get("synth_id", "")
                 if sid and sid not in seen_ids:
                     seen_ids.add(sid)
-                    # synthesized 数据从 sqlite 获取
-                    sd = self._sqlite.fulltext_search_synthesized(
-                        "", user_id=user_id, limit=100,
-                    )
-                    for s in sd:
-                        if s.get("synth_id") == sid:
-                            s["id"] = sid
-                            s["source"] = "synth"
-                            s["semantic_distance"] = r.get("_distance", 1.0)
-                            candidates.append(s)
-                            break
+                    # 直接按 synth_id 从 sqlite 获取完整数据
+                    su = self._sqlite.get_synthesized(sid)
+                    if su:
+                        s = {
+                            "id": sid,
+                            "source": "synth",
+                            "semantic_distance": r.get("_distance", 1.0),
+                            "memory_type": su.memory_type,
+                            "semantic_text": su.semantic_text,
+                            "normalized_text": su.normalized_text,
+                            "tool_tags": su.tool_tags,
+                            "constraint_tags": su.constraint_tags,
+                            "task_tags": su.task_tags,
+                            "failure_tags": su.failure_tags,
+                            "affordance_tags": su.affordance_tags,
+                            "created_at": su.created_at,
+                            "retrieval_count": su.retrieval_count,
+                            "retrieval_hit_count": su.retrieval_hit_count,
+                            "action_success_count": su.action_success_count,
+                            "action_fail_count": su.action_fail_count,
+                            "evidence_turn_range": [],
+                            "temporal": su.temporal,
+                            "entities": su.entities,
+                        }
+                        candidates.append(s)
 
         # ── 通道 3: 实用向量检索（normalized_vector） ──
         for pq in pragmatic_queries:
@@ -369,13 +386,20 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
             if not is_duplicate:
                 self._sqlite.upsert_unit(unit)
-                self._vector.upsert(
-                    unit_id=unit.unit_id,
-                    user_id=unit.user_id,
-                    memory_type=unit.memory_type,
-                    semantic_text=unit.semantic_text,
-                    normalized_text=unit.normalized_text,
-                )
+                try:
+                    self._vector.upsert(
+                        unit_id=unit.unit_id,
+                        user_id=unit.user_id,
+                        memory_type=unit.memory_type,
+                        semantic_text=unit.semantic_text,
+                        normalized_text=unit.normalized_text,
+                    )
+                except Exception:
+                    # 向量写入失败不阻断固化；已写 SQLite，FTS 仍可召回
+                    import logging
+                    logging.getLogger("src.memory.semantic.engine").warning(
+                        "vector upsert failed for unit %s", unit.unit_id, exc_info=True
+                    )
                 actually_added += 1
 
         steps.append({
