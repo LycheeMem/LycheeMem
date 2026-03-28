@@ -213,21 +213,21 @@ export default function ChatPanel() {
               )}
             </div>
             {/* 显示 token 统计（仅 assistant 消息） */}
-            {msg.role === "assistant" && msg.meta && (
+            {/* {msg.role === "assistant" && msg.meta && (
               <div className="msg-meta">
-                {/* {msg.meta.turn_input_tokens !== undefined && msg.meta.turn_output_tokens !== undefined && (
+                {msg.meta.turn_input_tokens !== undefined && msg.meta.turn_output_tokens !== undefined && (
                   <span className="token-stat">
                     📊 输入: {msg.meta.turn_input_tokens} | 输出: {msg.meta.turn_output_tokens}
                   </span>
-                )} */}
-                {/* {msg.meta.memories_retrieved > 0 && (
+                )}
+                {msg.meta.memories_retrieved > 0 && (
                   <span className="memory-stat">🧠 检索: {msg.meta.memories_retrieved}</span>
                 )}
                 {msg.meta.wm_token_usage > 0 && (
                   <span className="wm-stat">💾 WM占用: {msg.meta.wm_token_usage}</span>
-                )} */}
+                )}
               </div>
-            )}
+            )} */}
           </div>
         ))}
 

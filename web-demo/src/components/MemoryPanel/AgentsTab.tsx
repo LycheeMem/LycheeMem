@@ -146,10 +146,10 @@ function SynthContent({ synth }: { synth: PipelineTrace["synthesizer"] }) {
               <div key={i} className="trace-prov-item">
                 <div className="trace-prov-header">
                   <span className={`trace-tag ${pv.source}`}>{label}</span>
-                  <span className="trace-relevance-bar">
+                  {/* <span className="trace-relevance-bar">
                     <span style={{ width: `${pv.relevance * 100}%` }} />
                   </span>
-                  <span className="trace-score">{(pv.relevance * 100).toFixed(0)}%</span>
+                  <span className="trace-score">{(pv.relevance * 100).toFixed(0)}%</span> */}
                 </div>
                 <div className="trace-prov-summary">{displayText}</div>
               </div>
