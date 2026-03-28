@@ -17,22 +17,22 @@ LycheeMem is a cognitive memory system for long-horizon AI agents, providing per
 
 ---
 
-<div align="center" style="margin: 20px 0; font-size: 14px; color: #586069;">
-  <a href="#news" style="text-decoration: none; color: #0366d6; margin: 0 8px;">News</a>
+<div align="center">
+  <a href="#news">News</a>
   •
-  <a href="#memory-architecture" style="text-decoration: none; color: #0366d6; margin: 0 8px;">Memory Architecture</a>
+  <a href="#memory-architecture">Memory Architecture</a>
   •
-  <a href="#pipeline" style="text-decoration: none; color: #0366d6; margin: 0 8px;">Pipeline</a>
+  <a href="#pipeline">Pipeline</a>
   •
-  <a href="#quick-start" style="text-decoration: none; color: #0366d6; margin: 0 8px;">Quick Start</a>
+  <a href="#quick-start">Quick Start</a>
   •
-  <a href="#web-demo" style="text-decoration: none; color: #0366d6; margin: 0 8px;">Web Demo</a>
+  <a href="#web-demo">Web Demo</a>
   •
-  <a href="#openclaw-plugin" style="text-decoration: none; color: #0366d6; margin: 0 8px;">OpenClaw Plugin</a>
+  <a href="#openclaw-plugin">OpenClaw Plugin</a>
   •
-  <a href="#mcp" style="text-decoration: none; color: #0366d6; margin: 0 8px;">MCP</a>
+  <a href="#mcp">MCP</a>
   •
-  <a href="#api-reference" style="text-decoration: none; color: #0366d6; margin: 0 8px;">API Reference</a>
+  <a href="#api-reference">API Reference</a>
 </div>
 
 ---
@@ -41,6 +41,7 @@ LycheeMem is a cognitive memory system for long-horizon AI agents, providing per
 
 ## 🔥 News
 
+- [03/28/2026] Semantic memory has been upgraded to Compact Semantic Memory (SQLite + LanceDB), no Neo4j required. See [/quick-start](#quick-start) for details.
 - [03/27/2026] OpenClaw Plugin is now available at [/openclaw-plugin](#openclaw-plugin) ! [Setup guide →](openclaw-plugin/INSTALL_OPENCLAW.md)
 - [03/26/2026] MCP support is available at [/mcp](#mcp) !
 - [03/23/2026] LycheeMem is now open source: [GitHub Repository →](https://github.com/LycheeMem/LycheeMem)
@@ -53,36 +54,36 @@ LycheeMem is a cognitive memory system for long-horizon AI agents, providing per
 
 LycheeMem organizes memory into three complementary stores:
 
-<table style="border-collapse: collapse; width: 100%; margin: 20px auto; border: 1px solid #e1e4e8; border-radius: 8px; overflow: hidden;">
+<table>
   <thead>
-    <tr style="background-color: #f6f8fa;">
-      <th style="border: 1px solid #e1e4e8; padding: 15px; text-align: center; color: #0366d6; font-weight: 600;">Working Memory</th>
-      <th style="border: 1px solid #e1e4e8; padding: 15px; text-align: center; color: #0366d6; font-weight: 600;">Semantic Memory</th>
-      <th style="border: 1px solid #e1e4e8; padding: 15px; text-align: center; color: #0366d6; font-weight: 600;">Procedural Memory</th>
+    <tr>
+      <th>Working Memory</th>
+      <th>Semantic Memory</th>
+      <th>Procedural Memory</th>
     </tr>
   </thead>
   <tbody>
     <tr>
-      <td style="border: 1px solid #e1e4e8; padding: 15px; vertical-align: top; background: white;">
-        <p style="margin: 0 0 10px 0; font-size: 13px; color: #586069; font-weight: 600;">(Episodic)</p>
-        <ul style="margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.6; color: #24292e;">
+      <td>
+        <p>(Episodic)</p>
+        <ul>
           <li>Session turns</li>
           <li>Summaries</li>
           <li>Token budget management</li>
         </ul>
       </td>
-      <td style="border: 1px solid #e1e4e8; padding: 15px; vertical-align: top; background: white;">
-        <p style="margin: 0 0 10px 0; font-size: 13px; color: #586069; font-weight: 600;">(Knowledge Graph)</p>
-        <ul style="margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.6; color: #24292e;">
-          <li>Entity nodes</li>
-          <li>Bi-temporal facts</li>
-          <li>Communities</li>
-          <li>Episode anchors</li>
+      <td>
+        <p>(Compact Action-Aware Store)</p>
+        <ul>
+          <li>7 MemoryUnit types</li>
+          <li>Online Pragmatic Synthesis</li>
+          <li>Action-Aware Retrieval Planning</li>
+          <li>RL-ready usage statistics</li>
         </ul>
       </td>
-      <td style="border: 1px solid #e1e4e8; padding: 15px; vertical-align: top; background: white;">
-        <p style="margin: 0 0 10px 0; font-size: 13px; color: #586069; font-weight: 600;">(Skills)</p>
-        <ul style="margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.6; color: #24292e;">
+      <td>
+        <p>(Skills)</p>
+        <ul>
           <li>Skill entries</li>
           <li>HyDE retrieval</li>
         </ul>
@@ -100,41 +101,79 @@ The working memory window holds the active conversation context for a session. I
 
 Compression produces *summary anchors* (past context, distilled) + *raw recent turns* (last N turns, verbatim). Both are passed downstream as the conversation history.
 
-### 🗺️ Semantic Memory — Graphiti Knowledge Graph
+### 🗺️ Semantic Memory — Compact Semantic Memory
 
-The knowledge graph is implemented as a **Graphiti-style bi-temporal graph** backed by Neo4j. It stores the world in four node types:
+Semantic memory uses an **action-aware compact encoding** scheme. The storage layer is SQLite (FTS5 full-text search) + LanceDB (vector index).
 
-| Node | Purpose |
-|------|---------|
-| `Episode` | A single conversation turn; all facts are traceable to source episodes |
-| `Entity` | A named entity (person, project, place, concept, etc.) |
-| `Fact` | A typed relation between two entities with temporal validity and transaction metadata |
-| `Community` | A cluster of strongly related entities, carrying a periodically refreshed summary |
+#### Memory Unit Types
 
-#### Bi-temporal Model
+Each memory entry is stored as a `MemoryUnit`. The `memory_type` field distinguishes seven semantic categories:
 
-Every `Fact` carries four timestamps that separate *when something was true* from *when the system learned it*:
+| Type | Description |
+|------|-------------|
+| `fact` | Objective facts about the user, environment, or world |
+| `preference` | User preferences (style, habits, likes/dislikes) |
+| `event` | Specific events that have occurred |
+| `constraint` | Conditions that must be respected |
+| `procedure` | Reusable step-by-step procedures / methods |
+| `failure_pattern` | Previously failed action paths and their causes |
+| `tool_affordance` | Capabilities and applicable scenarios of tools/APIs |
 
-```
-t_valid_from / t_valid_to   →  Valid time   (real-world truth interval)
-t_tx_created / t_tx_expired →  Transaction time (system-side record interval)
-```
+Beyond text, every `MemoryUnit` carries **action-facing metadata** (`tool_tags`, `constraint_tags`, `failure_tags`, `affordance_tags`) and **usage statistics** (`retrieval_count`, `action_success_count`, etc.) to seed future reinforcement-learning signals.
 
-This allows the graph to answer queries like *"what was the user's home address last month?"* correctly even if the address has since changed, and to distinguish genuinely contradictory facts from facts that were true at different times.
+Related `MemoryUnit`s can be merged online by the **Pragmatic Synthesizer** into a denser `SynthesizedUnit`; synthesized entries are ranked above source fragments during retrieval.
 
-#### Graph Retrieval Pipeline
+#### Four-Module Pipeline
 
-Retrieval combines three complementary signals:
+##### Module 1: Compact Semantic Encoding
 
-1. **BM25 full-text search** — keyword-level recall against `Entity.name` and `Fact.fact_text` via a Neo4j full-text index.
-2. **BFS graph traversal** — starts from the most recent episode nodes for the session and expands outward, up to a configurable depth, surfacing semantically linked facts even when they do not match keyword terms.
-3. **Vector ANN search** — approximate nearest-neighbour over the `Entity.embedding` vector index (configurable dimensionality and similarity function).
+A three-stage sequential pipeline that converts conversation turns into a list of `MemoryUnit`s:
 
-After retrieval, candidates are re-ranked using **Reciprocal Rank Fusion (RRF)** across all three lists. Optionally, a **cross-encoder reranker** (driven by the same LLM adapter already in the pipeline, no extra vendor SDK) refines the top-N results, followed by **Maximal Marginal Relevance (MMR)** diversification to avoid near-duplicate context in the final prompt.
+1. **Atomic extraction** — LLM extracts minimal self-contained facts; each memory entry stands alone as a complete sentence.
+2. **Decontextualization** — Pronouns and context-dependent phrases are expanded into full expressions, so each unit is understandable without the original dialogue.
+3. **Action metadata annotation** — LLM annotates each unit with `memory_type`, `tool_tags`, `constraint_tags`, `failure_tags`, `affordance_tags`, and other structured labels.
 
-#### Community Detection
+`unit_id = SHA256(normalized_text)` — naturally idempotent; duplicate content is deduplicated automatically.
 
-A background sweep runs `refresh_all_communities()` every *N* episodes globally (default: 50). Community summaries are included in graph search results to provide broad contextual framing even when no specific fact directly matches a query.
+##### Module 2: Pragmatic Memory Synthesis
+
+Triggered online after each consolidation:
+
+1. FTS detects existing entries whose text is similar to the new units (candidate pool).
+2. LLM judges whether the candidate pool is worth merging (`synthesis_judge`).
+3. If yes, LLM executes the merge and produces a `SynthesizedUnit` written to both SQLite and LanceDB; original units are retained.
+
+##### Module 3: Action-Aware Retrieval Planning
+
+Before retrieval, `ActionAwareRetrievalPlanner` analyses the user query and emits a `RetrievalPlan`:
+
+- `mode`: `answer` (factual Q&A) / `action` (needs execution) / `mixed`
+- `semantic_queries`: content-facing search terms
+- `pragmatic_queries`: action/tool/constraint-facing search terms
+- `tool_hints`: tools likely needed for this request
+- `required_constraints`: constraints that are missing
+- `missing_slots`: parameters / slots that are absent
+
+The plan drives five-channel recall -> Scorer ranking:
+
+1. **FTS channel** — SQLite FTS5 keyword recall over `MemoryUnit` + `SynthesizedUnit`
+2. **Semantic vector channel** — LanceDB ANN over `semantic_text` embeddings
+3. **Normalised vector channel** — LanceDB ANN over `normalized_text` embeddings (for pragmatic queries)
+4. **Tag filter channel** — exact filter by `tool_hints` / `constraint_tags`
+5. **Temporal channel** — filter by `RetrievalPlan.temporal_filter` time window
+
+Scorer combines all signals using the formula:
+
+$$\text{Score} = \alpha \cdot S_\text{sem} + \beta \cdot S_\text{action} + \gamma \cdot S_\text{temporal} + \delta \cdot S_\text{recency} + \eta \cdot S_\text{evidence} - \lambda \cdot C_\text{token}$$
+
+| Weight | Meaning | Default |
+|--------|---------|---------|
+| α | SemanticRelevance (vector distance -> similarity) | 0.30 |
+| β | ActionUtility (tag match score, mode-aware) | 0.25 |
+| γ | TemporalFit (temporal reference match) | 0.15 |
+| δ | Recency (memory freshness) | 0.10 |
+| η | EvidenceDensity (evidence span density) | 0.10 |
+| λ | TokenCost penalty (text length penalty) | 0.10 |
 
 ### 🛠️ Procedural Memory — Skill Store
 
@@ -156,33 +195,33 @@ Skill retrieval uses **HyDE (Hypothetical Document Embeddings)**: the query is f
 Every request passes through a fixed sequence of five agents. Four are synchronous stages in the LangGraph pipeline; one is a background post-processing task.
 
 <div align="center">
-  <div style="display: flex; flex-direction: column; align-items: center; font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif; gap: 8px;">
-    <div style="font-weight: bold; color: #586069; font-size: 14px;">START</div>
-    <div style="font-size: 18px; color: #d1d5da; line-height: 1;">▼</div>
-    <div style="border: 1px solid #e1e4e8; border-radius: 8px; padding: 15px; background-color: #f6f8fa; width: 100%; max-width: 600px; box-shadow: inset 0 1px 3px rgba(27,31,35,0.02);">
-      <div style="display: flex; flex-direction: column; gap: 8px; text-align: left;">
-        <div style="padding: 12px; border-left: 5px solid #0366d6; background: white; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); color: #24292e;">
-          <strong style="color: #0366d6;">1. WMManager</strong> — Token budget check + compress/render
+  <div>
+    <div>START</div>
+    <div>▼</div>
+    <div>
+      <div>
+        <div>
+          <strong>1. WMManager</strong> — Token budget check + compress/render
         </div>
-        <div style="text-align: center; color: #d1d5da; font-size: 16px; margin: -4px 0;">↓</div>
-        <div style="padding: 12px; border-left: 5px solid #0366d6; background: white; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); color: #24292e;">
-          <strong style="color: #0366d6;">2. SearchCoordinator</strong> — Multi-query → Graph + Skill retrieval
+        <div>↓</div>
+        <div>
+          <strong>2. SearchCoordinator</strong> — Planner → Semantic + Skill retrieval
         </div>
-        <div style="text-align: center; color: #d1d5da; font-size: 16px; margin: -4px 0;">↓</div>
-        <div style="padding: 12px; border-left: 5px solid #0366d6; background: white; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); color: #24292e;">
-          <strong style="color: #0366d6;">3. SynthesizerAgent</strong> — LLM-as-Judge scoring + context fusion
+        <div>↓</div>
+        <div>
+          <strong>3. SynthesizerAgent</strong> — LLM-as-Judge scoring + context fusion
         </div>
-        <div style="text-align: center; color: #d1d5da; font-size: 16px; margin: -4px 0;">↓</div>
-        <div style="padding: 12px; border-left: 5px solid #28a745; background: white; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); color: #24292e;">
-          <strong style="color: #28a745;">4. ReasoningAgent</strong> — Final response generation
+        <div>↓</div>
+        <div>
+          <strong>4. ReasoningAgent</strong> — Final response generation
         </div>
       </div>
     </div>
-    <div style="font-size: 18px; color: #d1d5da; line-height: 1;">▼</div>
-    <div style="font-weight: bold; color: #586069; font-size: 14px;">END</div>
-    <div style="display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 8px 12px; background: #eef9ff; border-radius: 6px; border: 1px dashed #0366d6; font-size: 13px; color: #24292e;">
-      <span style="background: #0366d6; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold;">Background</span>
-      <span>asyncio.create_task( <strong style="color: #0366d6;">ConsolidatorAgent</strong> )</span>
+    <div>▼</div>
+    <div>END</div>
+    <div>
+      <span>Background</span>
+      <span>asyncio.create_task( <strong>ConsolidatorAgent</strong> )</span>
     </div>
   </div>
 </div>
@@ -193,13 +232,11 @@ Rule-based agent (no LLM prompt). Appends the user turn to the session log, coun
 
 ### Stage 2 — SearchCoordinator
 
-Decomposes the user's query into multiple *sub-queries* (one or more per source type: `graph` / `skill`) using an LLM planning step. This Multi-Query strategy ensures that a compound question touching several topics retrieves relevant facts for each topic independently, rather than conflating them into a single vector search.
-
-Sub-queries for the graph are sent to `GraphitiEngine.search()`; sub-queries for skills use HyDE embedding before querying the skill store.
+`ActionAwareRetrievalPlanner` first analyses the user query and produces a `RetrievalPlan` containing `mode`, `semantic_queries`, `pragmatic_queries`, `tool_hints`, and more. Five parallel recall channels (FTS full-text, semantic vector, normalised vector, tag filter, temporal filter) then query SQLite + LanceDB, and the resulting candidates are ranked by the six-dimensional Scorer formula before being merged into `background_context`. Skill sub-queries use HyDE embedding against the skill store.
 
 ### Stage 3 — SynthesizerAgent
 
-Acts as an **LLM-as-Judge**: scores every retrieved memory fragment on an absolute 0–1 relevance scale, discards fragments below the threshold (default 0.6), and fuses the survivors into a single dense `background_context` string. It also identifies `skill_reuse_plan` entries that can directly guide the final response. This stage outputs `provenance` — a per-fact citation list with full retrieval metadata including RRF scores, BFS/BM25 ranks, and back-references to the originating episodes.
+Acts as an **LLM-as-Judge**: scores every retrieved memory fragment on an absolute 0-1 relevance scale, discards fragments below the threshold (default 0.6), and fuses the survivors into a single dense `background_context` string. It also identifies `skill_reuse_plan` entries that can directly guide the final response. This stage outputs `provenance` — a citation list containing scoring breakdown and source references for each kept memory item.
 
 ### Stage 4 — ReasoningAgent
 
@@ -209,10 +246,9 @@ Receives `compressed_history`, `background_context`, and `skill_reuse_plan` and 
 
 Triggered immediately after `ReasoningAgent` completes, runs in a thread pool and **does not block the response**. It:
 
-1. Performs a **novelty check** — judges whether the conversation introduced new information worth persisting. Skips consolidation for pure retrieval exchanges.
-2. Calls `GraphitiEngine.ingest_episode()` to extract entities and facts from the conversation turns and commit them into the Neo4j graph (with bi-temporal timestamps derived from wall-clock time).
-3. Extracts skill entries from successful tool-usage patterns in the conversation and adds them to the skill store.
-4. Optionally triggers periodic `refresh_communities_for_session()`.
+1. Performs a **novelty check** — LLM judges whether the conversation introduced new information worth persisting. Skips consolidation for pure retrieval exchanges.
+2. **Compact consolidation** — calls `CompactSemanticEngine.ingest_conversation()`, which runs the three-stage encoder (atomic extraction → decontextualization → action metadata annotation), writes `MemoryUnit`s to SQLite + LanceDB, then triggers online Pragmatic Synthesis to merge similar entries into `SynthesizedUnit`s.
+3. **Skill extraction** — identifies successful tool-usage patterns in the conversation and adds skill entries to the skill store. Runs in parallel with compact consolidation (ThreadPoolExecutor).
 
 ---
 
@@ -223,7 +259,6 @@ Triggered immediately after `ReasoningAgent` completes, runs in a thread pool an
 ### Prerequisites
 
 - Python 3.11+
-- Neo4j 5.x with the **GDS plugin** installed and a **vector index** created
 - An LLM API key (OpenAI, Gemini, or any litellm-compatible provider)
 
 ### Installation
@@ -248,29 +283,13 @@ LLM_API_BASE=                     # optional
 EMBEDDING_MODEL=openai/text-embedding-3-small
 EMBEDDING_DIM=1536
 
-# Neo4j
-NEO4J_URI=neo4j://127.0.0.1:7687
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=your_password
+# Semantic memory storage paths (optional, defaults to data/ directory)
+COMPACT_MEMORY_DB_PATH=data/compact_memory.db
+COMPACT_VECTOR_DB_PATH=data/compact_vector
 ```
 
 > **Supported LLM providers** (via [litellm](https://github.com/BerriAI/litellm)):  
 > `openai/gpt-4o-mini` · `gemini/gemini-3.0-flash` · `ollama_chat/qwen2.5` · any OpenAI-compatible endpoint
-
-### Start Neo4j
-
-**Option 1: Docker (Recommended)**
-
-```bash
-# Start Neo4j with GDS plugin enabled
-docker compose up -d
-
-# Verify it's running at http://localhost:7474 (default: neo4j / 12345678)
-```
-
-**Option 2: Manual Installation**
-
-Download and install Neo4j 5.x locally, then ensure the GDS plugin is installed.
 
 ### Start the Server
 
@@ -288,7 +307,7 @@ The API is served at `http://localhost:8000`. Interactive docs at `/docs`.
 
 ## 🎨 Web Demo
 
-A frontend demo is included under `web-demo/`. It provides a chat interface alongside live views of the knowledge graph, skill library, and working memory state.
+A frontend demo is included under `web-demo/`. It provides a chat interface alongside live views of semantic memory, skill library, and working memory state.
 
 ```bash
 cd web-demo
@@ -331,7 +350,9 @@ See the full setup guide: [openclaw-plugin/INSTALL_OPENCLAW.md](openclaw-plugin/
 
 ---
 
-## MCP
+<a id="mcp"></a>
+
+## 🔧 MCP
 
 LycheeMem also exposes an HTTP MCP endpoint at `http://localhost:8000/mcp`.
 
@@ -445,7 +466,7 @@ curl -X POST http://localhost:8000/mcp \
 
 ### `POST /memory/search` — Unified Memory Retrieval
 
-Query both the knowledge graph and the skill store in a single call.
+Query both the semantic memory channel and the skill store in a single call.
 
 ```json
 // Request
@@ -459,7 +480,18 @@ Query both the knowledge graph and the skill store in a single call.
 // Response
 {
   "query": "...",
-  "graph_results": [ { "fact_id": "...", "summary": "...", "relevance": 0.91, ... } ],
+  "graph_results": [
+    {
+      "anchor": {
+        "node_id": "compact_context",
+        "name": "CompactSemanticMemory",
+        "label": "Context",
+        "score": 1.0
+      },
+      "constructed_context": "...",
+      "provenance": [ { "id": "...", "source": "semantic_memory", "relevance": 0.91, ... } ]
+    }
+  ],
   "skill_results": [ { "id": "...", "intent": "pg_dump backup to S3", "score": 0.87, ... } ],
   "total": 6
 }
@@ -483,7 +515,7 @@ Takes raw retrieval results and produces a fused memory context using LLM-as-Jud
 {
   "background_context": "User regularly uses pg_dump with a cron job...",
   "skill_reuse_plan": [ { "skill_id": "...", "intent": "...", "doc_markdown": "..." } ],
-  "provenance": [ { "fact_id": "...", "relevance": 0.91, "rrf_score": 0.72, ... } ],
+  "provenance": [ { "id": "...", "source": "semantic_memory", "relevance": 0.91, ... } ],
   "kept_count": 4,
   "dropped_count": 2
 }

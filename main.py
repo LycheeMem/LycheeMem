@@ -18,6 +18,10 @@ def main():
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload for development")
     args = parser.parse_args()
 
+    # 创建data/
+    data_dir = curr_dir / "data"
+    data_dir.mkdir(exist_ok=True)
+
     # 延迟导入，仅在实际运行时加载
     import uvicorn
 

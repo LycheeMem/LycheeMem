@@ -1,14 +1,14 @@
 import {
-    ApiOutlined,
-    BulbOutlined,
-    CheckCircleOutlined,
-    ClockCircleOutlined,
-    DownOutlined,
-    ExperimentOutlined,
-    InboxOutlined,
-    RightOutlined,
-    SearchOutlined,
-    SyncOutlined,
+  ApiOutlined,
+  BulbOutlined,
+  CheckCircleOutlined,
+  ClockCircleOutlined,
+  DownOutlined,
+  ExperimentOutlined,
+  InboxOutlined,
+  RightOutlined,
+  SearchOutlined,
+  SyncOutlined,
 } from "@ant-design/icons";
 import { useEffect, useRef, useState } from "react";
 import { fetchConsolidationResult } from "../../api";
@@ -124,23 +124,37 @@ function SearchContent({ search }: { search: PipelineTrace["search_coordinator"]
 }
 
 function SynthContent({ synth }: { synth: PipelineTrace["synthesizer"] }) {
+  // 将 provenance source 翻译为中文
+  const sourceLabel: Record<string, string> = {
+    "unit": "语义单元",
+    "synth": "合成记忆",
+    "compact_semantic": "紧凑记忆库",
+    "graphiti_retrieval": "图谱检索",
+    "graphiti_context": "图谱上下文",
+    "graphiti_community": "图谱社群",
+  };
+  
   return (
     <div className="trace-detail">
       {synth.provenance.length > 0 && (
         <>
-          <div className="trace-section-title">溯源 (Provenance)</div>
-          {synth.provenance.map((p, i) => (
-            <div key={i} className="trace-prov-item">
-              <div className="trace-prov-header">
-                <span className={`trace-tag ${p.source}`}>{p.source}</span>
-                <span className="trace-relevance-bar">
-                  <span style={{ width: `${p.relevance * 100}%` }} />
-                </span>
-                <span className="trace-score">{(p.relevance * 100).toFixed(0)}%</span>
+          <div className="trace-section-title">溯源 (Provenance) - {synth.provenance.length} 条</div>
+          {synth.provenance.map((pv, i) => {
+            const label = sourceLabel[pv.source] || pv.source;
+            const displayText = pv.summary || (pv.fact_id ? `Fact#${pv.fact_id}` : "（无文本）");
+            return (
+              <div key={i} className="trace-prov-item">
+                <div className="trace-prov-header">
+                  <span className={`trace-tag ${pv.source}`}>{label}</span>
+                  <span className="trace-relevance-bar">
+                    <span style={{ width: `${pv.relevance * 100}%` }} />
+                  </span>
+                  <span className="trace-score">{(pv.relevance * 100).toFixed(0)}%</span>
+                </div>
+                <div className="trace-prov-summary">{displayText}</div>
               </div>
-              {p.summary && <div className="trace-prov-summary">{p.summary}</div>}
-            </div>
-          ))}
+            );
+          })}
         </>
       )}
       {synth.background_context && (
@@ -170,6 +184,7 @@ function ReasonerContent({ reasoner }: { reasoner: PipelineTrace["reasoner"] }) 
 // ── Consolidator step labels & content ────────────────────────────────────
 
 const STEP_NAME_LABELS: Record<string, string> = {
+  // Graphiti 后端步骤
   novelty_check: "新颖性检查",
   episode_ingest: "Episode 写入",
   semantic_build: "语义构建",
@@ -177,6 +192,17 @@ const STEP_NAME_LABELS: Record<string, string> = {
   llm_analysis: "LLM 分析",
   entity_extraction: "实体抽取",
   skill_extraction: "技能提取",
+  // Compact 后端步骤
+  compact_encoding: "紧凑编码",
+  dedup_and_store: "去重与存储",
+  pragmatic_synthesis: "实用合成",
+  semantic_ingest: "语义摄入",
+  // 旧的或备用步骤名
+  encoded_to_units: "编码为单元",
+  deduplicated: "去重检查",
+  synthesized_units: "合成记忆",
+  ingested_to_store: "写入存储",
+  indexed_vectors: "向量索引",
 };
 
 function ConsolidatorContent({

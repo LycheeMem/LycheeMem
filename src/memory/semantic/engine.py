@@ -25,7 +25,11 @@ from src.memory.semantic.base import (
 from src.memory.semantic.encoder import CompactEncoder
 from src.memory.semantic.models import MemoryUnit, RetrievalPlan, UsageLog
 from src.memory.semantic.planner import ActionAwareRetrievalPlanner
-from src.memory.semantic.prompts import NOVELTY_CHECK_SYSTEM
+from src.memory.semantic.prompts import (
+    NOVELTY_CHECK_SYSTEM,
+    RETRIEVAL_ADEQUACY_CHECK_SYSTEM,
+    RETRIEVAL_ADDITIONAL_QUERIES_SYSTEM,
+)
 from src.memory.semantic.scorer import MemoryScorer, ScoredCandidate, ScoringWeights
 from src.memory.semantic.sqlite_store import SQLiteSemanticStore
 from src.memory.semantic.synthesizer import PragmaticSynthesizer
@@ -51,6 +55,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         synthesis_similarity: float = 0.75,
         scorer_weights: ScoringWeights | None = None,
         embedding_dim: int = 0,
+        max_reflection_rounds: int = 2,
     ):
         self._llm = llm
         self._embedder = embedder
@@ -74,6 +79,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         )
 
         self._dedup_threshold = dedup_threshold
+        self._max_reflection_rounds = max_reflection_rounds
 
     # ════════════════════════════════════════════════════════════════
     # search() — 检索管线
@@ -89,7 +95,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         user_id: str = "",
         retrieval_plan: dict[str, Any] | None = None,
     ) -> SemanticSearchResult:
-        """多通道检索 + 打分 + 格式化。
+        """多通道检索 + 反思循环 + 打分 + 格式化。
 
         通道：
         1. FTS（BM25 全文）— semantic_queries 驱动
@@ -98,7 +104,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         4. Tag 过滤 — tool_hints / required_constraints 驱动
         5. 时间范围 — temporal_filter 驱动
 
-        召回后去重 → Scorer 综合打分 → 取 top_k → 格式化为 context。
+        召回后去重 → Scorer 打分 → 反思循环（充分性检查 + 补充召回）→ 取 top_k → 格式化。
         """
         # Step 1: 确定检索计划
         if retrieval_plan:
@@ -106,7 +112,8 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         else:
             plan = self._planner.plan(query)
 
-        # Step 2: 多通道召回
+        # Step 2: 初始多通道召回
+        seen_ids: set[str] = set()
         raw_candidates = self._multi_channel_recall(
             plan=plan,
             query=query,
@@ -114,11 +121,13 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             query_embedding=query_embedding,
             top_k=top_k,
         )
+        for c in raw_candidates:
+            seen_ids.add(c.get("id", ""))
 
         if not raw_candidates:
             return SemanticSearchResult(context="", provenance=[])
 
-        # Step 3: Scorer 打分
+        # Step 3: 初始打分
         scored = self._scorer.score_candidates(
             raw_candidates,
             plan_mode=plan.mode,
@@ -126,10 +135,62 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             plan_required_constraints=plan.required_constraints,
         )
 
-        # Step 4: 取 top_k
+        # Step 4: 反思循环（最多 max_reflection_rounds 轮）
+        for _ in range(self._max_reflection_rounds):
+            current_top = scored[:top_k]
+            context_preview = self._format_context(current_top) or "（无检索结果）"
+
+            adequacy = self._check_adequacy(query, context_preview)
+            if adequacy["is_sufficient"]:
+                break
+
+            missing_info = adequacy.get("missing_info", "")
+            additional_queries = self._generate_additional_queries(
+                query, context_preview, missing_info
+            )
+            if not additional_queries:
+                break
+
+            # 用补充查询做额外召回（复用 _multi_channel_recall，注入 semantic_queries）
+            supplement_plan = RetrievalPlan(
+                mode=plan.mode,
+                semantic_queries=additional_queries,
+                pragmatic_queries=[],
+                tool_hints=plan.tool_hints,
+                required_constraints=plan.required_constraints,
+                depth=top_k,
+            )
+            extra_candidates = self._multi_channel_recall(
+                plan=supplement_plan,
+                query=query,
+                user_id=user_id,
+                query_embedding=None,
+                top_k=top_k,
+            )
+
+            # 去重合并
+            new_candidates = [
+                c for c in extra_candidates
+                if c.get("id", "") not in seen_ids
+            ]
+            for c in new_candidates:
+                seen_ids.add(c.get("id", ""))
+
+            if not new_candidates:
+                break
+
+            raw_candidates = raw_candidates + new_candidates
+            scored = self._scorer.score_candidates(
+                raw_candidates,
+                plan_mode=plan.mode,
+                plan_tool_hints=plan.tool_hints,
+                plan_required_constraints=plan.required_constraints,
+            )
+
+        # Step 5: 取 top_k
         top = scored[:top_k]
 
-        # Step 5: 记录使用日志
+        # Step 6: 记录使用日志
         self._log_usage(
             query=query,
             session_id=session_id or "",
@@ -139,13 +200,13 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             kept_ids=[s.id for s in top],
         )
 
-        # Step 6: 更新 retrieval_count
+        # Step 7: 更新 retrieval_count
         all_retrieved_ids = [s.id for s in scored]
         kept_ids = [s.id for s in top]
         self._sqlite.increment_retrieval_count(all_retrieved_ids)
         self._sqlite.increment_hit_count(kept_ids)
 
-        # Step 7: 格式化
+        # Step 8: 格式化
         context = self._format_context(top)
         provenance = self._build_provenance(top)
 
@@ -450,6 +511,60 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
     # ════════════════════════════════════════════════════════════════
     # 内部工具方法
     # ════════════════════════════════════════════════════════════════
+
+    def _check_adequacy(self, query: str, context_text: str) -> dict[str, Any]:
+        """LLM 判断当前检索结果是否足以回应查询。
+
+        Returns:
+            {"is_sufficient": bool, "missing_info": str}
+        """
+        user_content = (
+            f"<USER_QUERY>\n{query}\n</USER_QUERY>\n\n"
+            f"<RETRIEVED_MEMORY>\n{context_text}\n</RETRIEVED_MEMORY>"
+        )
+        response = self._llm.generate([
+            {"role": "system", "content": RETRIEVAL_ADEQUACY_CHECK_SYSTEM},
+            {"role": "user", "content": user_content},
+        ])
+        try:
+            parsed = json.loads(
+                response.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+            )
+            return {
+                "is_sufficient": bool(parsed.get("is_sufficient", True)),
+                "missing_info": str(parsed.get("missing_info", "")),
+            }
+        except (json.JSONDecodeError, ValueError):
+            # 解析失败保守地视为充分，避免无限循环
+            return {"is_sufficient": True, "missing_info": ""}
+
+    def _generate_additional_queries(
+        self, query: str, context_text: str, missing_info: str,
+    ) -> list[str]:
+        """LLM 根据缺失信息生成补充检索查询。
+
+        Returns:
+            补充查询字符串列表（2~4 条），失败时返回空列表。
+        """
+        user_content = (
+            f"<USER_QUERY>\n{query}\n</USER_QUERY>\n\n"
+            f"<CURRENT_MEMORY>\n{context_text}\n</CURRENT_MEMORY>\n\n"
+            f"<MISSING_INFO>\n{missing_info}\n</MISSING_INFO>"
+        )
+        response = self._llm.generate([
+            {"role": "system", "content": RETRIEVAL_ADDITIONAL_QUERIES_SYSTEM},
+            {"role": "user", "content": user_content},
+        ])
+        try:
+            parsed = json.loads(
+                response.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+            )
+            queries = parsed.get("additional_queries", [])
+            if isinstance(queries, list):
+                return [q for q in queries if isinstance(q, str) and q.strip()]
+        except (json.JSONDecodeError, ValueError):
+            pass
+        return []
 
     def _check_novelty(
         self, turns: list[dict[str, Any]], retrieved_context: str,

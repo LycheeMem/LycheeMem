@@ -131,14 +131,20 @@ def _build_synthesizer_trace(result: dict[str, Any]) -> SynthesizerTrace:
         source_eps = p.get("source_episodes") or []
         if not isinstance(source_eps, list):
             source_eps = []
-        legacy_source = str(p.get("source") or "graphiti_retrieval")
+        
+        # 优先使用 provenance item 中的 source（compact 为 "unit"/"synth"，graphiti 为具体类型）
+        # 如果 source 为 graphiti_retrieval，说明这是从 search_coordinator 传来的包装结构
+        wrapper_source = str(p.get("source") or "")
         legacy_summary = str(p.get("summary") or "")
         nested_items = p.get("items")
+        
+        # 展开 nested items（wrapper 结构下的实际 provenance）
         if isinstance(nested_items, list):
             for sub_idx, sub in enumerate(nested_items):
                 if not isinstance(sub, dict):
                     continue
                 sub_fact_id = str(sub.get("fact_id") or "").strip()
+                sub_source = str(sub.get("source") or "").strip()
                 sub_rrf = float(sub.get("rrf") or sub.get("relevance") or 0.0)
                 sub_bm25 = sub.get("bm25_rank")
                 sub_bfs = sub.get("bfs_rank")
@@ -150,13 +156,18 @@ def _build_synthesizer_trace(result: dict[str, Any]) -> SynthesizerTrace:
                 sub_eps = sub.get("source_episodes") or []
                 if not isinstance(sub_eps, list):
                     sub_eps = []
+                
+                # 如果 sub 有 source 且不为空，用 sub.source；否则用 wrapper_source；否则用默认
+                final_source = sub_source or wrapper_source or "compact_semantic"
+                # 对于 compact 后端，使用 semantic_text；Graphiti 用 fact_text/summary
+                summary_text = str(sub.get("fact_text") or sub.get("summary") or sub.get("semantic_text") or "")
                 provenance.append(
                     ProvenanceItem(
-                        source=legacy_source,
+                        source=final_source,
                         index=idx * 1000 + sub_idx,
                         relevance=sub_rrf,
                         fact_id=sub_fact_id,
-                        summary=str(sub.get("fact_text") or sub.get("summary") or ""),
+                        summary=summary_text,
                         rrf_score=sub_rrf,
                         bm25_rank=int(sub_bm25) if sub_bm25 is not None else None,
                         bfs_rank=int(sub_bfs) if sub_bfs is not None else None,
@@ -167,13 +178,18 @@ def _build_synthesizer_trace(result: dict[str, Any]) -> SynthesizerTrace:
                     )
                 )
             continue
+        
+        # 非嵌套项（直接的 provenance item）
+        final_source = str(p.get("source") or "compact_semantic")
+        # 对于 compact 后端，优先用 semantic_text；Graphiti 用 fact_text
+        summary_text = legacy_summary or str(p.get("fact_text") or p.get("semantic_text") or "")
         provenance.append(
             ProvenanceItem(
-                source=legacy_source,
+                source=final_source,
                 index=int(p.get("index") or idx),
                 relevance=rrf,
                 fact_id=fact_id,
-                summary=legacy_summary or str(p.get("fact_text") or ""),
+                summary=summary_text,
                 rrf_score=rrf,
                 bm25_rank=int(bm25_rank_val) if bm25_rank_val is not None else None,
                 bfs_rank=int(bfs_rank_val) if bfs_rank_val is not None else None,

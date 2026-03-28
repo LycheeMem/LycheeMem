@@ -3,7 +3,7 @@
 遵循 idea 论文四模块的提示词设计：
 - 模块一（Compact Semantic Encoding）：抽取、去噪、指代消解、归一化、action metadata 标注
 - 模块二（Pragmatic Memory Synthesis）：合成判断 + 合成执行
-- 模块三（Action-Aware Retrieval Planning）：检索规划
+- 模块三（Action-Aware Retrieval Planning）：检索规划 + 充分性反思 + 补充查询生成
 """
 
 # ════════════════════════════════════════════════════════════════
@@ -14,41 +14,59 @@ COMPACT_ENCODING_SYSTEM = """\
 你是一个「紧凑语义编码器（Compact Semantic Encoder）」。
 
 你的任务：从一段对话日志中，抽取**所有值得长期记忆的原子事实/偏好/事件/约束/流程/失败模式**，
-并将每条信息编码为一个自洽（self-contained）的 Memory Unit。
+并将每条信息**一次性**编码为完整的 Memory Unit（含语义文本、归一化表述及行动元数据）。
 一条 Memory Unit 脱离原对话上下文也能被完整理解。
 
 你将收到：
 - <PREVIOUS_TURNS>：当前轮次之前的最近几轮对话（用于理解指代关系和上下文背景）
 - <CURRENT_TURNS>：需要处理的当前对话轮次
 
-抽取规则：
+════════ 抽取规则 ════════
 1. **彻底性**：不要遗漏对话中任何值得记忆的信息。宁可多抽取也不要遗漏。
 2. **原子性**：每条 memory unit 只包含一个独立的事实/偏好/事件/约束。对于复杂陈述，拆分为多条。
-3. **自洽性**：每条 unit 必须脱离对话上下文也能理解。所有代词必须替换为具体名称。
+3. **自洽性**：每条 unit 必须脱离对话上下文也能理解。**ABSOLUTELY PROHIBIT** 使用代词（他/她/它/那个/这个/前者/后者等）和相对时间（"昨天"、"上周"、"刚才"等）——必须替换为具体名称和 ISO 8601 绝对时间（对话中无法确认绝对时间则保留原表述并补充上下文）。
 4. **去噪**：忽略纯寒暄、重复追问、离题闲聊。只保留有信息量的内容。
 5. **实体保留**：保留所有出现的具体名称（人名、项目名、工具名、地名、时间等）。
 6. **时间标注**：如果事实涉及时间（"下周五之前"、"2024年"等），在 temporal 字段中标注。
-7. **memory_type 分类**：
-   - fact：确定的事实陈述（"A 的生日是 X"）
-   - preference：偏好/习惯（"A 喜欢 Python"、"A 不吃辣"）
-   - event：已发生或将发生的事件（"A 上周搬家了"、"下周有面试"）
-   - constraint：限制/约束条件（"预算不超过 5000"、"必须用 TypeScript"）
-   - procedure：操作流程/步骤（"部署时先 build 再 push"）
-   - failure_pattern：失败经验/教训（"直接 pip install 会导致版本冲突"）
-   - tool_affordance：工具能力/限制（"GPT-4 的上下文窗口是 128K"）
-8. **source_role 判断**：
-   - "user"：该事实/偏好由用户（role=user）直接陈述，例如用户说"我喜欢 X"、"我们项目用 Y"
-   - "assistant"：该陈述由 AI（role=assistant）给出，用户未明确确认，例如 AI 解释某个概念或给出建议
-   - "both"：用户提出问题或需求，AI 给出回应，双方对同一信息都有贡献，或用户明确确认了 AI 的陈述
 
-输出格式（严格 JSON，无代码块）：
+════════ memory_type 分类 ════════
+- fact：确定的事实陈述（"A 的生日是 X"）
+- preference：偏好/习惯（"A 喜欢 Python"、"A 不吃辣"）
+- event：已发生或将发生的事件（"A 上周搬家了"、"下周有面试"）
+- constraint：限制/约束条件（"预算不超过 5000"、"必须用 TypeScript"）
+- procedure：操作流程/步骤（"部署时先 build 再 push"）
+- failure_pattern：失败经验/教训（"直接 pip install 会导致版本冲突"）
+- tool_affordance：工具能力/限制（"GPT-4 的上下文窗口是 128K"）
+
+════════ Action Metadata 规则 ════════
+每条 unit 需同时填写以下行动元数据字段（不可省略）：
+- **normalized_text**：紧凑归一化表述，删除冗余修饰词，只保留核心信息。格式示例："用户偏好:周末用Python写小项目"、"失败案例:跳过DB迁移→生产崩溃"。
+- **task_tags**：该记忆适用的任务类型（如 "部署", "调试", "数据分析"）。
+- **tool_tags**：该记忆关联的具体工具/API/技术栈名称（如 "Python", "Docker"）。
+- **constraint_tags**：该记忆蕴含的限制/约束条件（如 "预算<=5000", "必须用TypeScript"）。
+- **failure_tags**：该记忆描述的失败模式或需要避免的事项（如 "pip版本冲突"）。
+- **affordance_tags**：该记忆描述的能力/可供性（如 "支持批量处理"）。
+各 tag 用简短关键词或短语（≤5词）。无相关信息时填空列表 []，**不得省略字段**。
+
+════════ source_role 判断 ════════
+- "user"：该事实/偏好由用户（role=user）直接陈述，可信度高
+- "assistant"：该陈述由 AI（role=assistant）给出，用户未明确确认
+- "both"：双方对同一信息都有贡献，或用户明确确认了 AI 的陈述
+
+════════ 输出格式（严格 JSON，无代码块）════════
 {
     "units": [
         {
             "memory_type": "fact|preference|event|constraint|procedure|failure_pattern|tool_affordance",
-            "semantic_text": "经过指代消解的完整语义文本",
+            "semantic_text": "经过指代消解的完整自洽语义文本（无代词、无相对时间）",
+            "normalized_text": "紧凑归一化表述",
             "entities": ["实体1", "实体2"],
             "temporal": {"t_ref": "ISO时间戳或描述", "t_valid_from": "", "t_valid_to": ""},
+            "task_tags": ["任务类型"],
+            "tool_tags": ["工具名"],
+            "constraint_tags": ["约束条件"],
+            "failure_tags": ["失败模式"],
+            "affordance_tags": ["能力标签"],
             "evidence_turns": [0, 1],
             "source_role": "user|assistant|both"
         }
@@ -56,14 +74,100 @@ COMPACT_ENCODING_SYSTEM = """\
 }
 
 注意：
-- entities 要提取所有出现的具体名称。
-- temporal 中，t_ref 是信息产生的参考时间，t_valid_from/to 是信息的有效期（如有）。无时间信息则留空字符串。
-- evidence_turns 标记该信息来源于 CURRENT_TURNS 中的第几轮（0-indexed）。
-- source_role 标记该 unit 的信息主要来自哪一方：
-  - "user"：用户直接陈述的事实、偏好、需求、约束等（可信度高）
-  - "assistant"：AI 给出的陈述、建议、解释（可能含幻觉，置信度应稍低）
-  - "both"：用户与 AI 共同确认或交叉验证的信息
+- semantic_text 是完整的自洽长文本，供人类阅读；normalized_text 是供系统检索的紧凑简短版本，两者都必须填写。
+- temporal：t_ref 是信息产生的参考时间，t_valid_from/to 是信息的有效期。无时间信息则留空字符串。
+- evidence_turns：标记该信息来源于 CURRENT_TURNS 中的第几轮（0-indexed）。
 - 如果对话中完全没有值得记忆的信息，返回 {"units": []}。
+- 不得输出代码块（```json 等），只输出原始 JSON。
+
+---
+
+【示例一：多类型对话，含指代消解、时间标注、action metadata】
+
+<PREVIOUS_TURNS>
+user: 最近项目压力大吗？
+assistant: 我随时为您服务，请问有什么需要帮忙的？
+</PREVIOUS_TURNS>
+<CURRENT_TURNS>
+user: DataFlow 项目下周五（2026-02-20）要正式上线，技术栈是 Python 3.11 + FastAPI，部署在自建 K8s 集群。其实我个人更想用 Go，但团队大多数人熟悉 Python 就妥协了。
+assistant: 了解，Python + FastAPI + K8s 是成熟组合，上线前需要注意几个关键点……
+user: 上次我们发布 UserService 的时候没做数据库迁移预检查，直接导致生产表结构不匹配、服务启动失败，回滚花了两个小时。这次绝对不能重蹈覆辙。
+</CURRENT_TURNS>
+
+期望输出：
+{
+    "units": [
+        {
+            "memory_type": "event",
+            "semantic_text": "用户所在公司的 DataFlow 项目计划于 2026-02-20（周五）正式上线，技术栈为 Python 3.11 和 FastAPI，部署目标为公司自建 Kubernetes 集群。",
+            "normalized_text": "事件:DataFlow 2026-02-20上线，技术栈Python3.11+FastAPI+K8s",
+            "entities": ["DataFlow", "Python 3.11", "FastAPI", "Kubernetes"],
+            "temporal": {"t_ref": "", "t_valid_from": "", "t_valid_to": "2026-02-20"},
+            "task_tags": ["项目管理", "部署"],
+            "tool_tags": ["Python 3.11", "FastAPI", "Kubernetes"],
+            "constraint_tags": [],
+            "failure_tags": [],
+            "affordance_tags": [],
+            "evidence_turns": [0],
+            "source_role": "user"
+        },
+        {
+            "memory_type": "preference",
+            "semantic_text": "用户个人编程语言偏好是 Go，但为配合团队（团队大多数成员熟悉 Python）在 DataFlow 项目中使用 Python。",
+            "normalized_text": "用户偏好:编程语言偏好Go，因团队因素在DataFlow项目妥协用Python",
+            "entities": ["Go", "Python", "DataFlow"],
+            "temporal": {"t_ref": "", "t_valid_from": "", "t_valid_to": ""},
+            "task_tags": ["编程"],
+            "tool_tags": ["Go", "Python"],
+            "constraint_tags": [],
+            "failure_tags": [],
+            "affordance_tags": [],
+            "evidence_turns": [0],
+            "source_role": "user"
+        },
+        {
+            "memory_type": "failure_pattern",
+            "semantic_text": "用户团队在发布 UserService 时因跳过数据库迁移预检查，导致生产环境表结构不匹配、服务启动失败，回滚耗时两小时。",
+            "normalized_text": "失败案例:UserService发布跳过DB迁移预检查→生产表结构不匹配→启动失败→回滚2h",
+            "entities": ["UserService"],
+            "temporal": {"t_ref": "", "t_valid_from": "", "t_valid_to": ""},
+            "task_tags": ["部署", "数据库迁移", "故障处理"],
+            "tool_tags": ["UserService"],
+            "constraint_tags": [],
+            "failure_tags": ["跳过DB迁移预检查", "生产表结构不匹配", "服务启动失败"],
+            "affordance_tags": [],
+            "evidence_turns": [1],
+            "source_role": "user"
+        },
+        {
+            "memory_type": "constraint",
+            "semantic_text": "用户团队规定每次部署前必须完成数据库迁移预检查，以防止生产环境表结构不匹配故障。",
+            "normalized_text": "约束:每次部署前必须执行数据库迁移预检查",
+            "entities": [],
+            "temporal": {"t_ref": "", "t_valid_from": "", "t_valid_to": ""},
+            "task_tags": ["部署", "数据库迁移"],
+            "tool_tags": [],
+            "constraint_tags": ["部署前必须执行DB迁移预检查"],
+            "failure_tags": [],
+            "affordance_tags": [],
+            "evidence_turns": [1],
+            "source_role": "user"
+        }
+    ]
+}
+
+【示例二：纯知识查询，无需记忆材料】
+
+<PREVIOUS_TURNS>
+（无）
+</PREVIOUS_TURNS>
+<CURRENT_TURNS>
+user: Python 的列表推导式怎么写？
+assistant: 列表推导式语法是 [expr for item in iterable if condition]，例如 [x*2 for x in range(10) if x%2==0]。
+</CURRENT_TURNS>
+
+期望输出：
+{"units": []}
 """
 
 
@@ -88,6 +192,33 @@ DECONTEXTUALIZE_SYSTEM = """\
 {
     "decontextualized_text": "改写后的自洽文本"
 }
+
+---
+
+【示例一：人称代词 + 相对时间消解】
+
+<ORIGINAL_TEXT>他昨天说那个项目被叫停了</ORIGINAL_TEXT>
+<CONTEXT>
+user: 张工今天来通知我了
+assistant: 张工是指张明吗？
+user: 对，是张明，他昨天（2026-01-10）跟我说 ApolloX 项目因为预算削减被叫停了
+</CONTEXT>
+
+期望输出：
+{"decontextualized_text": "技术负责人张明于 2026-01-10 告知用户，ApolloX 项目因预算削减已正式叫停。"}
+
+【示例二：指示代词 + 省略主语消解】
+
+<ORIGINAL_TEXT>这个限制是因为那边的服务不支持并发超过 50</ORIGINAL_TEXT>
+<CONTEXT>
+user: 为什么 API 网关的吞吐量上不去？
+assistant: 这个限制是因为那边的服务不支持并发超过 50。
+user: 那边是指下游的 PaymentService？
+assistant: 对，PaymentService 的并发上限是 50 个请求。
+</CONTEXT>
+
+期望输出：
+{"decontextualized_text": "API 网关吞吐量受限于下游 PaymentService，该服务不支持超过 50 个并发请求。"}
 """
 
 
@@ -130,6 +261,53 @@ ACTION_METADATA_SYSTEM = """\
     "failure_tags": ["failure1"],
     "affordance_tags": ["affordance1"]
 }
+
+---
+
+【示例一：memory_type = "procedure"（操作流程）】
+
+<SEMANTIC_TEXT>部署 DataFlow 服务到 Kubernetes 集群时，需按顺序执行：(1) 运行数据库迁移 dry-run 确认无结构冲突；(2) 通过 Helm upgrade 推送新版本镜像；(3) 持续观察 Pod 健康状态不少于 5 分钟确认稳定。</SEMANTIC_TEXT>
+<MEMORY_TYPE>procedure</MEMORY_TYPE>
+
+期望输出：
+{
+    "normalized_text": "部署流程:DataFlow→K8s，步骤：DB迁移dry-run→Helm upgrade→Pod观测≥5min",
+    "task_tags": ["部署", "发布", "运维"],
+    "tool_tags": ["Kubernetes", "Helm", "DataFlow"],
+    "constraint_tags": ["必须先执行DB迁移dry-run", "Pod观测不少于5分钟"],
+    "failure_tags": [],
+    "affordance_tags": ["支持滚动升级", "Helm管理版本回滚"]
+}
+
+【示例二：memory_type = "failure_pattern"（失败模式）】
+
+<SEMANTIC_TEXT>用户团队在发布 UserService 时因跳过数据库迁移预检查，导致生产环境表结构不匹配、服务启动失败，回滚耗时两小时。</SEMANTIC_TEXT>
+<MEMORY_TYPE>failure_pattern</MEMORY_TYPE>
+
+期望输出：
+{
+    "normalized_text": "失败案例:UserService发布跳过DB迁移预检查→生产表结构不匹配→启动失败→回滚2h",
+    "task_tags": ["部署", "数据库迁移", "故障处理"],
+    "tool_tags": ["UserService"],
+    "constraint_tags": [],
+    "failure_tags": ["跳过DB迁移预检查", "生产表结构不匹配", "服务启动失败"],
+    "affordance_tags": []
+}
+
+【示例三：memory_type = "tool_affordance"（工具能力）】
+
+<SEMANTIC_TEXT>LanceDB 支持对同一条记录存储多个不同维度的向量（multi-vector），可以分别对 semantic_text 和 normalized_text 建立独立的向量索引，在检索时按需选择向量列。</SEMANTIC_TEXT>
+<MEMORY_TYPE>tool_affordance</MEMORY_TYPE>
+
+期望输出：
+{
+    "normalized_text": "LanceDB:支持multi-vector，可对不同文本字段独立建向量索引",
+    "task_tags": ["向量检索", "存储设计"],
+    "tool_tags": ["LanceDB"],
+    "constraint_tags": [],
+    "failure_tags": [],
+    "affordance_tags": ["支持multi-vector存储", "可按列选择向量检索", "支持独立向量索引"]
+}
 """
 
 
@@ -155,6 +333,50 @@ NOVELTY_CHECK_SYSTEM = """\
     "has_novelty": true,
     "reason": "简要说明判断理由"
 }
+
+---
+
+【示例一：有新信息（新事实 + 已有记忆不覆盖）】
+
+<EXISTING_MEMORY>
+- 用户偏好使用 Python 进行日常开发。
+- 用户所在项目使用 FastAPI 框架。
+</EXISTING_MEMORY>
+<CONVERSATION>
+user: 我换工作了，现在在 ByteEdge 公司做推荐系统，主要写 Go。
+assistant: 恭喜！Go 在高并发推荐系统里确实很有优势。
+</CONVERSATION>
+
+期望输出：
+{"has_novelty": true, "reason": "用户换工作（ByteEdge 公司）、新职责（推荐系统）、主要语言切换为 Go，三条均为已有记忆未覆盖的新信息。"}
+
+【示例二：无新信息（纯查询已有记忆，AI 复述事实）】
+
+<EXISTING_MEMORY>
+- DataFlow 项目计划于 2026-02-20 上线，技术栈为 Python 3.11 + FastAPI + Kubernetes。
+- 部署前必须执行数据库迁移预检查。
+</EXISTING_MEMORY>
+<CONVERSATION>
+user: 提醒我一下，DataFlow 什么时候上线？
+assistant: 根据您之前提到的信息，DataFlow 项目计划于 2026-02-20 正式上线。
+user: 好的，谢谢。
+</CONVERSATION>
+
+期望输出：
+{"has_novelty": false, "reason": "对话仅是用户查询已记录的 DataFlow 上线日期，AI 复述了已有记忆内容，未引入任何新事实或更新。"}
+
+【示例三：有新信息（更新/纠正已有记忆）】
+
+<EXISTING_MEMORY>
+- 用户计划于 2026-03-01 参加 PyCon China 大会。
+</EXISTING_MEMORY>
+<CONVERSATION>
+user: PyCon 的时间改了，推迟到 4 月 15 日了。
+assistant: 明白，我记录一下，PyCon China 已推迟至 2026-04-15。
+</CONVERSATION>
+
+期望输出：
+{"has_novelty": true, "reason": "PyCon China 的日期由 2026-03-01 更新为 2026-04-15，纠正了已有记忆，属于有效新信息。"}
 """
 
 
@@ -200,6 +422,48 @@ SYNTHESIS_JUDGE_SYSTEM = """\
 - groups 可以有多组，每组独立合成。
 - 一个 unit 可以同时出现在多组中（如果它跨主题）。
 - 如果不需要合成，should_synthesize = false, groups = []。
+
+---
+
+【示例一：同实体多条偏好/约束，应合成】
+
+<UNITS>
+[
+  {"unit_id": "u1", "memory_type": "preference", "normalized_text": "用户偏好:后端开发用Go语言", "tool_tags": ["Go"], "task_tags": ["后端开发"]},
+  {"unit_id": "u2", "memory_type": "constraint", "normalized_text": "约束:前端项目必须用TypeScript禁用纯JavaScript", "tool_tags": ["TypeScript"], "task_tags": ["前端开发"]},
+  {"unit_id": "u3", "memory_type": "preference", "normalized_text": "用户偏好:容器化使用Docker而非虚拟机", "tool_tags": ["Docker"], "task_tags": ["部署"]},
+  {"unit_id": "u4", "memory_type": "event", "normalized_text": "用户2026-02-10参加了Go语言峰会", "tool_tags": ["Go"], "task_tags": []}
+]
+</UNITS>
+
+期望输出：
+{
+    "should_synthesize": true,
+    "groups": [
+        {
+            "source_unit_ids": ["u1", "u2", "u3"],
+            "synthesis_reason": "u1/u2/u3 均描述用户及团队的技术栈偏好与硬性约束，聚合为一条「技术栈偏好与约束总览」后，检索时可一次命中所有相关约束，减少冗余上下文。",
+            "suggested_type": "synthesized_preference"
+        }
+    ]
+}
+
+说明：u4 是独立事件记录，与偏好/约束主题不完全重合（仅工具标签有交集），不纳入合成组。
+
+【示例二：主题无关，不应合成】
+
+<UNITS>
+[
+  {"unit_id": "v1", "memory_type": "fact", "normalized_text": "用户的猫叫 Mochi，是橘色英短", "tool_tags": [], "task_tags": []},
+  {"unit_id": "v2", "memory_type": "procedure", "normalized_text": "部署流程:DataFlow→K8s，步骤：DB迁移dry-run→Helm upgrade→Pod观测≥5min", "tool_tags": ["Kubernetes", "Helm"], "task_tags": ["部署"]}
+]
+</UNITS>
+
+期望输出：
+{
+    "should_synthesize": false,
+    "groups": []
+}
 """
 
 
@@ -234,6 +498,55 @@ SYNTHESIS_EXECUTE_SYSTEM = """\
     "failure_tags": [],
     "affordance_tags": [],
     "confidence": 0.95
+}
+
+---
+
+【示例：技术栈偏好与约束合成】
+
+<SOURCE_UNITS>
+[
+  {
+    "unit_id": "u1", "memory_type": "preference",
+    "semantic_text": "用户个人编程语言偏好是 Go，但为配合团队在 DataFlow 项目中使用 Python。",
+    "entities": ["Go", "Python", "DataFlow"],
+    "tool_tags": ["Go", "Python"], "task_tags": ["后端开发"],
+    "constraint_tags": [], "failure_tags": [], "affordance_tags": [],
+    "temporal": {"t_ref": "", "t_valid_from": "", "t_valid_to": ""}, "confidence": 0.90
+  },
+  {
+    "unit_id": "u2", "memory_type": "constraint",
+    "semantic_text": "用户所在团队前端项目约定强制使用 TypeScript，禁止纯 JavaScript。",
+    "entities": ["TypeScript", "JavaScript"],
+    "tool_tags": ["TypeScript"], "task_tags": ["前端开发"],
+    "constraint_tags": ["必须用TypeScript"], "failure_tags": [], "affordance_tags": [],
+    "temporal": {"t_ref": "", "t_valid_from": "", "t_valid_to": ""}, "confidence": 0.95
+  },
+  {
+    "unit_id": "u3", "memory_type": "preference",
+    "semantic_text": "用户偏好使用 Docker 进行服务容器化，不使用传统虚拟机方案。",
+    "entities": ["Docker"],
+    "tool_tags": ["Docker"], "task_tags": ["部署", "容器化"],
+    "constraint_tags": [], "failure_tags": [], "affordance_tags": [],
+    "temporal": {"t_ref": "", "t_valid_from": "", "t_valid_to": ""}, "confidence": 0.88
+  }
+]
+</SOURCE_UNITS>
+<SYNTHESIS_REASON>三条记录均描述用户及团队的技术栈偏好与约束，聚合为技术栈总览可提升检索密度。</SYNTHESIS_REASON>
+<SUGGESTED_TYPE>synthesized_preference</SUGGESTED_TYPE>
+
+期望输出：
+{
+    "semantic_text": "用户个人偏好 Go 语言作为后端开发语言，但在 DataFlow 项目中因团队以 Python 为主而使用 Python。前端项目团队强制约定使用 TypeScript，禁止纯 JavaScript。部署层面用户偏好 Docker 容器化方案，不使用传统虚拟机。",
+    "normalized_text": "技术栈:后端Go(DataFlow项目用Python)，前端强制TypeScript，部署用Docker",
+    "entities": ["Go", "Python", "DataFlow", "TypeScript", "JavaScript", "Docker"],
+    "temporal": {"t_ref": "", "t_valid_from": "", "t_valid_to": ""},
+    "task_tags": ["后端开发", "前端开发", "部署", "容器化"],
+    "tool_tags": ["Go", "Python", "TypeScript", "Docker"],
+    "constraint_tags": ["必须用TypeScript"],
+    "failure_tags": [],
+    "affordance_tags": [],
+    "confidence": 0.91
 }
 """
 
@@ -293,4 +606,190 @@ RETRIEVAL_PLANNING_SYSTEM = """\
 - 所有列表字段如果为空，设为空数组 []。
 - semantic_queries 至少包含 1 个查询。
 - **关键：如果用户消息涉及多个不同主题，必须为每个主题生成独立的 semantic_query。**
+
+---
+
+【示例一：answer 模式（事实查询）】
+
+---
+
+【示例一：answer 模式（事实查询）】
+
+<USER_QUERY>DataFlow 项目用的什么技术栈？</USER_QUERY>
+<RECENT_CONTEXT>（无）</RECENT_CONTEXT>
+
+期望输出：
+{
+    "mode": "answer",
+    "semantic_queries": ["DataFlow 项目技术栈", "DataFlow 使用的框架和语言"],
+    "pragmatic_queries": [],
+    "temporal_filter": null,
+    "tool_hints": [],
+    "required_constraints": [],
+    "missing_slots": [],
+    "depth": 5,
+    "reasoning": "用户查询特定项目的技术事实，属于纯信息检索，无需行动支撑记忆，depth 取小值即可。"
+}
+
+【示例二：action 模式（执行操作）】
+
+<USER_QUERY>帮我把 DataFlow 服务部署到生产环境。</USER_QUERY>
+<RECENT_CONTEXT>
+user: DataFlow 今天要上线了
+assistant: 好的，我来协助您准备部署。
+</RECENT_CONTEXT>
+
+期望输出：
+{
+    "mode": "action",
+    "semantic_queries": ["DataFlow 部署流程", "Kubernetes 生产部署步骤", "部署前检查事项"],
+    "pragmatic_queries": ["数据库迁移预检查", "Helm upgrade", "K8s Pod健康检查"],
+    "temporal_filter": null,
+    "tool_hints": ["Kubernetes", "Helm", "Docker"],
+    "required_constraints": ["必须先执行DB迁移dry-run"],
+    "missing_slots": ["目标命名空间", "镜像版本号"],
+    "depth": 10,
+    "reasoning": "用户要求直接执行部署操作，需要检索完整部署流程、工具约束和历史失败经验，提高 depth 确保覆盖所有约束条目。"
+}
+
+【示例三：mixed 模式（事实查询 + 行动指导混合）】
+
+<USER_QUERY>我们上次部署 UserService 踩了什么坑？这次 DataFlow 部署怎么避免？</USER_QUERY>
+<RECENT_CONTEXT>（无）</RECENT_CONTEXT>
+
+期望输出：
+{
+    "mode": "mixed",
+    "semantic_queries": ["UserService 部署失败经验", "DataFlow 部署注意事项", "生产发布历史教训"],
+    "pragmatic_queries": ["数据库迁移问题", "服务启动失败", "部署回滚流程"],
+    "temporal_filter": null,
+    "tool_hints": ["Kubernetes", "Helm"],
+    "required_constraints": [],
+    "missing_slots": [],
+    "depth": 12,
+    "reasoning": "用户既查询历史失败事实（UserService 教训）又需要行动指导（DataFlow 如何规避），属于 mixed 模式；depth 调高以同时覆盖失败模式记忆与操作流程记忆。"
+}
+"""
+
+
+# ════════════════════════════════════════════════════════════════
+# 模块三（续）：检索充分性反思
+# ════════════════════════════════════════════════════════════════
+
+RETRIEVAL_ADEQUACY_CHECK_SYSTEM = """\
+你是一个「检索充分性评估器（Retrieval Adequacy Assessor）」。
+
+你的任务：判断当前已检索到的记忆条目是否**足以有效回应**用户的查询。
+
+你将收到：
+- <USER_QUERY>：用户的原始查询
+- <RETRIEVED_MEMORY>：当前已检索到的记忆条目（格式化文本）
+
+评估标准：
+- 若记忆条目直接覆盖了查询所需的核心信息（事实/流程/约束/偏好），判定为充分。
+- 若记忆条目为空，或仅覆盖部分子问题，关键信息缺失，判定为不充分。
+- 对于 action 类查询（"帮我部署/执行/配置"），还需检查：流程步骤是否完整、关键约束是否记录、工具信息是否已知。
+- **倾向于判定充分**：只有明显缺少关键信息时才输出 false。
+
+输出格式（严格 JSON，无代码块）：
+{
+    "is_sufficient": true,
+    "missing_info": "如果不充分，简要描述缺失的具体信息；如果充分则留空字符串"
+}
+
+---
+
+【示例一：充分（检索结果直接覆盖查询）】
+
+<USER_QUERY>DataFlow 项目用的什么技术栈？</USER_QUERY>
+<RETRIEVED_MEMORY>
+[1] (event, score=0.912) entities=[DataFlow, Python 3.11, FastAPI, Kubernetes]
+用户所在公司的 DataFlow 项目计划于 2026-02-20 正式上线，技术栈为 Python 3.11 和 FastAPI，部署目标为公司自建 Kubernetes 集群。
+</RETRIEVED_MEMORY>
+
+期望输出：
+{"is_sufficient": true, "missing_info": ""}
+
+【示例二：不充分（仅有事件记录，缺少具体流程约束）】
+
+<USER_QUERY>帮我把 DataFlow 服务部署到生产环境。</USER_QUERY>
+<RETRIEVED_MEMORY>
+[1] (event, score=0.872) entities=[DataFlow]
+用户所在公司的 DataFlow 项目计划于 2026-02-20 正式上线，技术栈为 Python 3.11 和 FastAPI。
+</RETRIEVED_MEMORY>
+
+期望输出：
+{"is_sufficient": false, "missing_info": "缺少具体部署步骤（Helm/kubectl 命令）、数据库迁移相关约束、历史失败经验和回滚方案。"}
+
+【示例三：不充分（结果为空）】
+
+<USER_QUERY>我上次配置 Redis 集群时遇到了什么问题？</USER_QUERY>
+<RETRIEVED_MEMORY>
+（无检索结果）
+</RETRIEVED_MEMORY>
+
+期望输出：
+{"is_sufficient": false, "missing_info": "未找到任何关于 Redis 集群配置的历史记录或相关问题记录。"}
+"""
+
+
+RETRIEVAL_ADDITIONAL_QUERIES_SYSTEM = """\
+你是一个「补充检索查询生成器（Additional Query Generator）」。
+
+你的任务：根据用户的原始查询、当前已检索到的记忆内容以及缺失信息的描述，
+生成 2~4 条**有针对性的补充检索查询**，用于在记忆库中查找当前结果所缺少的信息。
+
+你将收到：
+- <USER_QUERY>：用户的原始查询
+- <CURRENT_MEMORY>：当前已检索到的记忆条目（格式化文本）
+- <MISSING_INFO>：上一轮充分性评估中识别到的缺失信息描述
+
+补充查询生成规则：
+1. 每条补充查询聚焦一个**具体缺失主题**，不要生成宽泛模糊的查询。
+2. 补充查询应与初始查询**角度不同**，用不同关键词覆盖缺失信息。
+3. 如果缺失的是行动约束或流程，生成偏向 procedure/constraint/failure_pattern 类型的查询。
+4. 如果缺失的是历史事件或事实，生成偏向实体名+事件类型的查询。
+5. 不要重复已经在 <CURRENT_MEMORY> 中已经出现过的主题。
+6. 生成 2~4 条，不多不少。
+
+输出格式（严格 JSON，无代码块）：
+{
+    "additional_queries": ["补充查询1", "补充查询2", "补充查询3"]
+}
+
+---
+
+【示例一：action 查询缺少流程和约束】
+
+<USER_QUERY>帮我把 DataFlow 服务部署到生产环境。</USER_QUERY>
+<CURRENT_MEMORY>
+[1] (event) DataFlow 项目计划于 2026-02-20 上线，技术栈为 Python 3.11 + FastAPI + K8s。
+</CURRENT_MEMORY>
+<MISSING_INFO>缺少具体部署步骤（Helm/kubectl 命令）、数据库迁移相关约束、历史失败经验和回滚方案。</MISSING_INFO>
+
+期望输出：
+{
+    "additional_queries": [
+        "DataFlow Kubernetes Helm 部署步骤",
+        "数据库迁移预检查 部署约束",
+        "服务发布历史失败经验 回滚方案"
+    ]
+}
+
+【示例二：fact 查询缺少具体细节】
+
+<USER_QUERY>我上次配置 Redis 集群碰到了什么问题？</USER_QUERY>
+<CURRENT_MEMORY>
+[1] (tool_affordance) Redis 支持 Cluster 模式，最少需要 6 个节点（3 主 3 从）。
+</CURRENT_MEMORY>
+<MISSING_INFO>未找到用户自身经历的 Redis 集群配置问题记录，当前结果只是通用工具信息。</MISSING_INFO>
+
+期望输出：
+{
+    "additional_queries": [
+        "Redis 集群配置失败 用户遇到的问题",
+        "Redis 节点连接问题 故障处理经验",
+        "Redis Cluster 配置错误 排查记录"
+    ]
+}
 """

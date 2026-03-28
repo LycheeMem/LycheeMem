@@ -181,7 +181,7 @@ class ConsolidatorAgent(BaseAgent):
         should_extract: bool = bool(analysis.get("should_extract_entities", True))
 
         steps.append({
-            "name": "consolidation_analysis",
+            "name": "novelty_check",
             "status": "done",
             "detail": "提取语义" if should_extract else "跳过语义固化（LLM 判定无值得固化的事实）",
         })
