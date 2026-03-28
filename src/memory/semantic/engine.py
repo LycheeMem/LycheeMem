@@ -384,8 +384,16 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
         steps: list[dict[str, Any]] = []
 
+        # Step 2 分桶提前确定，供 Step 1 和 Step 2 共用
+        # 取最近 4 轮作为当前轮（供编码器做指代消解），其余作为上文
+        previous = turns[:-4] if len(turns) > 4 else []
+        current = turns[-4:] if len(turns) > 4 else turns
+
         # Step 1: 新颖性检查
-        has_novelty = self._check_novelty(turns, retrieved_context)
+        # 只检查最近一次 user-assistant 交换（最后 2 条），避免历史已固化轮次
+        # 的重复内容干扰判断，导致"本轮新信息"被误判为"已有记忆覆盖"。
+        last_exchange = turns[-2:] if len(turns) >= 2 else turns
+        has_novelty = self._check_novelty(last_exchange, retrieved_context)
         steps.append({
             "name": "novelty_check",
             "status": "done",
@@ -397,10 +405,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             )
 
         # Step 2: Compact Encoding
-        # 取最近 4 轮作为上文，其余全部作为当前轮
-        previous = turns[:-4] if len(turns) > 4 else []
-        current = turns[-4:] if len(turns) > 4 else turns
-
         new_records = self._encoder.encode_conversation(
             current,
             previous_turns=previous,
