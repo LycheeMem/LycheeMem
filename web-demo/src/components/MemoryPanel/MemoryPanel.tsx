@@ -8,7 +8,7 @@ import WorkingMemoryTab from "./WorkingMemoryTab";
 const TABS = [
   { id: "tab-agents", label: "Pipeline" },
   { id: "tab-working", label: "工作记忆" },
-  { id: "tab-graph-mem", label: "图谱记忆" },
+  { id: "tab-graph-mem", label: "语义记忆" },
   { id: "tab-skills", label: "技能记忆" },
 ];
 

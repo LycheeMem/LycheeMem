@@ -36,7 +36,32 @@ def _build_search_trace(result: dict[str, Any]) -> SearchCoordinatorTrace:
     graph_hits: list[GraphMemoryHit] = []
     for mem in graph_mems:
         anchor = mem.get("anchor", mem)
-        if str(anchor.get("node_id", "")) == "graphiti_context":
+        node_id_str = str(anchor.get("node_id", ""))
+
+        # Compact 后端：将每条 provenance 展开为独立的 GraphMemoryHit
+        if node_id_str == "compact_context":
+            for pv in mem.get("provenance", []):
+                if not isinstance(pv, dict):
+                    continue
+                semantic_text = str(pv.get("semantic_text") or "").strip()
+                unit_id = str(pv.get("unit_id") or "").strip()
+                memory_type = str(pv.get("memory_type") or "")
+                score = float(pv.get("score") or 0.0)
+                entities = pv.get("entities") or []
+                entity_summary = ", ".join(str(e) for e in entities[:3]) if entities else ""
+                display_name = semantic_text[:120] if semantic_text else unit_id
+                graph_hits.append(
+                    GraphMemoryHit(
+                        node_id=unit_id,
+                        name=display_name,
+                        label=memory_type,
+                        score=score,
+                        neighbor_count=len(entities),
+                    )
+                )
+            continue
+
+        if node_id_str == "graphiti_context":
             for pv in mem.get("provenance", []):
                 if not isinstance(pv, dict):
                     continue

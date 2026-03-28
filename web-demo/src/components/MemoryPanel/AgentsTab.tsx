@@ -89,7 +89,7 @@ function SearchContent({ search }: { search: PipelineTrace["search_coordinator"]
     <div className="trace-detail">
       {search.graph_memories.length > 0 && (
         <>
-          <div className="trace-section-title">图谱记忆</div>
+          <div className="trace-section-title">语义记忆</div>
           {search.graph_memories.map((gm, i) => (
             <div key={i} className="trace-item">
               <span className="trace-item-name">{gm.name || gm.node_id}</span>

@@ -40,11 +40,12 @@ export default function GraphMemoryTab() {
   const [searchResults, setSearchResults] = useState<GraphNode[] | null>(null);
   const [searching, setSearching] = useState(false);
 
-  // Add node form state
+  // Add node form state (Graphiti-only)
   const [showAddForm, setShowAddForm] = useState(false);
   const [newNodeId, setNewNodeId] = useState("");
   const [newNodeLabel, setNewNodeLabel] = useState("Entity");
   const [addError, setAddError] = useState("");
+  const [isGraphitiOnly, setIsGraphitiOnly] = useState(false);
 
   useEffect(() => {
     fetchGraphEdges().then(setGraphEdges).catch(() => {});
@@ -98,7 +99,13 @@ export default function GraphMemoryTab() {
       setShowAddForm(false);
       await reload();
     } catch (err) {
-      setAddError(err instanceof Error ? err.message : "添加失败");
+      const msg = err instanceof Error ? err.message : "添加失败";
+      if (msg.includes("501") || msg.toLowerCase().includes("compact")) {
+        setIsGraphitiOnly(true);
+        setShowAddForm(false);
+      } else {
+        setAddError(msg);
+      }
     }
   };
 
@@ -107,7 +114,12 @@ export default function GraphMemoryTab() {
     try {
       await deleteGraphNode(nodeId);
       await reload();
-    } catch { /* ignore */ }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "";
+      if (msg.includes("501") || msg.toLowerCase().includes("compact")) {
+        setIsGraphitiOnly(true);
+      }
+    }
   };
 
   const handleClearAll = async () => {
@@ -129,10 +141,10 @@ export default function GraphMemoryTab() {
       {/* Sub-tabs: Nodes / Edges */}
       <div className="crud-subtabs">
         <button className={`crud-subtab${subTab === "nodes" ? " active" : ""}`} onClick={() => setSubTab("nodes")}>
-          <NodeIndexOutlined /> 节点 ({graphData.nodes.length})
+          <NodeIndexOutlined /> 记忆单元 ({graphData.nodes.length})
         </button>
         <button className={`crud-subtab${subTab === "edges" ? " active" : ""}`} onClick={() => setSubTab("edges")}>
-          <LinkOutlined /> 边 ({graphEdges.length})
+          <LinkOutlined /> 关联 ({graphEdges.length})
         </button>
       </div>
 
@@ -157,13 +169,15 @@ export default function GraphMemoryTab() {
                 <button className="crud-btn crud-btn-sm crud-btn-ghost" onClick={clearSearch}>清除</button>
               )}
             </div>
-            <button
-              className="crud-btn crud-btn-primary crud-btn-sm"
-              onClick={() => setShowAddForm(!showAddForm)}
-              title="添加节点"
-            >
-              <PlusOutlined /> 添加
-            </button>
+            {!isGraphitiOnly && (
+              <button
+                className="crud-btn crud-btn-primary crud-btn-sm"
+                onClick={() => setShowAddForm(!showAddForm)}
+                title="添加节点（仅 Graphiti 后端）"
+              >
+                <PlusOutlined /> 添加
+              </button>
+            )}
             <button
               className="crud-btn crud-btn-sm"
               style={{ color: "var(--red)", borderColor: "var(--red)" }}
@@ -228,7 +242,7 @@ export default function GraphMemoryTab() {
                     </button> */}
                   </div>
                   {n.typeLabel && <div className="mem-meta">类型: {escapeHtml(n.typeLabel)}</div>}
-                  <div className="mem-meta">ID: {escapeHtml(n.id)}</div>
+                  <div className="mem-meta" style={{ fontFamily: "monospace", fontSize: "0.75em", opacity: 0.6 }}>ID: {escapeHtml(n.id.length > 16 ? n.id.slice(0, 16) + "…" : n.id)}</div>
                 </div>
               ))
             )}
@@ -283,7 +297,7 @@ export default function GraphMemoryTab() {
           {/* Edge list */}
           <div className="memory-list">
             {graphEdges.length === 0 ? (
-              <div className="empty-hint">暂无图谱事实边</div>
+              <div className="empty-hint">暂无关联关系</div>
             ) : (
               graphEdges.map((e, i) => {
                 const s = typeof e.source === "object" ? (e.source as { id: string }).id : e.source;
@@ -301,7 +315,7 @@ export default function GraphMemoryTab() {
                     onMouseLeave={() => { if (!selectedEdge) setHoveredEdge(null); }}
                     onClick={() => { setSelectedEdge(e); setHoveredEdge(e); }}
                   >
-                    <div className="mem-label graph"><LinkOutlined /> 图谱事实</div>
+                    <div className="mem-label graph"><LinkOutlined /> {escapeHtml(e.relation || "关联")}</div>
                     <div className="mem-content">
                       {escapeHtml(getEdgeFact(e, nodeById))}
                     </div>
