@@ -91,7 +91,7 @@ class ProvenanceItem(BaseModel):
     relevance: float = 0.0    # 综合得分（RRF + boosts + cross-encoder）
 
     # ── Fact 标识 ──
-    fact_id: str = ""         # 对应 Neo4j Fact 节点的 fact_id
+    fact_id: str = ""         # 对应 Fact 节点的 fact_id
     summary: str = ""         # Fact 的 fact_text（人类可读）
 
     # ── 检索信号细节 ──
@@ -106,7 +106,6 @@ class ProvenanceItem(BaseModel):
     # 每条条目是一个 Episode 快照，包含 episode_id、session_id、role、
     # content（原始文本）、turn_index、t_ref（参考时间戳）。
     # 通过 EVIDENCE_FOR（Fact 直接证据）或 MENTIONS（实体出现）关系
-    # 从 Neo4j 回溯得到，按 turn_index 升序排列。
     source_episodes: list[dict[str, Any]] = []
 
 

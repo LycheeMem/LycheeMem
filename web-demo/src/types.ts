@@ -172,6 +172,7 @@ export interface ProvenanceItem {
   index: number;
   relevance: number;
   summary: string;
+  fact_id?: string;
 }
 
 export interface SynthesizerTrace {

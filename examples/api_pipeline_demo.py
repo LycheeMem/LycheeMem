@@ -315,7 +315,7 @@ def step_consolidate(
     status = result.get("status", "?")
     if status == "started":
         _ok("已触发（后台执行中）", f"耗时 {elapsed:.2f}s")
-        _info("提示", "固化正在服务端后台运行，通常需要 30-120 秒完成")
+        _info("提示", "固化正在服务端后台运行")
         _info("完成后可查看", f"GET /memory/graph  /  GET /memory/skills")
     else:
         _ok("完成", f"耗时 {elapsed:.2f}s  status={status}")

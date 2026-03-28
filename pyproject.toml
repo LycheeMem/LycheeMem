@@ -17,7 +17,6 @@ dependencies = [
     "pyyaml>=6.0",
     "httpx>=0.28.0",
     "numpy>=2.0",
-    "neo4j>=5.20.0",
     "lancedb>=0.20.0",
     "bcrypt>=4.0.0",
     "PyJWT>=2.8.0",
