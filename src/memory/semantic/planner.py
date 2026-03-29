@@ -73,6 +73,7 @@ class ActionAwareSearchPlanner:
             temporal_filter=temporal_filter,
             tool_hints=d.get("tool_hints", []),
             required_constraints=d.get("required_constraints", []),
+            required_affordances=d.get("required_affordances", []),
             missing_slots=d.get("missing_slots", []),
             depth=int(d.get("depth", 5)),
             reasoning=d.get("reasoning", ""),

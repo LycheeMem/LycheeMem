@@ -16,9 +16,9 @@ from src.memory.procedural.sqlite_skill_store import SQLiteSkillStore
 from src.memory.semantic.base import BaseSemanticMemoryEngine
 
 HYDE_SYSTEM_PROMPT = """\
-你是一个「HyDE 假设性回答生成器」。
+你是 HyDE 假设性回答生成器。
 
-目标：
+你的任务：
 - 给定用户查询，为"程序/技能类"意图生成一段 **假设性的理想回答文本（Draft Answer）**。
 - 这段草稿回答不会直接返回给用户，而是作为向量检索的"锚点文本"，用来提高召回率。
 
@@ -28,14 +28,14 @@ HYDE_SYSTEM_PROMPT = """\
 3. 保持简洁，聚焦关键实体、步骤和概念，不要展开长篇解释。
 4. 不要使用列表或 JSON，只输出连续自然语言段落。
 
-示例（仅用于你在脑中参考，不要原样抄写）：
+## 示例（仅供参考，不要原样抄写）
 
 - 用户查询："帮我写一个脚本，每天凌晨 3 点备份 PostgreSQL 数据库到 S3。"
-    假设性回答示例：
+    参考输出：
     "我为你编写了一个使用 `pg_dump` 的备份脚本，并通过 crontab 配置在每天凌晨 3 点运行。脚本会将生成的备份文件上传到你指定的 S3 bucket，并使用时间戳作为文件名，方便后续检索和清理。"
 
 - 用户查询："搭一个最简单的 FastAPI 服务，并用 Docker 部署。"
-    假设性回答示例：
+    参考输出：
     "我创建了一个包含单个 `/health` 路由的 FastAPI 应用，并编写了一个使用 `python:3.10-slim` 基础镜像的 Dockerfile。通过 `docker build` 构建镜像后，在服务器上使用 `docker run -p 8000:8000` 运行该服务。"
 """
 

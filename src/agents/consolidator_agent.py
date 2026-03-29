@@ -19,14 +19,14 @@ from src.memory.procedural.sqlite_skill_store import SQLiteSkillStore
 from src.memory.semantic.base import BaseSemanticMemoryEngine
 
 CONSOLIDATION_SYSTEM_PROMPT = """\
-你是一个「记忆固化专家（Memory Consolidator）」。
+你是记忆固化专家（Memory Consolidator）。
 你需要审查刚刚结束的完整对话日志，从中判断是否有值得沉淀为长期记忆的内容。
 
 需要关注两类信息：
 1. 图谱事实 (Graph Facts)：
      - 用户偏好、项目属性、稳定的客观事实等，可以表示为 [主体, 关系, 客体] 的三元组；
      - 本系统会在后续步骤中调用专门的实体识别/三元组生成组件来产出具体三元组，
-         因此你只需判断「是否存在值得沉淀的事实」，不必直接输出三元组。
+         因此你只需判断是否存在值得沉淀的事实，不必直接输出三元组。
 2. 程序技能 (Procedural Skills)：
      - 如果在本次对话中出现了 **成功的多步工具调用/操作流程**，
          请将其提炼为可复用的“工作流模板”。
@@ -46,7 +46,7 @@ CONSOLIDATION_SYSTEM_PROMPT = """\
 - 如果对话没有值得保存的复杂操作模式，`new_skills` 应为一个空数组；
 - 如果本轮对话的主要内容是**调用/使用了已存在的技能**来完成任务（例如：使用"以指定格式总结学习周报"技能来写某周的周报），
   而不是在**定义/教授新技能**，则 `new_skills` 应为空数组，因为对应技能已经存在。
-  消息块"【已存在技能列表】"中会列出当前技能库的所有 intent，请在判断时参考。
+  消息块 "已存在技能列表" 中会列出当前技能库的所有 intent，请在判断时参考。
 - 满足以下任意一条，即应将 `should_extract_entities` 设为 true：
     · 用户偏好、技术选型、编程习惯等个人或项目偏好
     · 具体计划、日程安排、截止日期、里程碑
@@ -68,7 +68,7 @@ CONSOLIDATION_SYSTEM_PROMPT = """\
 
 下面是几个示例（只用于帮助你理解格式与抽取标准，不要原样抄写示例中的中文内容）：
 
-【示例 1：既有图谱事实，也有新技能】
+## 示例 1：既有图谱事实，也有新技能
 <session_log>
 user: 我想在这个项目里统一用 Python 3.10，并且所有新服务都部署到 k8s 集群 prod-a 上。
 assistant: 好的，我会记住：语言用 Python 3.10，部署目标是 prod-a 集群。
@@ -90,7 +90,7 @@ assistant: 我们可以这么做：
     "should_extract_entities": true
 }
 
-【示例 2：只有图谱事实，没有可复用技能】
+## 示例 2：只有图谱事实，没有可复用技能
 <session_log>
 user: 以后在这个项目里，所有文档一律用中文撰写，不要再给我英文模版了。
 assistant: 明白了，这个项目的文档统一使用中文。
@@ -102,7 +102,7 @@ assistant: 明白了，这个项目的文档统一使用中文。
     "should_extract_entities": true
 }
 
-【示例 3：纯闲聊，不需要固化】
+## 示例 3：纯闲聊，不需要固化
 <session_log>
 user: 哈哈，今天心情不错，随便聊聊八卦吧。
 assistant: 好的，我们可以聊点轻松的话题～
@@ -114,7 +114,7 @@ assistant: 好的，我们可以聊点轻松的话题～
     "should_extract_entities": false
 }
 
-【示例 4：团队分工 + 项目计划 + 截止日期，应固化】
+## 示例 4：团队分工 + 项目计划 + 截止日期，应固化
 <session_log>
 user: 我们的推荐系统项目下个迭代（3.31）要做用户画像特征维度扩展。我、王明、赵琳负责这个模块。分工安排：王明负责新增行为特征埋点设计和数据上报，赵琳来处理特征的ETL加工逻辑，我需要完成推荐模型的特征适配和离线训练验证。前期预计2天内要完成设计评审。
 assistant: 好的，已记录。推荐系统下个迭代成员是你、王明和赵琳。特征维度扩展项目，3.31截止，分工确认。设计评审计划2天完成，我会提醒。
@@ -194,18 +194,18 @@ class ConsolidatorAgent(BaseAgent):
         steps: list[dict[str, Any]] = []
         conversation_text = "\n".join(f"{t['role']}: {t['content']}" for t in turns)
 
-        # ── Step 0: 已有技能列表注入（LLM 层去重防线） ──
+        # Step 0: 已有技能列表注入（LLM 层去重防线）
         # 拉取当前用户所有技能 intent，以 numbered list 形式前置于对话文本，
         # 让 LLM 感知"哪些技能已经存在"，从而不再重复抽取"使用已有技能"的对话。
         existing_skills = self.skill_store.get_all(user_id=user_id)
         if existing_skills:
-            existing_block_lines = ["【已存在技能列表】（仅供参考，避免重复抽取）"]
+            existing_block_lines = ["## 已存在技能列表（仅供参考，避免重复抽取）"]
             for idx, s in enumerate(existing_skills[:30], 1):
                 existing_block_lines.append(f"{idx}. {s['intent']}")
             existing_block_lines.append("")
-            conversation_text = "\n".join(existing_block_lines) + "\n【本轮对话日志】\n" + conversation_text
+            conversation_text = "\n".join(existing_block_lines) + "\n## 本轮对话日志\n" + conversation_text
 
-        # ── Step 1: LLM 整体分析（串行，结果决定后续步骤） ──
+        # Step 1: LLM 整体分析（串行，结果决定后续步骤）
         response = self._call_llm(
             conversation_text,
             system_content=self.prompt_template,
@@ -220,7 +220,7 @@ class ConsolidatorAgent(BaseAgent):
             "detail": "提取语义" if should_extract else "跳过语义固化（LLM 判定无值得固化的事实）",
         })
 
-        # ── Step 2: 条件语义固化 & 技能抽取（并行） ──
+        # Step 2: 条件语义固化与技能抽取（并行）
         def _do_ingest():
             return self.semantic_engine.ingest_conversation(
                 turns=turns,
@@ -232,7 +232,10 @@ class ConsolidatorAgent(BaseAgent):
         def _write_skills() -> int:
             """写入新技能，含双层去重：LLM 层（已提前注入已有技能列表）+ 向量相似度兜底。
 
-            去重阈值 0.85：intent 向量余弦相似度达到此值即认为语义相同，跳过写入。
+            去重阈值 0.85：intent 向量余弦相似度达到此值即认为语义相同。
+            - 相似技能已存在 → upsert（复用已有 skill_id，更新 doc_markdown），不新建
+            - 无相似技能 → 新建
+            这样既防止重复，也允许技能被更新升级。
             """
             DEDUP_THRESHOLD = 0.85
             count = 0
@@ -242,7 +245,7 @@ class ConsolidatorAgent(BaseAgent):
                 if not intent or not doc_markdown:
                     continue
                 embedding = self.embedder.embed_query(intent)
-                # 代码层兜底：向量相似度去重
+                # 代码层兜底：向量相似度去重 / 合并
                 top_existing = self.skill_store.search(
                     query=intent,
                     top_k=1,
@@ -250,12 +253,17 @@ class ConsolidatorAgent(BaseAgent):
                     user_id=user_id,
                 )
                 if top_existing and top_existing[0].get("score", 0.0) >= DEDUP_THRESHOLD:
-                    # 相似技能已存在，跳过写入
-                    continue
-                self.skill_store.add(
-                    [{"intent": intent, "embedding": embedding, "doc_markdown": doc_markdown}],
-                    user_id=user_id,
-                )
+                    # 相似技能已存在：upsert 到已有条目（更新内容而非新建）
+                    existing_id = top_existing[0]["id"]
+                    self.skill_store.add(
+                        [{"id": existing_id, "intent": intent, "embedding": embedding, "doc_markdown": doc_markdown}],
+                        user_id=user_id,
+                    )
+                else:
+                    self.skill_store.add(
+                        [{"intent": intent, "embedding": embedding, "doc_markdown": doc_markdown}],
+                        user_id=user_id,
+                    )
                 count += 1
             return count
 

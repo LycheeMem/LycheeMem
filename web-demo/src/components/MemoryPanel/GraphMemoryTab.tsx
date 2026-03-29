@@ -139,14 +139,14 @@ export default function GraphMemoryTab() {
   return (
     <>
       {/* Sub-tabs: Nodes / Edges */}
-      <div className="crud-subtabs">
+      {/* <div className="crud-subtabs">
         <button className={`crud-subtab${subTab === "nodes" ? " active" : ""}`} onClick={() => setSubTab("nodes")}>
           <NodeIndexOutlined /> 记忆单元 ({graphData.nodes.length})
         </button>
         <button className={`crud-subtab${subTab === "edges" ? " active" : ""}`} onClick={() => setSubTab("edges")}>
           <LinkOutlined /> 关联 ({graphEdges.length})
-        </button>
-      </div>
+        </button> */}
+      {/* </div> */}
 
       {/* ── Nodes sub-tab ── */}
       {subTab === "nodes" && (
@@ -157,7 +157,7 @@ export default function GraphMemoryTab() {
               <input
                 className="crud-search-input"
                 type="text"
-                placeholder="搜索图谱节点…"
+                placeholder="搜索记忆…"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onKeyDown={handleSearchKeyDown}

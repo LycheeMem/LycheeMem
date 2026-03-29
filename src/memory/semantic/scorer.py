@@ -52,6 +52,7 @@ class MemoryScorer:
         plan_mode: str = "answer",
         plan_tool_hints: list[str] | None = None,
         plan_required_constraints: list[str] | None = None,
+        plan_required_affordances: list[str] | None = None,
         now: datetime | None = None,
     ) -> list[ScoredCandidate]:
         """对候选列表综合评分并排序。
@@ -81,6 +82,7 @@ class MemoryScorer:
         now = now or datetime.now(timezone.utc)
         tool_hints = set(plan_tool_hints or [])
         req_constraints = set(plan_required_constraints or [])
+        req_affordances = set(plan_required_affordances or [])
 
         scored: list[ScoredCandidate] = []
 
@@ -93,7 +95,7 @@ class MemoryScorer:
 
             # 2. ActionUtility: tag 匹配度
             bd["action_utility"] = self._compute_action_utility(
-                c, plan_mode, tool_hints, req_constraints,
+                c, plan_mode, tool_hints, req_constraints, req_affordances,
             )
 
             # 3. TemporalFit: 时间匹配度（近期的时间引用 → 高分）
@@ -139,10 +141,11 @@ class MemoryScorer:
         plan_mode: str,
         tool_hints: set[str],
         req_constraints: set[str],
+        req_affordances: set[str],
     ) -> float:
         """行动实用性评分。
 
-        对于 action/mixed 模式，tool_tags / constraint_tags 匹配度很重要。
+        对于 action/mixed 模式，tool_tags / constraint_tags / affordance_tags 匹配度很重要。
         对于 answer 模式，action_utility 权重较低，但仍考虑约束匹配。
         """
         if plan_mode == "answer":
@@ -166,6 +169,18 @@ class MemoryScorer:
             score += overlap / len(req_constraints) if req_constraints else 0
             parts += 1
 
+        # affordance_tags 匹配：plan 有 required_affordances 时做交集比；
+        # plan 无 required_affordances 时若记录本身有 affordance_tags 则给小额存在奖励
+        c_affordances = set(c.get("affordance_tags", []))
+        if req_affordances:
+            overlap = len(c_affordances & req_affordances)
+            score += overlap / len(req_affordances)
+            parts += 1
+        elif c_affordances:
+            # 无计划约束时：有可供性标签的记忆优于无标签的（小额加分）
+            score += 0.15
+            parts += 1
+
         # memory_type 加分
         mt = c.get("memory_type", "")
         action_types = {"procedure", "constraint", "failure_pattern", "tool_affordance"}
@@ -176,11 +191,6 @@ class MemoryScorer:
         # failure_tags 有值时额外加分（失败模式在 action 模式下有价值）
         if c.get("failure_tags"):
             score += 0.3
-            parts += 1
-
-        # affordance_tags 加分
-        if c.get("affordance_tags"):
-            score += 0.2
             parts += 1
 
         return min(1.0, score / max(1, parts))

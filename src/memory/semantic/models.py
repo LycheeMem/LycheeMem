@@ -149,6 +149,7 @@ class SearchPlan:
     temporal_filter: dict[str, str] | None = None  # {since, until}
     tool_hints: list[str] = field(default_factory=list)  # 当前请求可能需要的工具名
     required_constraints: list[str] = field(default_factory=list)  # 当前 action 缺的约束
+    required_affordances: list[str] = field(default_factory=list)  # 当前 action 所需的能力/可供性
     missing_slots: list[str] = field(default_factory=list)  # 当前 action 缺的参数/slot
     depth: int = 5  # 建议检索深度 (top_k)
     reasoning: str = ""  # 规划理由

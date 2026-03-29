@@ -133,6 +133,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             plan_mode=plan.mode,
             plan_tool_hints=plan.tool_hints,
             plan_required_constraints=plan.required_constraints,
+            plan_required_affordances=plan.required_affordances,
         )
 
         # Step 4: 反思循环（最多 max_reflection_rounds 轮）
@@ -185,6 +186,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 plan_mode=plan.mode,
                 plan_tool_hints=plan.tool_hints,
                 plan_required_constraints=plan.required_constraints,
+                plan_required_affordances=plan.required_affordances,
             )
 
         # Step 5: 取 top_k

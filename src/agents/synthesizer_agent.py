@@ -16,7 +16,7 @@ from src.agents.base_agent import BaseAgent
 from src.llm.base import BaseLLM
 
 SYNTHESIS_SYSTEM_PROMPT = """\
-你是一个严苛的「记忆整合与法官（Memory Synthesizer & Judge）」。
+你是严苛的记忆整合与判断器（Memory Synthesizer & Judge）。
 你将收到用户当前的任务需求，以及从不同记忆源（graph / skill）召回的若干原始记忆片段。
 
 你的任务：
@@ -45,7 +45,7 @@ SYNTHESIS_SYSTEM_PROMPT = """\
 - 保持事实准确，不虚构检索结果中不存在的信息；
 - scored_fragments 按 relevance 降序排列，summary 用简短中文概括该片段的核心信息。
 
-下面是一个示例（仅用于你在脑中参考，不要原样抄写）：
+## 示例（仅供参考，不要原样抄写）
 
 用户查询：
     "帮我回顾一下这个项目里和 'user-service 超时' 相关的历史问题，避免我这次排查踩坑。"
