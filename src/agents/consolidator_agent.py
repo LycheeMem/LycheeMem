@@ -15,7 +15,7 @@ from typing import Any
 from src.agents.base_agent import BaseAgent
 from src.embedder.base import BaseEmbedder
 from src.llm.base import BaseLLM
-from src.memory.procedural.file_skill_store import FileSkillStore
+from src.memory.procedural.sqlite_skill_store import SQLiteSkillStore
 from src.memory.semantic.base import BaseSemanticMemoryEngine
 
 CONSOLIDATION_SYSTEM_PROMPT = """\
@@ -44,6 +44,9 @@ CONSOLIDATION_SYSTEM_PROMPT = """\
 
 说明：
 - 如果对话没有值得保存的复杂操作模式，`new_skills` 应为一个空数组；
+- 如果本轮对话的主要内容是**调用/使用了已存在的技能**来完成任务（例如：使用"以指定格式总结学习周报"技能来写某周的周报），
+  而不是在**定义/教授新技能**，则 `new_skills` 应为空数组，因为对应技能已经存在。
+  消息块"【已存在技能列表】"中会列出当前技能库的所有 intent，请在判断时参考。
 - 满足以下任意一条，即应将 `should_extract_entities` 设为 true：
     · 用户偏好、技术选型、编程习惯等个人或项目偏好
     · 具体计划、日程安排、截止日期、里程碑
@@ -132,7 +135,7 @@ class ConsolidatorAgent(BaseAgent):
         self,
         llm: BaseLLM,
         embedder: BaseEmbedder,
-        skill_store: FileSkillStore,
+        skill_store: SQLiteSkillStore,
         semantic_engine: BaseSemanticMemoryEngine,
     ):
         super().__init__(llm=llm, prompt_template=CONSOLIDATION_SYSTEM_PROMPT)
@@ -191,6 +194,17 @@ class ConsolidatorAgent(BaseAgent):
         steps: list[dict[str, Any]] = []
         conversation_text = "\n".join(f"{t['role']}: {t['content']}" for t in turns)
 
+        # ── Step 0: 已有技能列表注入（LLM 层去重防线） ──
+        # 拉取当前用户所有技能 intent，以 numbered list 形式前置于对话文本，
+        # 让 LLM 感知"哪些技能已经存在"，从而不再重复抽取"使用已有技能"的对话。
+        existing_skills = self.skill_store.get_all(user_id=user_id)
+        if existing_skills:
+            existing_block_lines = ["【已存在技能列表】（仅供参考，避免重复抽取）"]
+            for idx, s in enumerate(existing_skills[:30], 1):
+                existing_block_lines.append(f"{idx}. {s['intent']}")
+            existing_block_lines.append("")
+            conversation_text = "\n".join(existing_block_lines) + "\n【本轮对话日志】\n" + conversation_text
+
         # ── Step 1: LLM 整体分析（串行，结果决定后续步骤） ──
         response = self._call_llm(
             conversation_text,
@@ -216,17 +230,33 @@ class ConsolidatorAgent(BaseAgent):
             )
 
         def _write_skills() -> int:
+            """写入新技能，含双层去重：LLM 层（已提前注入已有技能列表）+ 向量相似度兜底。
+
+            去重阈值 0.85：intent 向量余弦相似度达到此值即认为语义相同，跳过写入。
+            """
+            DEDUP_THRESHOLD = 0.85
             count = 0
             for skill in analysis.get("new_skills", []):
                 intent = skill.get("intent", "")
                 doc_markdown = skill.get("doc_markdown", "")
-                if intent and doc_markdown:
-                    embedding = self.embedder.embed_query(intent)
-                    self.skill_store.add(
-                        [{"intent": intent, "embedding": embedding, "doc_markdown": doc_markdown}],
-                        user_id=user_id,
-                    )
-                    count += 1
+                if not intent or not doc_markdown:
+                    continue
+                embedding = self.embedder.embed_query(intent)
+                # 代码层兜底：向量相似度去重
+                top_existing = self.skill_store.search(
+                    query=intent,
+                    top_k=1,
+                    query_embedding=embedding,
+                    user_id=user_id,
+                )
+                if top_existing and top_existing[0].get("score", 0.0) >= DEDUP_THRESHOLD:
+                    # 相似技能已存在，跳过写入
+                    continue
+                self.skill_store.add(
+                    [{"intent": intent, "embedding": embedding, "doc_markdown": doc_markdown}],
+                    user_id=user_id,
+                )
+                count += 1
             return count
 
         from src.memory.semantic.base import ConsolidationResult as _CR

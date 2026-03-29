@@ -59,8 +59,9 @@ class Settings(BaseSettings):
     compact_synthesis_min_records: int = 2
     compact_synthesis_similarity: float = 0.75
 
-    # ─── File Skill Store (轻量级向量持久化) ───
-    skill_file_path: str = "lychee_memos_skills.json"
+    # ─── Skill Store (SQLite + LanceDB) ───
+    skill_db_path: str = "data/skill_store.db"
+    skill_vector_db_path: str = "data/skill_vector"
     skill_top_k: int = 3
 
     # ─── 图谱检索 ───

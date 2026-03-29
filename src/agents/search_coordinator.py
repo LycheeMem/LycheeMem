@@ -12,7 +12,7 @@ from typing import Any
 from src.agents.base_agent import BaseAgent
 from src.embedder.base import BaseEmbedder
 from src.llm.base import BaseLLM
-from src.memory.procedural.file_skill_store import FileSkillStore
+from src.memory.procedural.sqlite_skill_store import SQLiteSkillStore
 from src.memory.semantic.base import BaseSemanticMemoryEngine
 
 HYDE_SYSTEM_PROMPT = """\
@@ -47,7 +47,7 @@ class SearchCoordinator(BaseAgent):
         self,
         llm: BaseLLM,
         embedder: BaseEmbedder,
-        skill_store: FileSkillStore,
+        skill_store: SQLiteSkillStore,
         semantic_engine: BaseSemanticMemoryEngine,
         graph_top_k: int = 3,
         skill_top_k: int = 3,

@@ -100,7 +100,7 @@ export default function SkillsTab() {
                     __html: formatContent(String(desc).slice(0, 800)),
                   }}
                 />
-                {(s.success_count !== undefined ||
+                {/* {(s.success_count !== undefined ||
                   s.score !== undefined ||
                   s.last_used) && (
                   <div className="mem-meta">
@@ -111,7 +111,7 @@ export default function SkillsTab() {
                     {s.last_used &&
                       ` | 最近使用: ${escapeHtml(String(s.last_used))}`}
                   </div>
-                )}
+                )} */}
               </div>
             );
           })}

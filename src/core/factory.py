@@ -15,7 +15,7 @@ from src.agents.wm_manager import WMManager
 from src.core.graph import LycheePipeline
 from src.embedder.base import BaseEmbedder
 from src.llm.base import BaseLLM
-from src.memory.procedural.file_skill_store import FileSkillStore
+from src.memory.procedural.sqlite_skill_store import SQLiteSkillStore
 from src.memory.working.compressor import WorkingMemoryCompressor
 from src.memory.working.session_store import InMemorySessionStore
 
@@ -52,7 +52,12 @@ def create_pipeline(
     graph_top_k = settings.graph_top_k
     skill_top_k = settings.skill_top_k
     session_store = _create_session_store(settings)
-    skill_store = FileSkillStore(file_path=settings.skill_file_path)
+    skill_store = SQLiteSkillStore(
+        db_path=getattr(settings, "skill_db_path", "data/skill_store.db"),
+        vector_db_path=getattr(settings, "skill_vector_db_path", "data/skill_vector"),
+        embedder=embedder,
+        embedding_dim=getattr(settings, "embedding_dim", 1536),
+    )
 
     compressor = WorkingMemoryCompressor(
         llm=llm,
