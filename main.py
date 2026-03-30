@@ -11,8 +11,6 @@ curr_dir = Path(__file__).parent
 
 def main():
     parser = argparse.ArgumentParser(description="LycheeMem: Compact, efficient, and extensible long-term memory for LLM agents")
-    parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload for development")
     args = parser.parse_args()
 
@@ -39,12 +37,15 @@ def main():
     pipeline = create_pipeline(llm=llm, embedder=embedder, settings=settings)
     app = create_app(pipeline, user_store=user_store)
 
-    print(f"🚀 LycheeMem server starting on http://{args.host}:{args.port}")
+    host = settings.api_host
+    port = settings.api_port
+
+    print(f"🚀 LycheeMem server starting on http://{host}:{port}")
     print(f"   LLM:  {settings.llm_model}")
     print(f"   Embed:{settings.embedding_model}")
-    print(f"   Docs: http://{args.host}:{args.port}/docs")
+    print(f"   Docs: http://{host}:{port}/docs")
 
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(app, host=host, port=port)
 
 
 def _create_llm(settings):

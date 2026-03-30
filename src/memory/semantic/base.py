@@ -43,7 +43,6 @@ class BaseSemanticMemoryEngine(ABC):
         *,
         query: str,
         session_id: str | None = None,
-        top_k: int = 10,
         query_embedding: list[float] | None = None,
         user_id: str = "",
         retrieval_plan: dict[str, Any] | None = None,
@@ -53,7 +52,6 @@ class BaseSemanticMemoryEngine(ABC):
         Args:
             query: 用户查询文本。
             session_id: 当前会话 ID（可选，用于 session-aware 检索）。
-            top_k: 返回条目上限。
             query_embedding: 预计算的 query 向量。
             user_id: 用户 ID（多用户隔离）。
             retrieval_plan: Action-Aware Retrieval Plan 的 dict 表示（可选）。

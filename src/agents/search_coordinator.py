@@ -49,7 +49,6 @@ class SearchCoordinator(BaseAgent):
         embedder: BaseEmbedder,
         skill_store: SQLiteSkillStore,
         semantic_engine: BaseSemanticMemoryEngine,
-        graph_top_k: int = 3,
         skill_top_k: int = 3,
         skill_reuse_threshold: float = 0.85,
     ):
@@ -57,7 +56,6 @@ class SearchCoordinator(BaseAgent):
         self.embedder = embedder
         self.skill_store = skill_store
         self.semantic_engine = semantic_engine
-        self.graph_top_k = graph_top_k
         self.skill_top_k = skill_top_k
         self.skill_reuse_threshold = skill_reuse_threshold
 
@@ -88,7 +86,6 @@ class SearchCoordinator(BaseAgent):
         result = self.semantic_engine.search(
             query=user_query,
             session_id=session_id,
-            top_k=self.graph_top_k,
             user_id=user_id,
         )
 
