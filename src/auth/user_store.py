@@ -29,7 +29,7 @@ class User:
 class UserStore:
     """基于 SQLite 的用户存储（线程安全）。"""
 
-    def __init__(self, db_path: str = "lychee_memos_users.db"):
+    def __init__(self, db_path: str = "users.db"):
         self._db_path = db_path
         self._local = threading.local()
         self._init_db()

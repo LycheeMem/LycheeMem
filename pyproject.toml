@@ -1,7 +1,7 @@
 [project]
-name = "lychee-memory"
+name = "lycheemem"
 version = "0.1.0"
-description = "LycheeMem: Training-free Agentic Cognitive Memory Framework"
+description = "LycheeMem"
 requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
 dependencies = [
@@ -31,7 +31,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["lychee_memos"]
+packages = ["lycheemem"]
 
 [tool.ruff]
 line-length = 100

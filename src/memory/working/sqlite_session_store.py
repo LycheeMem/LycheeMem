@@ -21,7 +21,7 @@ class SQLiteSessionStore:
     使用 WAL 模式提高并发性能。
     """
 
-    def __init__(self, db_path: str = "lychee_memos_sessions.db"):
+    def __init__(self, db_path: str = "sessions.db"):
         self._db_path = db_path
         self._local = threading.local()
         self._init_db()

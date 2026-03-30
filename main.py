@@ -1,6 +1,4 @@
 """
-启动入口: python -m lychee_memos
-
 使用开发模式 LLM/Embedder 启动 FastAPI 服务。
 生产环境应通过 uvicorn 直接运行。
 """

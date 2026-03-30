@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     session_backend: str = "sqlite"  # "memory" | "sqlite"
 
     # ─── SQLite (会话持久化) ───
-    sqlite_db_path: str = "lychee_memos_sessions.db"
+    sqlite_db_path: str = "sessions.db"
 
     # ─── Compact Semantic Memory ───
     compact_memory_db_path: str = "data/compact_memory.db"
@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     # ─── 用户认证 ───
     jwt_secret_key: str = "lychee-dev-secret-change-me"
     jwt_expire_hours: int = 168  # 7 天
-    user_db_path: str = "lychee_memos_users.db"
+    user_db_path: str = "users.db"
 
     model_config = SettingsConfigDict(extra="ignore", env_file=".env", env_file_encoding="utf-8")
 
