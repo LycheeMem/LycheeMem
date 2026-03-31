@@ -274,6 +274,7 @@ class SessionUpdateRequest(BaseModel):
 class MemorySearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=1000)
     top_k: int = Field(default=5, ge=1, le=50)
+    session_id: str | None = Field(default=None, min_length=1, max_length=128)
     include_graph: bool = True
     include_skills: bool = True
 
@@ -281,6 +282,7 @@ class MemorySearchRequest(BaseModel):
 class MemorySearchResponse(BaseModel):
     query: str
     graph_results: list[dict[str, Any]]
+    semantic_results: list[dict[str, Any]]
     skill_results: list[dict[str, Any]]
     total: int
 
@@ -288,6 +290,7 @@ class MemorySearchResponse(BaseModel):
 class MemorySmartSearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=1000)
     top_k: int = Field(default=5, ge=1, le=50)
+    session_id: str | None = Field(default=None, min_length=1, max_length=128)
     include_graph: bool = True
     include_skills: bool = True
     synthesize: bool = True
@@ -305,6 +308,7 @@ class MemorySynthesizeRequest(BaseModel):
 
     user_query: str = Field(..., min_length=1, max_length=100_000)
     graph_results: list[dict[str, Any]] = Field(default_factory=list)
+    semantic_results: list[dict[str, Any]] = Field(default_factory=list)
     skill_results: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -322,6 +326,7 @@ class MemorySmartSearchResponse(BaseModel):
     query: str
     mode: str = "compact"
     graph_results: list[dict[str, Any]]
+    semantic_results: list[dict[str, Any]]
     skill_results: list[dict[str, Any]]
     total: int
     synthesized: bool = False

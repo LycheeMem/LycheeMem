@@ -14,6 +14,7 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from typing import Any
 
 from src.embedder.base import BaseEmbedder
@@ -26,6 +27,7 @@ from src.memory.semantic.base import (
 from src.memory.semantic.encoder import CompactSemanticEncoder
 from src.memory.semantic.models import (
     ActionState,
+    CompositeRecord,
     MemoryRecord,
     SearchPlan,
     UsageLog,
@@ -176,6 +178,12 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
         top_k = max(1, int(top_k or plan.depth or 5))
         resolved_action_state = self._merge_action_state_with_plan(action_state_obj, plan)
+        focus_terms = self._derive_query_focus_terms(
+            query=query,
+            plan=plan,
+            action_state=resolved_action_state,
+        )
+        scoring_slots = self._merge_unique(plan.missing_slots, focus_terms)
 
         # Step 2: 初始多通道召回
         seen_ids: set[str] = set()
@@ -193,6 +201,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 plan=plan,
                 action_state=resolved_action_state,
             ),
+            focus_terms=focus_terms,
         )
         for c in raw_candidates:
             seen_ids.add(c.get("id", ""))
@@ -204,7 +213,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             plan_tool_hints=plan.tool_hints,
             plan_required_constraints=plan.required_constraints,
             plan_required_affordances=plan.required_affordances,
-            plan_missing_slots=plan.missing_slots,
+            plan_missing_slots=scoring_slots,
         ) if raw_candidates else []
 
         # Step 4: 反思循环（最多 max_reflection_rounds 轮）
@@ -274,6 +283,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                     action_state=resolved_action_state,
                     adequacy=adequacy,
                 ),
+                focus_terms=focus_terms,
             )
 
             plan = SearchPlan(
@@ -289,6 +299,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 reasoning=plan.reasoning,
             )
             resolved_action_state = self._merge_action_state_with_plan(resolved_action_state, plan)
+            scoring_slots = self._merge_unique(plan.missing_slots, focus_terms)
             reflection_scoring_context = self._build_reflection_scoring_context(
                 adequacy=adequacy,
                 action_state=resolved_action_state,
@@ -309,7 +320,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 plan_tool_hints=plan.tool_hints,
                 plan_required_constraints=plan.required_constraints,
                 plan_required_affordances=plan.required_affordances,
-                plan_missing_slots=plan.missing_slots,
+                plan_missing_slots=scoring_slots,
                 reflection_context=reflection_scoring_context,
             )
 
@@ -317,7 +328,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 continue
 
         # Step 5: 取 top_k
-        top = scored[:top_k]
+        top = self._select_final_candidates(
+            scored,
+            top_k=top_k,
+            focus_terms=focus_terms,
+        )
 
         # Step 6: 记录使用日志
         log_id = self._log_usage(
@@ -359,6 +374,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         top_k: int,
         record_type_bias: list[str] | None = None,
         synth_type_bias: list[str] | None = None,
+        focus_terms: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """5 通道并行召回 + 去重合并。"""
         seen_ids: set[str] = set()
@@ -369,6 +385,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         pragmatic_queries = plan.pragmatic_queries or []
         record_type_bias = [t for t in (record_type_bias or []) if str(t or "").strip()]
         synth_type_bias = [t for t in (synth_type_bias or []) if str(t or "").strip()]
+        focus_terms = [t for t in (focus_terms or []) if str(t or "").strip()]
 
         # ── 通道 1: FTS 全文检索 ──
         for sq in semantic_queries:
@@ -447,6 +464,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                             "evidence_turn_range": [],
                             "temporal": su.temporal,
                             "entities": su.entities,
+                            "source_record_ids": su.source_record_ids,
                         }
                         candidates.append(s)
 
@@ -516,6 +534,38 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                         r["id"] = sid
                         r["source"] = "composite"
                         r["semantic_distance"] = 0.45
+                        candidates.append(r)
+
+        # ── 通道 4.6: query focus hints（分工/负责/截止等答案导向槽位）──
+        if focus_terms:
+            focus_results = self._sqlite.search_by_slot_hints(
+                slot_terms=focus_terms,
+                user_id=user_id,
+                limit=max(top_k * 2, 12),
+            )
+            for r in focus_results:
+                uid = r.get("record_id", "")
+                if uid and uid not in seen_ids:
+                    seen_ids.add(uid)
+                    r["id"] = uid
+                    r["source"] = "record"
+                    r["semantic_distance"] = 0.4
+                    candidates.append(r)
+
+            focus_query = " ".join(focus_terms)
+            if focus_query.strip():
+                synth_focus_results = self._sqlite.fulltext_search_synthesized(
+                    focus_query,
+                    user_id=user_id,
+                    limit=max(6, top_k),
+                )
+                for r in synth_focus_results:
+                    sid = r.get("composite_id", "")
+                    if sid and sid not in seen_ids:
+                        seen_ids.add(sid)
+                        r["id"] = sid
+                        r["source"] = "composite"
+                        r["semantic_distance"] = 0.4
                         candidates.append(r)
 
         # ── 通道 4.8: 按类型偏置召回（failure / affordance / procedure / constraint）──
@@ -610,7 +660,417 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                     r["semantic_distance"] = 0.6  # 时间匹配给中等偏高距离
                     candidates.append(r)
 
+        # ── 补召回：如果已经召回到 child record，则把其 covering composite 一并拉回 ──
+        child_best_distance: dict[str, float] = {}
+        for candidate in candidates:
+            if candidate.get("source") != "record":
+                continue
+            cid = str(candidate.get("id") or "")
+            if not cid:
+                continue
+            distance = float(candidate.get("semantic_distance", 1.0) or 1.0)
+            child_best_distance[cid] = min(child_best_distance.get(cid, distance), distance)
+
+        if child_best_distance:
+            parent_composites = self._sqlite.get_synthesized_by_source(list(child_best_distance))
+            for composite in parent_composites:
+                sid = composite.composite_id
+                if sid in seen_ids:
+                    continue
+                candidate = self._synth_to_candidate(composite)
+                child_distances = [
+                    child_best_distance[src_id]
+                    for src_id in composite.source_record_ids
+                    if src_id in child_best_distance
+                ]
+                candidate["semantic_distance"] = (
+                    max(0.0, min(child_distances) - 0.05)
+                    if child_distances
+                    else 0.4
+                )
+                seen_ids.add(sid)
+                candidates.append(candidate)
+
         return candidates
+
+    @staticmethod
+    def _derive_query_focus_terms(
+        *,
+        query: str,
+        plan: SearchPlan,
+        action_state: ActionState,
+    ) -> list[str]:
+        text = str(query or "").strip().lower()
+        focus_terms: list[str] = []
+
+        def _contains_any(*keywords: str) -> bool:
+            return any(keyword in text for keyword in keywords)
+
+        if _contains_any("分工", "负责", "职责", "安排", "谁做", "assignment", "owner", "responsible"):
+            focus_terms.extend(["分工", "负责", "职责", "安排"])
+        if _contains_any("成员", "组员", "小组", "团队", "team member"):
+            focus_terms.extend(["成员", "组员"])
+        if _contains_any("主题", "课题", "topic"):
+            focus_terms.extend(["主题", "课题"])
+        if _contains_any("截止", "日期", "时间", "什么时候", "deadline", "due"):
+            focus_terms.extend(["截止", "日期", "时间"])
+
+        focus_terms = CompactSemanticEngine._merge_unique(focus_terms, plan.missing_slots)
+        focus_terms = CompactSemanticEngine._merge_unique(focus_terms, action_state.missing_slots)
+        return focus_terms
+
+    def _select_final_candidates(
+        self,
+        scored: list[ScoredCandidate],
+        *,
+        top_k: int,
+        focus_terms: list[str] | None = None,
+    ) -> list[ScoredCandidate]:
+        """最终候选选择：优先 composite，并折叠被覆盖或近重复的 record/composite。"""
+        if not scored:
+            return []
+
+        focus_terms = [str(term or "").strip() for term in (focus_terms or []) if str(term or "").strip()]
+        composite_index = {
+            candidate.id: candidate
+            for candidate in scored
+            if candidate.source == "composite"
+        }
+        composite_source_sets = {
+            candidate_id: self._candidate_source_record_set(candidate.data)
+            for candidate_id, candidate in composite_index.items()
+        }
+        covering_composites: dict[str, list[ScoredCandidate]] = {}
+        for candidate in composite_index.values():
+            for source_id in candidate.data.get("source_record_ids", []) or []:
+                source_key = str(source_id or "").strip()
+                if not source_key:
+                    continue
+                covering_composites.setdefault(source_key, []).append(candidate)
+        for items in covering_composites.values():
+            items.sort(key=lambda item: item.final_score, reverse=True)
+
+        covering_parent_composites: dict[str, list[ScoredCandidate]] = {}
+        for child_id, child_sources in composite_source_sets.items():
+            if not child_sources:
+                continue
+            parents = [
+                candidate
+                for candidate_id, candidate in composite_index.items()
+                if candidate_id != child_id
+                and child_sources.issubset(composite_source_sets.get(candidate_id, set()))
+                and len(composite_source_sets.get(candidate_id, set())) > len(child_sources)
+            ]
+            if parents:
+                parents.sort(key=lambda item: item.final_score, reverse=True)
+                covering_parent_composites[child_id] = parents
+
+        ordered = sorted(
+            scored,
+            key=lambda item: item.final_score + (0.02 if item.source == "composite" else 0.0),
+            reverse=True,
+        )
+
+        selected: list[ScoredCandidate] = []
+        selected_ids: set[str] = set()
+        covered_record_ids: set[str] = set()
+
+        for candidate in ordered:
+            if candidate.id in selected_ids:
+                continue
+
+            if candidate.source == "composite":
+                candidate_sources = composite_source_sets.get(candidate.id, set())
+                selected_covering_parents = [
+                    item for item in selected
+                    if item.source == "composite"
+                    and candidate_sources
+                    and candidate_sources.issubset(composite_source_sets.get(item.id, set()))
+                    and len(composite_source_sets.get(item.id, set())) > len(candidate_sources)
+                ]
+                if selected_covering_parents and not self._record_adds_unique_value(
+                    candidate,
+                    selected_covering_parents,
+                    focus_terms=focus_terms,
+                ):
+                    continue
+
+                best_parent = next(iter(covering_parent_composites.get(candidate.id, [])), None)
+                if (
+                    best_parent is not None
+                    and best_parent.id not in selected_ids
+                    and best_parent.final_score >= candidate.final_score - 0.05
+                    and not self._record_adds_unique_value(
+                        candidate,
+                        [best_parent],
+                        focus_terms=focus_terms,
+                    )
+                ):
+                    if not self._is_duplicate_candidate(best_parent, selected, focus_terms=focus_terms):
+                        selected.append(best_parent)
+                        selected_ids.add(best_parent.id)
+                        covered_record_ids.update(
+                            str(source_id or "").strip()
+                            for source_id in (best_parent.data.get("source_record_ids", []) or [])
+                            if str(source_id or "").strip()
+                        )
+                    continue
+
+            if candidate.source == "record":
+                selected_covering = [
+                    item for item in selected
+                    if item.source == "composite"
+                    and candidate.id in set(item.data.get("source_record_ids", []) or [])
+                ]
+                if selected_covering and not self._record_adds_unique_value(
+                    candidate,
+                    selected_covering,
+                    focus_terms=focus_terms,
+                ):
+                    continue
+
+                best_cover = next(iter(covering_composites.get(candidate.id, [])), None)
+                if (
+                    best_cover is not None
+                    and best_cover.id not in selected_ids
+                    and best_cover.final_score >= candidate.final_score - 0.05
+                    and not self._record_adds_unique_value(
+                        candidate,
+                        [best_cover],
+                        focus_terms=focus_terms,
+                    )
+                ):
+                    if not self._is_duplicate_candidate(best_cover, selected, focus_terms=focus_terms):
+                        selected.append(best_cover)
+                        selected_ids.add(best_cover.id)
+                        covered_record_ids.update(
+                            str(source_id or "").strip()
+                            for source_id in (best_cover.data.get("source_record_ids", []) or [])
+                            if str(source_id or "").strip()
+                        )
+                    continue
+
+                if candidate.id in covered_record_ids:
+                    continue
+
+            if self._is_duplicate_candidate(candidate, selected, focus_terms=focus_terms):
+                continue
+
+            selected.append(candidate)
+            selected_ids.add(candidate.id)
+            if candidate.source == "composite":
+                covered_record_ids.update(
+                    str(source_id or "").strip()
+                    for source_id in (candidate.data.get("source_record_ids", []) or [])
+                    if str(source_id or "").strip()
+                )
+
+            if len(selected) >= top_k:
+                break
+
+        if len(selected) < top_k:
+            for candidate in ordered:
+                if candidate.id in selected_ids:
+                    continue
+                if self._is_duplicate_candidate(candidate, selected, focus_terms=focus_terms):
+                    continue
+                selected.append(candidate)
+                selected_ids.add(candidate.id)
+                if len(selected) >= top_k:
+                    break
+
+        return selected[:top_k]
+
+    def _record_adds_unique_value(
+        self,
+        record: ScoredCandidate,
+        covering_composites: list[ScoredCandidate],
+        *,
+        focus_terms: list[str] | None = None,
+    ) -> bool:
+        if not covering_composites:
+            return True
+
+        focus_terms = [str(term or "").strip() for term in (focus_terms or []) if str(term or "").strip()]
+        record_data = record.data
+        record_entities = {str(v or "").strip() for v in (record_data.get("entities") or []) if str(v or "").strip()}
+
+        composite_entities: set[str] = set()
+        composite_tags: dict[str, set[str]] = {
+            "task_tags": set(),
+            "tool_tags": set(),
+            "constraint_tags": set(),
+            "failure_tags": set(),
+            "affordance_tags": set(),
+        }
+        composite_temporal_values: set[str] = set()
+        composite_texts: list[str] = []
+        composite_structured_tokens: set[str] = set()
+
+        for composite in covering_composites:
+            data = composite.data
+            composite_entities.update(
+                str(v or "").strip() for v in (data.get("entities") or []) if str(v or "").strip()
+            )
+            for tag_field in composite_tags:
+                composite_tags[tag_field].update(
+                    str(v or "").strip() for v in (data.get(tag_field) or []) if str(v or "").strip()
+                )
+            temporal = data.get("temporal") or {}
+            if isinstance(temporal, dict):
+                composite_temporal_values.update(
+                    str(v or "").strip() for v in temporal.values() if str(v or "").strip()
+                )
+            text_blob = self._candidate_text_blob(data)
+            if text_blob:
+                composite_texts.append(text_blob)
+                composite_structured_tokens.update(self._extract_structured_tokens(text_blob))
+
+        if record_entities - composite_entities:
+            return True
+
+        for tag_field, covered_values in composite_tags.items():
+            record_values = {
+                str(v or "").strip()
+                for v in (record_data.get(tag_field) or [])
+                if str(v or "").strip()
+            }
+            if record_values - covered_values:
+                return True
+
+        temporal = record_data.get("temporal") or {}
+        if isinstance(temporal, dict):
+            record_temporal_values = {
+                str(v or "").strip()
+                for v in temporal.values()
+                if str(v or "").strip()
+            }
+            if record_temporal_values - composite_temporal_values:
+                return True
+
+        record_text = self._candidate_text_blob(record_data)
+        combined_composite_text = "\n".join(composite_texts)
+        if focus_terms:
+            record_focus_terms = [term for term in focus_terms if term in record_text]
+            if record_focus_terms and any(term not in combined_composite_text for term in record_focus_terms):
+                return True
+
+        record_structured_tokens = self._extract_structured_tokens(record_text)
+        if record_structured_tokens - composite_structured_tokens:
+            return True
+
+        return False
+
+    def _is_duplicate_candidate(
+        self,
+        candidate: ScoredCandidate,
+        selected: list[ScoredCandidate],
+        *,
+        focus_terms: list[str] | None = None,
+    ) -> bool:
+        for existing in selected:
+            if candidate.id == existing.id:
+                return True
+
+            if candidate.source == "record" and existing.source == "composite":
+                if candidate.id in self._candidate_source_record_set(existing.data):
+                    if not self._record_adds_unique_value(candidate, [existing], focus_terms=focus_terms):
+                        return True
+
+            if candidate.source == "composite" and existing.source == "record":
+                if existing.id in self._candidate_source_record_set(candidate.data):
+                    if not self._record_adds_unique_value(existing, [candidate], focus_terms=focus_terms):
+                        return True
+
+            if candidate.source == "composite" and existing.source == "composite":
+                candidate_sources = self._candidate_source_record_set(candidate.data)
+                existing_sources = self._candidate_source_record_set(existing.data)
+                if candidate_sources and existing_sources:
+                    if (
+                        candidate_sources.issubset(existing_sources)
+                        and len(existing_sources) > len(candidate_sources)
+                        and not self._record_adds_unique_value(candidate, [existing], focus_terms=focus_terms)
+                    ):
+                        return True
+                    if (
+                        existing_sources.issubset(candidate_sources)
+                        and len(candidate_sources) > len(existing_sources)
+                        and not self._record_adds_unique_value(existing, [candidate], focus_terms=focus_terms)
+                    ):
+                        return True
+
+            if self._looks_like_near_duplicate(candidate.data, existing.data):
+                return True
+
+        return False
+
+    def _looks_like_near_duplicate(
+        self,
+        left: dict[str, Any],
+        right: dict[str, Any],
+    ) -> bool:
+        left_text = self._candidate_text_blob(left)
+        right_text = self._candidate_text_blob(right)
+        if not left_text or not right_text:
+            return False
+
+        left_norm = str(left.get("normalized_text") or left.get("semantic_text") or "").strip()
+        right_norm = str(right.get("normalized_text") or right.get("semantic_text") or "").strip()
+        semantic_ratio = SequenceMatcher(None, left_text, right_text).ratio()
+        norm_ratio = SequenceMatcher(None, left_norm, right_norm).ratio() if left_norm and right_norm else 0.0
+        max_ratio = max(semantic_ratio, norm_ratio)
+
+        left_entities = {str(v or "").strip() for v in (left.get("entities") or []) if str(v or "").strip()}
+        right_entities = {str(v or "").strip() for v in (right.get("entities") or []) if str(v or "").strip()}
+        entity_overlap = 0.0
+        if left_entities and right_entities:
+            entity_overlap = len(left_entities & right_entities) / max(1, len(left_entities | right_entities))
+
+        left_type = str(left.get("memory_type") or "")
+        right_type = str(right.get("memory_type") or "")
+        if max_ratio >= 0.94:
+            return True
+        if max_ratio >= 0.88 and entity_overlap >= 0.5:
+            return True
+        if left_type == right_type and max_ratio >= 0.84 and entity_overlap >= 0.7:
+            return True
+
+        return False
+
+    @staticmethod
+    def _extract_structured_tokens(text: str) -> set[str]:
+        if not text:
+            return set()
+        return {
+            token
+            for token in re.findall(r"\b(?:\d{2,}|[A-Za-z_][A-Za-z0-9_.:-]{1,})\b", text)
+            if token
+        }
+
+    @staticmethod
+    def _candidate_text_blob(data: dict[str, Any]) -> str:
+        return " ".join(
+            part
+            for part in [
+                str(data.get("normalized_text") or "").strip(),
+                str(data.get("semantic_text") or "").strip(),
+                " ".join(str(v) for v in (data.get("entities") or []) if str(v or "").strip()),
+                " ".join(str(v) for v in (data.get("task_tags") or []) if str(v or "").strip()),
+                " ".join(str(v) for v in (data.get("tool_tags") or []) if str(v or "").strip()),
+                " ".join(str(v) for v in (data.get("constraint_tags") or []) if str(v or "").strip()),
+                " ".join(str(v) for v in (data.get("failure_tags") or []) if str(v or "").strip()),
+                " ".join(str(v) for v in (data.get("affordance_tags") or []) if str(v or "").strip()),
+            ]
+            if part
+        )
+
+    @staticmethod
+    def _candidate_source_record_set(data: dict[str, Any]) -> set[str]:
+        return {
+            str(value or "").strip()
+            for value in (data.get("source_record_ids") or [])
+            if str(value or "").strip()
+        }
 
     # ════════════════════════════════════════════════════════════════
     # ingest_conversation() — 固化管线
@@ -1226,6 +1686,32 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         }
 
     @staticmethod
+    def _synth_to_candidate(record: CompositeRecord) -> dict[str, Any]:
+        """CompositeRecord → scorer 需要的 candidate dict。"""
+        return {
+            "id": record.composite_id,
+            "source": "composite",
+            "semantic_distance": 0.5,
+            "memory_type": record.memory_type,
+            "semantic_text": record.semantic_text,
+            "normalized_text": record.normalized_text,
+            "tool_tags": record.tool_tags,
+            "constraint_tags": record.constraint_tags,
+            "task_tags": record.task_tags,
+            "failure_tags": record.failure_tags,
+            "affordance_tags": record.affordance_tags,
+            "created_at": record.created_at,
+            "retrieval_count": record.retrieval_count,
+            "retrieval_hit_count": record.retrieval_hit_count,
+            "action_success_count": record.action_success_count,
+            "action_fail_count": record.action_fail_count,
+            "evidence_turn_range": [],
+            "temporal": record.temporal,
+            "entities": record.entities,
+            "source_record_ids": list(record.source_record_ids),
+        }
+
+    @staticmethod
     def _cosine_similarity(a: list[float], b: list[float]) -> float:
         """余弦相似度。"""
         dot = sum(x * y for x, y in zip(a, b))
@@ -1266,10 +1752,12 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 "record_id": sc.id,
                 "source": sc.source,
                 "memory_type": d.get("memory_type", ""),
+                "semantic_source_type": sc.source,
                 "score": sc.final_score,
                 "score_breakdown": sc.score_breakdown,
                 "semantic_text": d.get("semantic_text", ""),
                 "entities": d.get("entities", []),
+                "source_record_ids": d.get("source_record_ids", []),
             })
         return provenance
 

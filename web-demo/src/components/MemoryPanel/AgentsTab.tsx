@@ -126,12 +126,15 @@ function SearchContent({ search }: { search: PipelineTrace["search_coordinator"]
 function SynthContent({ synth }: { synth: PipelineTrace["synthesizer"] }) {
   // 将 provenance source 翻译为中文
   const sourceLabel: Record<string, string> = {
+    "semantic": "语义记忆",
     "record": "语义记录",
-    "synth": "合成记忆",
-    "compact_semantic": "紧凑记忆库",
-    "graphiti_retrieval": "图谱检索",
-    "graphiti_context": "图谱上下文",
-    "graphiti_community": "图谱社群",
+    "composite": "融合记忆",
+    "synth": "融合记忆",
+    "compact_semantic": "语义记忆",
+    "semantic_retrieval": "语义检索",
+    "graphiti_retrieval": "语义检索（旧）",
+    "graphiti_context": "图谱上下文（旧）",
+    "graphiti_community": "图谱社群（旧）",
   };
   
   return (
@@ -303,7 +306,7 @@ function TraceContent({ trace }: { trace: PipelineTrace }) {
       <TraceStep
         icon={<SearchOutlined />}
         label="检索"
-        summary={`${search.graph_memories.length} 图谱 | ${search.skills.length} 技能`}
+        summary={`${search.graph_memories.length} 语义记忆 | ${search.skills.length} 技能`}
         status="done"
         defaultOpen={search.total_retrieved > 0}
       >
@@ -455,7 +458,7 @@ export default function AgentsTab() {
               autoOpen = true;
             } else if (step.traceKey === "search_coordinator") {
               const search = stepData as PipelineTrace["search_coordinator"];
-              summary = `${search.graph_memories.length} 图谱 | ${search.skills.length} 技能`;
+              summary = `${search.graph_memories.length} 语义记忆 | ${search.skills.length} 技能`;
               content = <SearchContent search={search} />;
               autoOpen = search.total_retrieved > 0;
             } else if (step.traceKey === "synthesizer") {

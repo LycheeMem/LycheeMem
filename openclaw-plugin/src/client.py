@@ -41,6 +41,7 @@ class LycheeMemPluginClient:
         query: str,
         *,
         top_k: int = 5,
+        session_id: str | None = None,
         include_graph: bool = True,
         include_skills: bool = True,
     ) -> dict[str, Any]:
@@ -50,6 +51,8 @@ class LycheeMemPluginClient:
             "include_graph": include_graph,
             "include_skills": include_skills,
         }
+        if session_id:
+            payload["session_id"] = session_id
         if self.config.transport == "mcp":
             return self._call_mcp_tool("lychee_memory_search", payload)
 
@@ -66,6 +69,7 @@ class LycheeMemPluginClient:
         query: str,
         *,
         top_k: int = 5,
+        session_id: str | None = None,
         include_graph: bool = True,
         include_skills: bool = True,
         synthesize: bool = True,
@@ -79,6 +83,8 @@ class LycheeMemPluginClient:
             "synthesize": synthesize,
             "mode": mode,
         }
+        if session_id:
+            payload["session_id"] = session_id
         if self.config.transport == "mcp":
             return self._call_mcp_tool("lychee_memory_smart_search", payload)
 

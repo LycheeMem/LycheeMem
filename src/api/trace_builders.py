@@ -132,8 +132,8 @@ def _build_synthesizer_trace(result: dict[str, Any]) -> SynthesizerTrace:
         if not isinstance(source_eps, list):
             source_eps = []
         
-        # 优先使用 provenance item 中的 source（compact 为 "record"/"composite"，graphiti 为具体类型）
-        # 如果 source 为 graphiti_retrieval，说明这是从 search_coordinator 传来的包装结构
+        # 优先使用 provenance item 中的 source（compact 为 semantic/record/composite 等）
+        # 兼容旧包装结构：如果存在 items，则展开 nested provenance。
         wrapper_source = str(p.get("source") or "")
         legacy_summary = str(p.get("summary") or "")
         nested_items = p.get("items")
@@ -158,8 +158,8 @@ def _build_synthesizer_trace(result: dict[str, Any]) -> SynthesizerTrace:
                     sub_eps = []
                 
                 # 如果 sub 有 source 且不为空，用 sub.source；否则用 wrapper_source；否则用默认
-                final_source = sub_source or wrapper_source or "compact_semantic"
-                # 对于 compact 后端，使用 semantic_text；Graphiti 用 fact_text/summary
+                final_source = sub_source or wrapper_source or "semantic"
+                # 对于 compact 后端，优先使用 semantic_text；兼容旧 fact_text 字段。
                 summary_text = str(sub.get("fact_text") or sub.get("summary") or sub.get("semantic_text") or "")
                 provenance.append(
                     ProvenanceItem(
@@ -180,8 +180,8 @@ def _build_synthesizer_trace(result: dict[str, Any]) -> SynthesizerTrace:
             continue
         
         # 非嵌套项（直接的 provenance item）
-        final_source = str(p.get("source") or "compact_semantic")
-        # 对于 compact 后端，优先用 semantic_text；Graphiti 用 fact_text
+        final_source = str(p.get("source") or "semantic")
+        # 对于 compact 后端，优先用 semantic_text；兼容旧 fact_text
         summary_text = legacy_summary or str(p.get("fact_text") or p.get("semantic_text") or "")
         provenance.append(
             ProvenanceItem(

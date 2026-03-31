@@ -31,6 +31,27 @@ logger = logging.getLogger("src.api")
 router = APIRouter()
 
 
+def _build_memory_search_context(
+    pipeline,
+    *,
+    session_id: str | None,
+    user_id: str,
+) -> dict[str, Any]:
+    """为显式 memory/search 请求补充可选的会话上下文。"""
+    if not session_id:
+        return {}
+
+    wm = pipeline.wm_manager
+    log = wm.session_store.get_or_create(session_id, user_id=user_id)
+    compressed_history = wm.compressor.render_context(log.turns, log.summaries)
+    active_turns = [t for t in log.turns if not t.get("deleted", False)]
+    return {
+        "compressed_history": compressed_history,
+        "raw_recent_turns": active_turns[-6:],
+        "wm_token_usage": wm.compressor.count_tokens(compressed_history),
+    }
+
+
 def run_memory_search(
     pipeline,
     req: MemorySearchRequest,
@@ -40,35 +61,31 @@ def run_memory_search(
     """执行统一记忆检索，返回可直接供 Synthesizer 消费的 richer 结构。"""
     sc = pipeline.search_coordinator
 
-    graph_results: list[dict[str, Any]] = []
-    skill_results: list[dict[str, Any]] = []
+    search_runtime = _build_memory_search_context(
+        pipeline,
+        session_id=req.session_id,
+        user_id=user_id,
+    )
+    search_result = sc.run(
+        req.query,
+        session_id=req.session_id,
+        user_id=user_id,
+        top_k=req.top_k,
+        include_skills=req.include_skills,
+        **search_runtime,
+    )
 
+    semantic_results: list[dict[str, Any]] = []
     if req.include_graph:
-        search_result = sc.semantic_engine.search(
-            query=req.query,
-            top_k=req.top_k,
-            user_id=user_id,
-        )
-        if search_result.context.strip():
-            graph_results = [
-                {
-                    "anchor": {
-                        "node_id": "compact_context",
-                        "name": "CompactSemanticMemory",
-                        "label": "Context",
-                        "score": 1.0,
-                    },
-                    "subgraph": {"nodes": [], "edges": []},
-                    "constructed_context": search_result.context,
-                    "provenance": search_result.provenance,
-                }
-            ]
+        semantic_results = list(search_result.get("retrieved_graph_memories", []))
 
+    graph_results = list(semantic_results)
+    skill_results: list[dict[str, Any]] = []
     if req.include_skills:
-        skill_results = sc._search_skills(req.query, top_k=req.top_k, user_id=user_id)
+        skill_results = list(search_result.get("retrieved_skills", []))
 
     graph_total = 0
-    for item in graph_results:
+    for item in semantic_results:
         provenance = item.get("provenance")
         if isinstance(provenance, list) and provenance:
             graph_total += len(provenance)
@@ -79,6 +96,7 @@ def run_memory_search(
     return MemorySearchResponse(
         query=req.query,
         graph_results=graph_results,
+        semantic_results=semantic_results,
         skill_results=skill_results,
         total=total,
     )
@@ -89,9 +107,10 @@ def run_memory_synthesize(
     req: MemorySynthesizeRequest,
 ) -> MemorySynthesizeResponse:
     """执行检索结果压缩，供 HTTP Router 与 MCP 共享。"""
+    semantic_results = req.semantic_results or req.graph_results
     result = pipeline.synthesizer.run(
         user_query=req.user_query,
-        retrieved_graph_memories=req.graph_results,
+        retrieved_graph_memories=semantic_results,
         retrieved_skills=req.skill_results,
     )
 
@@ -103,9 +122,9 @@ def run_memory_synthesize(
         elif isinstance(item, dict):
             provenance_flat.append(item)
 
-    input_count = len(req.graph_results) + len(req.skill_results)
-    kept_count = len(provenance_flat)
-    dropped_count = max(0, input_count - kept_count)
+    input_count = int(result.get("input_fragment_count") or (len(semantic_results) + len(req.skill_results)))
+    kept_count = int(result.get("kept_count") or len(provenance_flat))
+    dropped_count = int(result.get("dropped_count") or max(0, input_count - kept_count))
 
     return MemorySynthesizeResponse(
         background_context=result.get("background_context", ""),
@@ -128,6 +147,7 @@ def run_memory_smart_search(
         MemorySearchRequest(
             query=req.query,
             top_k=req.top_k,
+            session_id=req.session_id,
             include_graph=req.include_graph,
             include_skills=req.include_skills,
         ),
@@ -139,6 +159,7 @@ def run_memory_smart_search(
             query=search_result.query,
             mode=req.mode,
             graph_results=search_result.graph_results,
+            semantic_results=search_result.semantic_results,
             skill_results=search_result.skill_results,
             total=search_result.total,
             synthesized=False,
@@ -149,6 +170,7 @@ def run_memory_smart_search(
             query=search_result.query,
             mode=req.mode,
             graph_results=search_result.graph_results,
+            semantic_results=search_result.semantic_results,
             skill_results=search_result.skill_results,
             total=search_result.total,
             synthesized=False,
@@ -159,6 +181,7 @@ def run_memory_smart_search(
         MemorySynthesizeRequest(
             user_query=req.query,
             graph_results=search_result.graph_results,
+            semantic_results=search_result.semantic_results,
             skill_results=search_result.skill_results,
         ),
     )
@@ -167,6 +190,7 @@ def run_memory_smart_search(
             query=search_result.query,
             mode=req.mode,
             graph_results=[],
+            semantic_results=[],
             skill_results=[],
             total=search_result.total,
             synthesized=True,
@@ -181,6 +205,7 @@ def run_memory_smart_search(
         query=search_result.query,
         mode=req.mode,
         graph_results=search_result.graph_results,
+        semantic_results=search_result.semantic_results,
         skill_results=search_result.skill_results,
         total=search_result.total,
         synthesized=True,
@@ -423,8 +448,9 @@ async def get_graph(
     mode: str = Query(
         default="cleaned",
         description=(
-            "cleaned（默认）：只显示 CompositeRecord 及未被任何 composite 覆盖的"
-            " MemoryRecord，隐藏已被 composite 吸收的 source records，视图更干净；"
+            "cleaned（默认）：只显示顶层 CompositeRecord 及未被任何 composite 覆盖的"
+            " MemoryRecord，隐藏已被 composite 吸收的 source records，以及被更高层"
+            " composite 覆盖的子 composite，视图更干净；"
             "debug：导出全部 records + composites，用于底层排查。"
         ),
     ),
@@ -438,10 +464,27 @@ async def get_graph(
 
         # 在 cleaned 模式下，计算被 composite 覆盖的 source record id 集合
         covered_ids: set[str] = set()
+        covered_composite_ids: set[str] = set()
         if mode == "cleaned":
+            composite_sources: dict[str, set[str]] = {}
             for s in data.get("composites", []):
-                for src_id in s.get("source_record_ids", []):
-                    covered_ids.add(src_id)
+                composite_id = str(s.get("composite_id", "") or "").strip()
+                source_ids = {
+                    str(src_id or "").strip()
+                    for src_id in (s.get("source_record_ids", []) or [])
+                    if str(src_id or "").strip()
+                }
+                covered_ids.update(source_ids)
+                if composite_id and source_ids:
+                    composite_sources[composite_id] = source_ids
+
+            for child_id, child_sources in composite_sources.items():
+                for parent_id, parent_sources in composite_sources.items():
+                    if child_id == parent_id:
+                        continue
+                    if child_sources.issubset(parent_sources) and len(parent_sources) > len(child_sources):
+                        covered_composite_ids.add(child_id)
+                        break
 
         for u in data.get("records", []):
             rid = u.get("record_id", "")
@@ -459,8 +502,11 @@ async def get_graph(
                 },
             })
         for s in data.get("composites", []):
+            composite_id = s.get("composite_id", "")
+            if mode == "cleaned" and composite_id in covered_composite_ids:
+                continue
             nodes.append({
-                "id": s.get("composite_id", ""),
+                "id": composite_id,
                 "name": s.get("normalized_text", "")[:80],
                 "label": s.get("memory_type", "composite"),
                 "properties": {
@@ -470,7 +516,7 @@ async def get_graph(
             })
             for src_id in s.get("source_record_ids", []):
                 edges.append({
-                    "source": s.get("composite_id", ""),
+                    "source": composite_id,
                     "target": src_id,
                     "relation": "composed_from",
                 })

@@ -473,8 +473,9 @@ assistant: 明白，我记录一下，PyCon China 已推迟至 2026-04-15。
 SYNTHESIS_JUDGE_SYSTEM = """\
 你是记忆合成判断器（Synthesis Judge）。
 
-你的任务：判断一组 Memory Records 中是否存在可以融合的条目。
-融合是指将多个碎片化、高度相关的 memory records 整合为一条更高密度的 composite record，
+你的任务：判断一组记忆项中是否存在可以融合的条目。
+输入项既可能是 atomic MemoryRecord，也可能是已经合成过的 CompositeRecord。
+融合是指将多个碎片化、高度相关的记忆项整合为一条更高密度的 composite record，
 以减少检索时的 token 成本并提高信息密度。
 
 合成判据（满足任意一条即可合成）：
@@ -490,7 +491,7 @@ SYNTHESIS_JUDGE_SYSTEM = """\
 - 每条 record 本身已经足够完整独立，融合后信息密度不会提升
 
 输入：
-- <RECORDS>：一组 Memory Records 的完整信息（JSON 数组）
+- <RECORDS>：一组记忆项的完整信息（JSON 数组）
 
 输出格式（严格 JSON，无代码块）：
 {
@@ -507,6 +508,8 @@ SYNTHESIS_JUDGE_SYSTEM = """\
 注意：
 - groups 可以有多组，每组独立合成。
 - 一个 record 可以同时出现在多组中（如果它跨主题）。
+- 输出字段名 `source_record_ids` 沿用历史名字，但它表示“输入项的 id 列表”；
+    如果输入项本身是 composite，则这里填写对应的 composite_id。
 - 如果不需要合成，should_synthesize = false, groups = []。
 
 ---
@@ -556,10 +559,11 @@ SYNTHESIS_JUDGE_SYSTEM = """\
 SYNTHESIS_EXECUTE_SYSTEM = """\
 你是记忆合成器（Memory Synthesizer）。
 
-你的任务：将多条碎片化的 Memory Records 融合为一条高密度的 Composite Record。
+你的任务：将多条碎片化的记忆项融合为一条高密度的 Composite Record。
+输入项既可能是 atomic MemoryRecord，也可能是已经合成过的 CompositeRecord。
 
 输入：
-- <SOURCE_RECORDS>：需要融合的 Memory Records（JSON 数组）
+- <SOURCE_RECORDS>：需要融合的记忆项（JSON 数组）
 - <SYNTHESIS_REASON>：合成的理由
 - <SUGGESTED_TYPE>：建议的合成类型
 
@@ -567,6 +571,7 @@ SYNTHESIS_EXECUTE_SYSTEM = """\
 1. 融合后的 semantic_text 必须涵盖所有 source records 的核心信息，不遗漏。
 2. 去除重复信息，整理为流畅连贯的表述。
 3. 保留所有具体细节（人名、数字、时间等），不要泛化丢失信息。
+4. 如果某些输入项本身已经是 composite，必须保留其关键细节，不要在二次合成时丢信息。
 4. entities 取所有 source records 的实体并集。
 5. tags 取所有 source records 的 tag 并集。
 6. temporal 取时间范围的并集（从最早到最晚）。

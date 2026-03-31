@@ -54,9 +54,8 @@ def create_app(pipeline=None, *, user_store=None) -> FastAPI:
         user_store: UserStore 实例。传 None 时 auth 端点不可用。
     """
     app = FastAPI(
-        title="LycheeMem Cognitive Memory API",
+        title="LycheeMemAPI",
         version="0.1.0",
-        description="Training-free Agentic Cognitive Memory Framework",
     )
 
     if pipeline is not None:

@@ -89,6 +89,8 @@ class SearchCoordinator(BaseAgent):
         if session_id is not None:
             session_id = str(session_id)
         user_id = kwargs.get("user_id", "")
+        top_k = kwargs.get("top_k")
+        include_skills = bool(kwargs.get("include_skills", True))
 
         recent_context = self._build_recent_context(
             raw_recent_turns=kwargs.get("raw_recent_turns") or [],
@@ -118,6 +120,8 @@ class SearchCoordinator(BaseAgent):
             user_id=user_id,
             recent_context=recent_context,
             action_state=action_state,
+            top_k=int(top_k) if top_k is not None else None,
+            include_skills=include_skills,
         )
         result["feedback_update"] = feedback_update
         return result
@@ -130,11 +134,14 @@ class SearchCoordinator(BaseAgent):
         user_id: str = "",
         recent_context: str = "",
         action_state: ActionState | None = None,
+        top_k: int | None = None,
+        include_skills: bool = True,
     ) -> dict[str, Any]:
         """Compact 后端路径：semantic_engine.search() + mode-aware 技能检索。"""
         result = self.semantic_engine.search(
             query=user_query,
             session_id=session_id,
+            top_k=int(top_k or 0),
             user_id=user_id,
             recent_context=recent_context,
             action_state=self._action_state_to_dict(action_state),
@@ -147,7 +154,7 @@ class SearchCoordinator(BaseAgent):
                     "anchor": {
                         "node_id": "compact_context",
                         "name": "CompactSemanticMemory",
-                        "label": "Context",
+                        "label": "SemanticContext",
                         "score": 1.0,
                     },
                     "subgraph": {"nodes": [], "edges": []},
@@ -156,12 +163,15 @@ class SearchCoordinator(BaseAgent):
                 }
             ]
 
-        skill_results = self._search_skills(
-            user_query,
-            plan=result.retrieval_plan,
-            action_state=result.action_state,
-            user_id=user_id,
-        )
+        skill_results: list[dict[str, Any]] = []
+        if include_skills:
+            skill_results = self._search_skills(
+                user_query,
+                plan=result.retrieval_plan,
+                action_state=result.action_state,
+                user_id=user_id,
+                top_k=top_k,
+            )
 
         return {
             "retrieved_graph_memories": graph_memories,

@@ -63,6 +63,7 @@ class SQLiteSessionStore:
                 session_id TEXT PRIMARY KEY,
                 topic TEXT NOT NULL DEFAULT '',
                 tags TEXT NOT NULL DEFAULT '[]',
+                last_consolidated_turn_index INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -75,6 +76,7 @@ class SQLiteSessionStore:
             "ALTER TABLE summaries ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE summaries ADD COLUMN user_id TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE session_meta ADD COLUMN user_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE session_meta ADD COLUMN last_consolidated_turn_index INTEGER NOT NULL DEFAULT 0",
         ]:
             try:
                 conn.execute(alter_sql)
@@ -112,14 +114,16 @@ class SQLiteSessionStore:
                 (session_id,),
             )
         ]
-        # 从 session_meta 读取 user_id（如果已有记录）
+        # 从 session_meta 读取 user_id 与固化水位线
         meta_row = conn.execute(
-            "SELECT user_id FROM session_meta WHERE session_id = ?", (session_id,)
+            "SELECT user_id, last_consolidated_turn_index FROM session_meta WHERE session_id = ?", (session_id,)
         ).fetchone()
         stored_user_id = (meta_row["user_id"] if meta_row and "user_id" in meta_row.keys() else "") or user_id
+        last_consolidated_idx = meta_row["last_consolidated_turn_index"] if meta_row and "last_consolidated_turn_index" in meta_row.keys() else 0
         log = SessionLog(session_id=session_id, user_id=stored_user_id)
         log.turns = turns
         log.summaries = summaries
+        log.last_consolidated_turn_index = last_consolidated_idx
         return log
 
     def append_turn(self, session_id: str, role: str, content: str, token_count: int = 0, *, user_id: str = "") -> None:
@@ -173,6 +177,22 @@ class SQLiteSessionStore:
                 ids,
             )
             conn.commit()
+
+    def set_last_consolidated_turn_index(self, session_id: str, raw_turn_count: int) -> None:
+        """更新固化水位线（raw_turn_count = 本次固化时 turns 列表的总长度）。仅允许单调递增。"""
+        conn = self._get_conn()
+        # 先确保 session_meta 行存在（若不存在则插入）
+        conn.execute(
+            "INSERT INTO session_meta (session_id) VALUES (?) ON CONFLICT(session_id) DO NOTHING",
+            (session_id,),
+        )
+        # 仅当新值大于旧值时才更新（单调递增保证）
+        conn.execute(
+            "UPDATE session_meta SET last_consolidated_turn_index = ? "
+            "WHERE session_id = ? AND last_consolidated_turn_index < ?",
+            (raw_turn_count, session_id, raw_turn_count),
+        )
+        conn.commit()
 
     def delete_session(self, session_id: str) -> None:
         conn = self._get_conn()
