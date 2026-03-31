@@ -78,8 +78,8 @@ LycheeMem 将记忆组织为三个相辅相成的存储库：
         <ul>
           <li>7 类 MemoryRecord</li>
           <li>Record 融合</li>
-          <li>行动感知检索规划</li>
-          <li>RL-ready 使用统计</li>
+          <li>action-grounded 检索规划</li>
+          <li>usage feedback 闭环 + RL-ready 使用统计</li>
         </ul>
       </td>
       <td>
@@ -104,7 +104,7 @@ LycheeMem 将记忆组织为三个相辅相成的存储库：
 
 ### 🗺️ 语义记忆 —— Compact Semantic Memory
 
-语义记忆以**类型化、行动标注的 MemoryRecord** 为核心组织形式，存储层使用 SQLite（FTS5 全文检索）+ LanceDB（向量索引）。
+语义记忆以**类型化 MemoryRecord + action-grounded 检索状态**为核心组织形式，存储层使用 SQLite（FTS5 全文检索）+ LanceDB（向量索引）；检索则显式受 recent context、tentative action、约束条件和 missing slots 共同驱动。
 
 #### 记忆记录类型
 
@@ -120,7 +120,7 @@ LycheeMem 将记忆组织为三个相辅相成的存储库：
 | `failure_pattern` | 曾经失败的操作路径及原因 |
 | `tool_affordance` | 工具/API 的能力与适用场景 |
 
-每个 `MemoryRecord` 除语义文本外，还携带**行动导向元数据**（`tool_tags`、`constraint_tags`、`failure_tags`、`affordance_tags`），以及**使用统计字段**（`retrieval_count`、`action_success_count` 等），为后续强化学习阶段储备信号。
+每个 `MemoryRecord` 除语义文本外，还携带**行动导向元数据**（`tool_tags`、`constraint_tags`、`failure_tags`、`affordance_tags`），以及**使用统计字段**（`retrieval_count`、`action_success_count` 等），为后续强化学习阶段储备信号。检索日志还会额外保存 `retrieval_plan`、`action_state`、回答摘要以及后续用户反馈，从而在不训练的前提下形成轻量的 action outcome 闭环。
 
 多个相关 `MemoryRecord` 可由 **Record Fusion Engine** 在线融合为高密度 `CompositeRecord`，融合后的条目在检索排序中优先于碎片记录。
 
@@ -144,35 +144,40 @@ LycheeMem 将记忆组织为三个相辅相成的存储库：
 2. LLM 判断候选池是否值得合并（`synthesis_judge`）。
 3. 若判断为是，LLM 执行合并并生成 `CompositeRecord`，写入 SQLite + LanceDB；原始 record 保留不删除。
 
-##### 模块三：Action-Aware Search Planning（行动感知检索规划）
+##### 模块三：Action-Grounded Retrieval Planning（action-grounded 检索规划）
 
-搜索前由 `ActionAwareSearchPlanner` 分析用户查询，输出 `SearchPlan`：
+搜索前由 `ActionAwareSearchPlanner` 分析**用户查询 + recent context + ActionState**，输出 `SearchPlan`：
 
 - `mode`：`answer`（事实回答）/ `action`（需要执行操作）/ `mixed`
 - `semantic_queries`：面向内容的检索词列表
 - `pragmatic_queries`：面向 action/tool/constraint 的检索词列表
 - `tool_hints`：当前请求可能需要的工具
-- `required_constraints`：缺失的约束条件
+- `required_constraints`：必须满足的约束条件
+- `required_affordances`：检索结果应提供的能力/可供性
 - `missing_slots`：缺失的参数/slot
 
-再经五通道召回：
+`ActionState` 可以携带 `current_subgoal`、`tentative_action`、`known_constraints`、`available_tools`、`failure_signal`、recent-context 摘要等字段。planner 会把这些状态与 LLM 生成的计划合并，因此检索不再只由 query 决定，而是由当前决策状态共同决定。
+
+再经多通道召回：
 
 1. **FTS 全文通道** —— SQLite FTS5 关键词召回 `MemoryRecord` + `CompositeRecord`
 2. **语义向量通道** —— LanceDB ANN 查询 `semantic_text` 嵌入
 3. **归一化向量通道** —— LanceDB ANN 查询 `normalized_text` 嵌入（面向 pragmatic 查询）
-4. **标签过滤通道** —— 按 `tool_hints`/`constraint_tags` 精确过滤
+4. **标签过滤通道** —— 按 `tool_hints` / `required_constraints` / `required_affordances` 精确过滤
 5. **时间通道** —— 按 `SearchPlan.temporal_filter` 过滤时间区间内的记忆
+6. **slot 补全通道** —— 当 `missing_slots` 非空时，额外触发基于 slot hints 的 FTS / tag 召回，用于寻找能补齐缺失参数的记忆
 
 ##### 模块四：Multi-Dimensional Scorer（多维度打分）
 
 全通道候选汇聚后去重，由 `MemoryScorer` 按加权线性公式综合评分并排序：
 
-$$\text{Score} = \alpha \cdot S_\text{sem} + \beta \cdot S_\text{action} + \gamma \cdot S_\text{temporal} + \delta \cdot S_\text{recency} + \eta \cdot S_\text{evidence} - \lambda \cdot C_\text{token}$$
+$$\text{Score} = \alpha \cdot S_\text{sem} + \beta \cdot S_\text{action} + \kappa \cdot S_\text{slot} + \gamma \cdot S_\text{temporal} + \delta \cdot S_\text{recency} + \eta \cdot S_\text{evidence} - \lambda \cdot C_\text{token}$$
 
 | 系数 | 含义 | 默认值 |
 |------|------|--------|
-| α | SemanticRelevance（语义向量距离转相似度） | 0.30 |
+| α | SemanticRelevance（语义向量距离转相似度） | 0.25 |
 | β | ActionUtility（tag 匹配度，mode-aware） | 0.25 |
+| κ | SlotUtility（是否能补齐当前动作缺失 slot） | 0.15 |
 | γ | TemporalFit（时间引用匹配度） | 0.15 |
 | δ | Recency（记忆新鲜度） | 0.10 |
 | η | EvidenceDensity（证据跨度密度） | 0.10 |
@@ -235,7 +240,9 @@ $$\text{Score} = \alpha \cdot S_\text{sem} + \beta \cdot S_\text{action} + \gamm
 
 ### 阶段 2 —— SearchCoordinator
 
-首先由 `ActionAwareSearchPlanner` 分析用户查询，生成包含 `mode`、`semantic_queries`、`pragmatic_queries`、`tool_hints` 等字段的搜索计划。随后通过五通道并行召回（FTS 全文、语义向量、归一化向量、标签过滤、时间过滤）在 SQLite + LanceDB 中取出候选，经 Scorer 按六维公式排序后，合并为 `background_context` 供下游使用。技能子查询使用 HyDE 嵌入查询技能库。
+`SearchCoordinator` 会先用压缩摘要 + 最近原始轮次构造 `recent_context`，再从当前 query、约束、最近失败信号、token 预算和最近工具使用中推导 `ActionState`。`ActionAwareSearchPlanner` 基于这些状态生成包含 `mode`、`semantic_queries`、`pragmatic_queries`、`tool_hints`、`required_affordances`、`missing_slots` 等字段的搜索计划。随后通过多通道召回（FTS 全文、语义向量、归一化向量、标签/affordance 过滤、时间过滤、slot 补全）在 SQLite + LanceDB 中取出候选，经 Scorer 排序后，合并为 `background_context` 供下游使用。技能检索现在也是 mode-aware 的：只在 `answer / action / mixed` 模式下按需启用 HyDE 查询技能库。
+
+当新一轮用户输入到来时，`SearchCoordinator` 还会尝试把它解释为上一轮 action/mixed 检索的轻量 outcome feedback，用于将之前的记忆使用标记为 success / fail / correction。
 
 ### 阶段 3 —— SynthesizerAgent
 
@@ -243,7 +250,7 @@ $$\text{Score} = \alpha \cdot S_\text{sem} + \beta \cdot S_\text{action} + \gamm
 
 ### 阶段 4 —— ReasoningAgent
 
-接收 `compressed_history`、`background_context` 和 `skill_reuse_plan` 并生成最终助手回答。它将助手轮次追加回会话存储，完成反馈循环。
+接收 `compressed_history`、`background_context` 和 `skill_reuse_plan` 并生成最终助手回答。它会将助手轮次追加回会话存储，随后由 pipeline 将回答摘要写入 semantic usage log，供下一轮用户输入补充 action outcome feedback。
 
 ### 后台 —— ConsolidatorAgent
 

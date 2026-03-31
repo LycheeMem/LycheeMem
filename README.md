@@ -78,8 +78,8 @@ LycheeMem organizes memory into three complementary stores:
         <ul>
           <li>7 MemoryRecord types</li>
           <li>Record Fusion</li>
-          <li>Action-Aware Search Planning</li>
-          <li>RL-ready usage statistics</li>
+          <li>Action-grounded retrieval planning</li>
+          <li>Usage feedback loop + RL-ready statistics</li>
         </ul>
       </td>
       <td>
@@ -104,7 +104,7 @@ Compression produces *summary anchors* (past context, distilled) + *raw recent t
 
 ### 🗺️ Semantic Memory — Compact Semantic Memory
 
-Semantic memory is organised around **typed, action-annotated MemoryRecords**. The storage layer is SQLite (FTS5 full-text search) + LanceDB (vector index).
+Semantic memory is organised around **typed MemoryRecords plus action-grounded retrieval state**. The storage layer is SQLite (FTS5 full-text search) + LanceDB (vector index), while retrieval is conditioned on recent context, tentative action, constraints, and missing slots.
 
 #### Memory Record Types
 
@@ -120,7 +120,7 @@ Each memory entry is stored as a `MemoryRecord`. The `memory_type` field disting
 | `failure_pattern` | Previously failed action paths and their causes |
 | `tool_affordance` | Capabilities and applicable scenarios of tools/APIs |
 
-Beyond text, every `MemoryRecord` carries **action-facing metadata** (`tool_tags`, `constraint_tags`, `failure_tags`, `affordance_tags`) and **usage statistics** (`retrieval_count`, `action_success_count`, etc.) to seed future reinforcement-learning signals.
+Beyond text, every `MemoryRecord` carries **action-facing metadata** (`tool_tags`, `constraint_tags`, `failure_tags`, `affordance_tags`) and **usage statistics** (`retrieval_count`, `action_success_count`, etc.) to seed future reinforcement-learning signals. Retrieval logs also persist `retrieval_plan`, `action_state`, response excerpts, and later user feedback so the system can close a lightweight action-outcome loop without training.
 
 Related `MemoryRecord`s can be fused online by the **Record Fusion Engine** into a denser `CompositeRecord`; composite entries are ranked above source fragments during retrieval.
 
@@ -144,35 +144,40 @@ Triggered online after each consolidation:
 2. LLM judges whether the candidate pool is worth merging (`synthesis_judge`).
 3. If yes, LLM executes the merge and produces a `CompositeRecord` written to both SQLite and LanceDB; original records are retained.
 
-##### Module 3: Action-Aware Search Planning
+##### Module 3: Action-Grounded Retrieval Planning
 
-Before retrieval, `ActionAwareRetrievalPlanner` analyses the user query and emits a `SearchPlan`:
+Before retrieval, `ActionAwareRetrievalPlanner` analyses the **user query + recent context + ActionState** and emits a `SearchPlan`:
 
 - `mode`: `answer` (factual Q&A) / `action` (needs execution) / `mixed`
 - `semantic_queries`: content-facing search terms
 - `pragmatic_queries`: action/tool/constraint-facing search terms
 - `tool_hints`: tools likely needed for this request
-- `required_constraints`: constraints that are missing
+- `required_constraints`: constraints that must be respected
+- `required_affordances`: capabilities the retrieved memory should provide
 - `missing_slots`: parameters / slots that are absent
 
-The plan drives five-channel recall:
+`ActionState` can carry fields such as `current_subgoal`, `tentative_action`, `known_constraints`, `available_tools`, `failure_signal`, and a recent-context excerpt. The planner merges this state with the LLM-produced plan so retrieval is conditioned on the current decision state rather than the query alone.
+
+The plan drives multi-channel recall:
 
 1. **FTS channel** — SQLite FTS5 keyword recall over `MemoryRecord` + `CompositeRecord`
 2. **Semantic vector channel** — LanceDB ANN over `semantic_text` embeddings
 3. **Normalised vector channel** — LanceDB ANN over `normalized_text` embeddings (for pragmatic queries)
-4. **Tag filter channel** — exact filter by `tool_hints` / `constraint_tags`
+4. **Tag filter channel** — exact filter by `tool_hints` / `required_constraints` / `required_affordances`
 5. **Temporal channel** — filter by `SearchPlan.temporal_filter` time window
+6. **Slot-hint supplementation** — when `missing_slots` is non-empty, extra FTS/tag recall is triggered to find records that can fill missing parameters
 
 ##### Module 4: Multi-Dimensional Scorer
 
 Candidates from all channels are de-duplicated and ranked by `MemoryScorer` using a weighted linear combination:
 
-$$\text{Score} = \alpha \cdot S_\text{sem} + \beta \cdot S_\text{action} + \gamma \cdot S_\text{temporal} + \delta \cdot S_\text{recency} + \eta \cdot S_\text{evidence} - \lambda \cdot C_\text{token}$$
+$$\text{Score} = \alpha \cdot S_\text{sem} + \beta \cdot S_\text{action} + \kappa \cdot S_\text{slot} + \gamma \cdot S_\text{temporal} + \delta \cdot S_\text{recency} + \eta \cdot S_\text{evidence} - \lambda \cdot C_\text{token}$$
 
 | Weight | Meaning | Default |
 |--------|---------|---------|
-| α | SemanticRelevance (vector distance -> similarity) | 0.30 |
+| α | SemanticRelevance (vector distance -> similarity) | 0.25 |
 | β | ActionUtility (tag match score, mode-aware) | 0.25 |
+| κ | SlotUtility (whether the memory helps fill missing action slots) | 0.15 |
 | γ | TemporalFit (temporal reference match) | 0.15 |
 | δ | Recency (memory freshness) | 0.10 |
 | η | EvidenceDensity (evidence span density) | 0.10 |
@@ -235,7 +240,9 @@ Rule-based agent (no LLM prompt). Appends the user turn to the session log, coun
 
 ### Stage 2 — SearchCoordinator
 
-`ActionAwareRetrievalPlanner` first analyses the user query and produces a `SearchPlan` containing `mode`, `semantic_queries`, `pragmatic_queries`, `tool_hints`, and more. Five parallel recall channels (FTS full-text, semantic vector, normalised vector, tag filter, temporal filter) then query SQLite + LanceDB, and the resulting candidates are ranked by the six-dimensional Scorer formula before being merged into `background_context`. Skill sub-queries use HyDE embedding against the skill store.
+`SearchCoordinator` first builds `recent_context` from compressed summaries + raw recent turns, then derives an `ActionState` from the current query, constraints, recent failures, token budget, and recent tool use. `ActionAwareRetrievalPlanner` uses that state to produce a `SearchPlan` containing `mode`, `semantic_queries`, `pragmatic_queries`, `tool_hints`, `required_affordances`, `missing_slots`, and more. Multi-channel recall (FTS, semantic vector, normalised vector, tag/affordance filter, temporal filter, slot-hint supplementation) then queries SQLite + LanceDB, and the resulting candidates are ranked by the scorer before being merged into `background_context`. Skill retrieval is mode-aware (`answer` / `action` / `mixed`) and uses HyDE against the skill store only when it is likely to help.
+
+When a new user turn arrives, `SearchCoordinator` also tries to apply lightweight feedback to the most recent unresolved action/mixed retrieval log, so the next turn can mark the prior memory usage as success / fail / correction.
 
 ### Stage 3 — SynthesizerAgent
 
@@ -243,7 +250,7 @@ Acts as an **LLM-as-Judge**: scores every retrieved memory fragment on an absolu
 
 ### Stage 4 — ReasoningAgent
 
-Receives `compressed_history`, `background_context`, and `skill_reuse_plan` and generates the final assistant reply. It appends the assistant turn back to the session store, completing the feedback loop.
+Receives `compressed_history`, `background_context`, and `skill_reuse_plan` and generates the final assistant reply. It appends the assistant turn back to the session store, and the pipeline finalizes the semantic usage log with a response excerpt so the next user turn can provide outcome feedback.
 
 ### Background — ConsolidatorAgent
 
