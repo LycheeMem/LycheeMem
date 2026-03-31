@@ -29,6 +29,10 @@ class SessionLog:
     tags: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
+    # 固化水位线：记录上次成功固化时 turns 列表的长度（包含已软删除的 turn）。
+    # 下次固化只需处理 turns[last_consolidated_turn_index:] 的新增部分，
+    # 从而彻底消除跨轮重复固化问题。
+    last_consolidated_turn_index: int = 0
 
 
 class InMemorySessionStore:
@@ -59,6 +63,12 @@ class InMemorySessionStore:
         log = self.get_or_create(session_id)
         for i in range(min(boundary_index, len(log.turns))):
             log.turns[i]["deleted"] = True
+
+    def set_last_consolidated_turn_index(self, session_id: str, raw_turn_count: int) -> None:
+        """更新固化水位线（raw_turn_count = 本次固化时 turns 列表的总长度）。"""
+        log = self.get_or_create(session_id)
+        if raw_turn_count > log.last_consolidated_turn_index:
+            log.last_consolidated_turn_index = raw_turn_count
 
     def delete_session(self, session_id: str) -> None:
         self._store.pop(session_id, None)

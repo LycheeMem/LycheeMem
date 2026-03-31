@@ -112,6 +112,26 @@ class RecordFusionEngine:
             if suggested_type not in VALID_SYNTH_TYPES:
                 suggested_type = "composite_pattern"
 
+            # ── 合成前幂等去重 ──────────────────────────────────────────
+            # 若已有 composite 与本次分组的 source records 高度重叠（Jaccard ≥ 0.7），
+            # 则跳过，避免跨批次重复聚合产生近重复 composite。
+            source_ids_set = {u.record_id for u in source_records}
+            existing_composites = self._sqlite.get_synthesized_by_source(
+                list(source_ids_set)
+            )
+            is_covered = False
+            for ec in existing_composites:
+                ec_set = set(ec.source_record_ids)
+                overlap = len(source_ids_set & ec_set)
+                union = len(source_ids_set | ec_set)
+                jaccard = overlap / union if union > 0 else 0.0
+                if jaccard >= 0.7:
+                    is_covered = True
+                    break
+            if is_covered:
+                continue
+            # ────────────────────────────────────────────────────────────
+
             synth_result = self._execute_synthesis(source_records, reason, suggested_type)
             if not synth_result:
                 continue

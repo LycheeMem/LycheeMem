@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -46,6 +47,32 @@ from src.memory.semantic.scorer import MemoryScorer, ScoredCandidate, ScoringWei
 from src.memory.semantic.sqlite_store import SQLiteSemanticStore
 from src.memory.semantic.synthesizer import RecordFusionEngine
 from src.memory.semantic.vector_index import LanceVectorIndex
+
+# ──────────────────────────────────────────────────────────────────
+# 敏感信息模式：匹配到任意一项即跳过写入长期记忆
+# ──────────────────────────────────────────────────────────────────
+_SENSITIVE_PATTERNS: list[re.Pattern] = [
+    # 明文密码赋值：password = xxx / passwd: xxx
+    re.compile(r"(?i)\b(password|passwd|pwd)\s*[=:]\s*\S{4,}"),
+    # API key / secret / token 赋值
+    re.compile(r"(?i)\b(api[_\-]?key|secret[_\-]?key|access[_\-]?token|auth[_\-]?token"
+               r"|private[_\-]?key|client[_\-]?secret)\s*[=:]\s*\S{6,}"),
+    # Bearer Token
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9\-._~+/=]{20,}"),
+    # OpenAI sk- / GitHub ghp_ / AWS AKIA
+    re.compile(r"\b(sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}"
+               r"|gho_[A-Za-z0-9]{20,}|ghs_[A-Za-z0-9]{20,}"
+               r"|AKIA[A-Z0-9]{16,})\b"),
+    # PEM 私钥块
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"),
+    # 信用卡号（Luhn 格式检测前缀 + 长度）
+    re.compile(
+        r"\b(?:4[0-9]{12}(?:[0-9]{3})?"           # Visa
+        r"|5[1-5][0-9]{14}"                        # MasterCard
+        r"|3[47][0-9]{13}"                         # Amex
+        r"|6(?:011|5[0-9]{2})[0-9]{12})\b"        # Discover
+    ),
+]
 
 
 class CompactSemanticEngine(BaseSemanticMemoryEngine):
@@ -92,6 +119,21 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
         self._dedup_threshold = dedup_threshold
         self._max_reflection_rounds = max_reflection_rounds
+
+    # ════════════════════════════════════════════════════════════════
+    # 敏感信息过滤
+    # ════════════════════════════════════════════════════════════════
+
+    @staticmethod
+    def _is_sensitive_text(text: str) -> bool:
+        """检查文本是否包含密码/API key/私钥/信用卡号等敏感信息。
+
+        匹配任意一项即返回 True，对应 record 将不写入长期记忆。
+        """
+        for pattern in _SENSITIVE_PATTERNS:
+            if pattern.search(text):
+                return True
+        return False
 
     # ════════════════════════════════════════════════════════════════
     # search() — 检索管线
@@ -632,11 +674,42 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
         # Step 3: 去重 + 写入
         actually_added = 0
+        sensitive_skipped = 0
         for record in new_records:
-            # 检查是否已存在相似条目
+            # 3a. 敏感信息过滤：密码/API key/私钥/信用卡号不写入长期记忆
+            check_text = record.semantic_text + " " + record.normalized_text
+            if self._is_sensitive_text(check_text):
+                import logging as _logging
+                _logging.getLogger("src.memory.semantic.engine").warning(
+                    "Skipping sensitive content record %s (memory_type=%s)",
+                    record.record_id, record.memory_type,
+                )
+                sensitive_skipped += 1
+                continue
+
+            # 3b. FTS 候选 + 向量候选合并去重
             similar = self._sqlite.find_similar_by_normalized_text(
                 record.normalized_text, user_id=user_id, limit=3,
             )
+            # 向量补充去重：FTS 对中文近重复召回弱，用 normalized_vector 兜底
+            try:
+                vec_hits = self._vector.search(
+                    record.normalized_text,
+                    user_id=user_id,
+                    column="normalized_vector",
+                    limit=5,
+                )
+                seen_dedup_ids = {s.record_id for s in similar}
+                for vh in vec_hits:
+                    rid = vh.get("record_id", "")
+                    if rid and rid not in seen_dedup_ids:
+                        full_rec = self._sqlite.get_record(rid)
+                        if full_rec and not full_rec.expired:
+                            similar.append(full_rec)
+                            seen_dedup_ids.add(rid)
+            except Exception:
+                pass
+
             is_duplicate = False
             for s in similar:
                 if s.record_id == record.record_id:
@@ -674,10 +747,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                     )
                 actually_added += 1
 
+        sensitive_note = f"，{sensitive_skipped} 条含敏感信息跳过" if sensitive_skipped else ""
         steps.append({
             "name": "dedup_and_store",
             "status": "done",
-            "detail": f"去重后写入 {actually_added}/{len(new_records)} 条",
+            "detail": f"去重后写入 {actually_added}/{len(new_records)} 条{sensitive_note}",
         })
 
         # Step 4: Record Fusion（在线聚合）

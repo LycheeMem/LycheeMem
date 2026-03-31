@@ -220,19 +220,25 @@ def run_memory_consolidate(
     *,
     user_id: str = "",
 ) -> MemoryConsolidateResponse:
-    """执行长期记忆固化，供 HTTP Router 与 MCP 共享。"""
+    """执行长期记忆固化，供 HTTP Router 与 MCP 共享。
+
+    使用固化水位线：只处理自上次固化以来新增的 turns，
+    避免整个 session 被重复固化。
+    """
     import threading
 
-    log = pipeline.wm_manager.session_store.get_or_create(
-        req.session_id,
-        user_id=user_id,
-    )
-    turns = [t for t in log.turns if not t.get("deleted", False)]
+    store = pipeline.wm_manager.session_store
+    log = store.get_or_create(req.session_id, user_id=user_id)
+    watermark = log.last_consolidated_turn_index
+    raw_total = len(log.turns)
+    turns = [t for t in log.turns[watermark:] if not t.get("deleted", False)]
+
     if not turns:
         return MemoryConsolidateResponse(
             status="skipped",
-            skipped_reason="session_empty",
-            steps=[{"name": "session_check", "status": "skipped", "detail": "会话无有效对话轮次"}],
+            skipped_reason="no_new_turns",
+            steps=[{"name": "watermark_check", "status": "skipped",
+                    "detail": f"自水位线({watermark})以来无新增 turns，跳过固化"}],
         )
 
     if req.background:
@@ -244,6 +250,8 @@ def run_memory_consolidate(
                     retrieved_context=req.retrieved_context,
                     user_id=user_id,
                 )
+                # 后台线程固化成功后推进水位线
+                store.set_last_consolidated_turn_index(req.session_id, raw_total)
             except Exception:
                 logger.exception("background consolidation failed session=%s", req.session_id)
 
@@ -261,6 +269,8 @@ def run_memory_consolidate(
         retrieved_context=req.retrieved_context,
         user_id=user_id,
     )
+    # 同步固化成功后推进水位线
+    store.set_last_consolidated_turn_index(req.session_id, raw_total)
     return MemoryConsolidateResponse(
         status="skipped" if result.get("skipped_reason") else "done",
         entities_added=result.get("entities_added", 0),
@@ -407,16 +417,38 @@ async def memory_consolidate(
 
 
 @router.get("/memory/graph", response_model=GraphResponse)
-async def get_graph(pipeline=Depends(get_pipeline), user=Depends(get_optional_user)):
+async def get_graph(
+    pipeline=Depends(get_pipeline),
+    user=Depends(get_optional_user),
+    mode: str = Query(
+        default="cleaned",
+        description=(
+            "cleaned（默认）：只显示 CompositeRecord 及未被任何 composite 覆盖的"
+            " MemoryRecord，隐藏已被 composite 吸收的 source records，视图更干净；"
+            "debug：导出全部 records + composites，用于底层排查。"
+        ),
+    ),
+):
     user_id = user.user_id if user else ""
     sc = pipeline.search_coordinator
     try:
         data = sc.semantic_engine.export_debug(user_id=user_id)
         nodes = []
         edges = []
+
+        # 在 cleaned 模式下，计算被 composite 覆盖的 source record id 集合
+        covered_ids: set[str] = set()
+        if mode == "cleaned":
+            for s in data.get("composites", []):
+                for src_id in s.get("source_record_ids", []):
+                    covered_ids.add(src_id)
+
         for u in data.get("records", []):
+            rid = u.get("record_id", "")
+            if mode == "cleaned" and rid in covered_ids:
+                continue  # 已被 composite 覆盖，cleaned 模式下隐藏
             nodes.append({
-                "id": u.get("record_id", ""),
+                "id": rid,
                 "name": u.get("normalized_text", "")[:80],
                 "label": u.get("memory_type", "record"),
                 "properties": {

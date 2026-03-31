@@ -320,6 +320,9 @@ class LycheePipeline:
     ) -> dict[str, Any]:
         """手动触发固化（公共方法，可由 API BackgroundTasks 调用）。
 
+        只处理自上次固化以来新增的 turns（水位线机制），成功后更新水位线，
+        彻底消除跨轮重复固化问题。
+
         Args:
             session_id: 会话 ID。
             retrieved_context: Pipeline 检索阶段合成的已有记忆上下文，
@@ -328,13 +331,22 @@ class LycheePipeline:
         Returns:
             dict 包含：entities_added, skills_added
         """
-        turns = self.wm_manager.session_store.get_turns(session_id)
-        if turns:
-            return self.consolidator.run(
-                turns=turns, session_id=session_id, retrieved_context=retrieved_context,
-                user_id=user_id,
-            )
-        return {"entities_added": 0, "skills_added": 0}
+        store = self.wm_manager.session_store
+        log = store.get_or_create(session_id, user_id=user_id)
+        watermark = log.last_consolidated_turn_index
+        raw_total = len(log.turns)
+        new_turns = [
+            t for t in log.turns[watermark:] if not t.get("deleted", False)
+        ]
+        if not new_turns:
+            return {"entities_added": 0, "skills_added": 0, "skipped_reason": "no_new_turns"}
+        result = self.consolidator.run(
+            turns=new_turns, session_id=session_id, retrieved_context=retrieved_context,
+            user_id=user_id,
+        )
+        # 固化成功后推进水位线
+        store.set_last_consolidated_turn_index(session_id, raw_total)
+        return result
 
     def _trigger_consolidation_bg(
         self, session_id: str, retrieved_context: str = "", user_id: str = ""
@@ -380,42 +392,49 @@ class LycheePipeline:
     async def _aconsolidate(
         self, session_id: str, retrieved_context: str = "", user_id: str = ""
     ) -> None:
-        """异步场景下的后台固化。"""
+        """异步场景下的后台固化（使用水位线，只处理新增 turns）。"""
         graphiti = getattr(self.consolidator, "graphiti_engine", None)
         strict = bool(getattr(graphiti, "strict", False))
-        turns = self.wm_manager.session_store.get_turns(session_id)
-        if turns:
-            loop = asyncio.get_event_loop()
-            try:
-                result = await loop.run_in_executor(
-                    None,
-                    lambda: self.consolidator.run(
-                        turns=turns,
-                        session_id=session_id,
-                        retrieved_context=retrieved_context,
-                        user_id=user_id,
-                    ),
-                )
-                self._last_consolidation = {
-                    "session_id": session_id,
-                    "entities_added": result.get("entities_added", 0),
-                    "skills_added": result.get("skills_added", 0),
-                    "facts_added": result.get("facts_added", 0),
-                    "has_novelty": result.get("has_novelty"),
-                    "skipped_reason": result.get("skipped_reason"),
-                    "steps": result.get("steps", []),
-                }
-            except Exception as exc:
-                logger.exception("固化失败 session=%s", session_id)
-                self._last_consolidation = {
-                    "session_id": session_id,
-                    "entities_added": 0,
-                    "skills_added": 0,
-                    "facts_added": 0,
-                    "error": str(exc),
-                    "steps": [],
-                }
-                if strict:
+        store = self.wm_manager.session_store
+        log = store.get_or_create(session_id, user_id=user_id)
+        watermark = log.last_consolidated_turn_index
+        raw_total = len(log.turns)
+        new_turns = [t for t in log.turns[watermark:] if not t.get("deleted", False)]
+        if not new_turns:
+            return
+        loop = asyncio.get_event_loop()
+        try:
+            result = await loop.run_in_executor(
+                None,
+                lambda: self.consolidator.run(
+                    turns=new_turns,
+                    session_id=session_id,
+                    retrieved_context=retrieved_context,
+                    user_id=user_id,
+                ),
+            )
+            # 固化成功后推进水位线
+            store.set_last_consolidated_turn_index(session_id, raw_total)
+            self._last_consolidation = {
+                "session_id": session_id,
+                "entities_added": result.get("entities_added", 0),
+                "skills_added": result.get("skills_added", 0),
+                "facts_added": result.get("facts_added", 0),
+                "has_novelty": result.get("has_novelty"),
+                "skipped_reason": result.get("skipped_reason"),
+                "steps": result.get("steps", []),
+            }
+        except Exception as exc:
+            logger.exception("固化失败 session=%s", session_id)
+            self._last_consolidation = {
+                "session_id": session_id,
+                "entities_added": 0,
+                "skills_added": 0,
+                "facts_added": 0,
+                "error": str(exc),
+                "steps": [],
+            }
+            if strict:
                     raise
 
     @property
