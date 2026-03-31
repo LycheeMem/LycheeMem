@@ -391,6 +391,7 @@ class SQLiteSemanticStore:
         *,
         limit: int = 10,
         user_id: str = "",
+        memory_types: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """BM25 全文召回复合记录。"""
         fts_query = self._escape_fts_query(query)
@@ -408,6 +409,10 @@ class SQLiteSemanticStore:
         if user_id:
             sql += "AND s.user_id = ? "
             params.append(user_id)
+        if memory_types:
+            placeholders = ",".join("?" for _ in memory_types)
+            sql += f"AND s.memory_type IN ({placeholders}) "
+            params.extend(memory_types)
 
         sql += "ORDER BY fts_score LIMIT ?"
         params.append(limit)
@@ -462,6 +467,7 @@ class SQLiteSemanticStore:
         task_tags: list[str] | None = None,
         failure_tags: list[str] | None = None,
         affordance_tags: list[str] | None = None,
+        memory_types: list[str] | None = None,
         limit: int = 30,
         user_id: str = "",
         include_expired: bool = False,
@@ -475,6 +481,10 @@ class SQLiteSemanticStore:
             params.append(user_id)
         if not include_expired:
             sql += "AND expired = 0 "
+        if memory_types:
+            placeholders = ",".join("?" for _ in memory_types)
+            sql += f"AND memory_type IN ({placeholders}) "
+            params.extend(memory_types)
 
         for tags, col in [
             (tool_tags, "tool_tags"),
@@ -500,6 +510,7 @@ class SQLiteSemanticStore:
         self,
         *,
         slot_terms: list[str],
+        memory_types: list[str] | None = None,
         limit: int = 30,
         user_id: str = "",
         include_expired: bool = False,
@@ -517,6 +528,10 @@ class SQLiteSemanticStore:
             params.append(user_id)
         if not include_expired:
             sql += "AND expired = 0 "
+        if memory_types:
+            placeholders = ",".join("?" for _ in memory_types)
+            sql += f"AND memory_type IN ({placeholders}) "
+            params.extend(memory_types)
 
         group_conditions: list[str] = []
         for term in cleaned_terms:

@@ -23,7 +23,19 @@ from src.memory.semantic.base import (
     SemanticSearchResult,
 )
 from src.memory.semantic.encoder import CompactSemanticEncoder
-from src.memory.semantic.models import ActionState, MemoryRecord, SearchPlan, UsageLog
+from src.memory.semantic.models import (
+    ActionState,
+    MemoryRecord,
+    SearchPlan,
+    UsageLog,
+    MEMORY_TYPE_CONSTRAINT,
+    MEMORY_TYPE_FAILURE_PATTERN,
+    MEMORY_TYPE_PROCEDURE,
+    MEMORY_TYPE_TOOL_AFFORDANCE,
+    SYNTH_TYPE_CONSTRAINT,
+    SYNTH_TYPE_PATTERN,
+    SYNTH_TYPE_USAGE,
+)
 from src.memory.semantic.planner import ActionAwareSearchPlanner
 from src.memory.semantic.prompts import (
     NOVELTY_CHECK_SYSTEM,
@@ -131,6 +143,14 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             user_id=user_id,
             query_embedding=query_embedding,
             top_k=top_k,
+            record_type_bias=self._derive_record_type_bias(
+                plan=plan,
+                action_state=resolved_action_state,
+            ),
+            synth_type_bias=self._derive_synth_type_bias(
+                plan=plan,
+                action_state=resolved_action_state,
+            ),
         )
         for c in raw_candidates:
             seen_ids.add(c.get("id", ""))
@@ -202,6 +222,16 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 user_id=user_id,
                 query_embedding=None,
                 top_k=top_k,
+                record_type_bias=self._derive_record_type_bias(
+                    plan=supplement_plan,
+                    action_state=resolved_action_state,
+                    adequacy=adequacy,
+                ),
+                synth_type_bias=self._derive_synth_type_bias(
+                    plan=supplement_plan,
+                    action_state=resolved_action_state,
+                    adequacy=adequacy,
+                ),
             )
 
             plan = SearchPlan(
@@ -217,6 +247,10 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 reasoning=plan.reasoning,
             )
             resolved_action_state = self._merge_action_state_with_plan(resolved_action_state, plan)
+            reflection_scoring_context = self._build_reflection_scoring_context(
+                adequacy=adequacy,
+                action_state=resolved_action_state,
+            )
 
             # 去重合并
             new_candidates = [
@@ -226,9 +260,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             for c in new_candidates:
                 seen_ids.add(c.get("id", ""))
 
-            if not new_candidates:
-                break
-
             raw_candidates = raw_candidates + new_candidates
             scored = self._scorer.score_candidates(
                 raw_candidates,
@@ -237,7 +268,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 plan_required_constraints=plan.required_constraints,
                 plan_required_affordances=plan.required_affordances,
                 plan_missing_slots=plan.missing_slots,
+                reflection_context=reflection_scoring_context,
             )
+
+            if not new_candidates:
+                continue
 
         # Step 5: 取 top_k
         top = scored[:top_k]
@@ -280,6 +315,8 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         user_id: str,
         query_embedding: list[float] | None,
         top_k: int,
+        record_type_bias: list[str] | None = None,
+        synth_type_bias: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """5 通道并行召回 + 去重合并。"""
         seen_ids: set[str] = set()
@@ -288,6 +325,8 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
         semantic_queries = plan.semantic_queries or [query]
         pragmatic_queries = plan.pragmatic_queries or []
+        record_type_bias = [t for t in (record_type_bias or []) if str(t or "").strip()]
+        synth_type_bias = [t for t in (synth_type_bias or []) if str(t or "").strip()]
 
         # ── 通道 1: FTS 全文检索 ──
         for sq in semantic_queries:
@@ -435,6 +474,81 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                         r["id"] = sid
                         r["source"] = "composite"
                         r["semantic_distance"] = 0.45
+                        candidates.append(r)
+
+        # ── 通道 4.8: 按类型偏置召回（failure / affordance / procedure / constraint）──
+        if record_type_bias or synth_type_bias:
+            focused_limit = max(top_k * 2, 12)
+            focused_queries = self._merge_unique(
+                self._merge_unique(semantic_queries, pragmatic_queries),
+                plan.missing_slots,
+            )
+
+            for fq in focused_queries:
+                if record_type_bias:
+                    focused_records = self._sqlite.fulltext_search(
+                        fq,
+                        user_id=user_id,
+                        limit=focused_limit,
+                        memory_types=record_type_bias,
+                    )
+                    for r in focused_records:
+                        uid = r.get("record_id", "")
+                        if uid and uid not in seen_ids:
+                            seen_ids.add(uid)
+                            r["id"] = uid
+                            r["source"] = "record"
+                            r["semantic_distance"] = 0.35
+                            candidates.append(r)
+
+                if synth_type_bias:
+                    focused_synth = self._sqlite.fulltext_search_synthesized(
+                        fq,
+                        user_id=user_id,
+                        limit=max(6, top_k),
+                        memory_types=synth_type_bias,
+                    )
+                    for r in focused_synth:
+                        sid = r.get("composite_id", "")
+                        if sid and sid not in seen_ids:
+                            seen_ids.add(sid)
+                            r["id"] = sid
+                            r["source"] = "composite"
+                            r["semantic_distance"] = 0.35
+                            candidates.append(r)
+
+            if record_type_bias and (plan.tool_hints or plan.required_constraints or plan.required_affordances):
+                focused_tags = self._sqlite.search_by_tags(
+                    tool_tags=plan.tool_hints or None,
+                    constraint_tags=plan.required_constraints or None,
+                    affordance_tags=plan.required_affordances or None,
+                    memory_types=record_type_bias,
+                    user_id=user_id,
+                    limit=focused_limit,
+                )
+                for r in focused_tags:
+                    uid = r.get("record_id", "")
+                    if uid and uid not in seen_ids:
+                        seen_ids.add(uid)
+                        r["id"] = uid
+                        r["source"] = "record"
+                        r["semantic_distance"] = 0.35
+                        candidates.append(r)
+
+            if record_type_bias and plan.missing_slots:
+                focused_slots = self._sqlite.search_by_slot_hints(
+                    slot_terms=plan.missing_slots,
+                    memory_types=record_type_bias,
+                    user_id=user_id,
+                    limit=focused_limit,
+                )
+                for r in focused_slots:
+                    uid = r.get("record_id", "")
+                    if uid and uid not in seen_ids:
+                        seen_ids.add(uid)
+                        r["id"] = uid
+                        r["source"] = "record"
+                        r["semantic_distance"] = 0.35
                         candidates.append(r)
 
         # ── 通道 5: 时间范围 ──
@@ -936,6 +1050,81 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             seen.add(key)
             merged.append(item)
         return merged
+
+    @staticmethod
+    def _derive_record_type_bias(
+        *,
+        plan: SearchPlan,
+        action_state: ActionState,
+        adequacy: dict[str, Any] | None = None,
+    ) -> list[str]:
+        adequacy = adequacy or {}
+        bias: list[str] = []
+
+        if plan.mode in {"action", "mixed"}:
+            bias.extend([MEMORY_TYPE_PROCEDURE, MEMORY_TYPE_CONSTRAINT])
+
+        missing_constraints = adequacy.get("missing_constraints") or plan.required_constraints
+        if missing_constraints:
+            bias.extend([MEMORY_TYPE_CONSTRAINT, MEMORY_TYPE_PROCEDURE])
+
+        missing_slots = adequacy.get("missing_slots") or plan.missing_slots or action_state.missing_slots
+        if missing_slots:
+            bias.extend([MEMORY_TYPE_PROCEDURE, MEMORY_TYPE_TOOL_AFFORDANCE])
+
+        missing_affordances = adequacy.get("missing_affordances") or plan.required_affordances
+        if missing_affordances or adequacy.get("needs_tool_selection_basis"):
+            bias.extend([MEMORY_TYPE_TOOL_AFFORDANCE, MEMORY_TYPE_PROCEDURE, MEMORY_TYPE_CONSTRAINT])
+
+        if adequacy.get("needs_failure_avoidance") or action_state.failure_signal:
+            bias.extend([MEMORY_TYPE_FAILURE_PATTERN, MEMORY_TYPE_CONSTRAINT, MEMORY_TYPE_PROCEDURE])
+
+        return CompactSemanticEngine._merge_unique(bias, [])
+
+    @staticmethod
+    def _derive_synth_type_bias(
+        *,
+        plan: SearchPlan,
+        action_state: ActionState,
+        adequacy: dict[str, Any] | None = None,
+    ) -> list[str]:
+        adequacy = adequacy or {}
+        bias: list[str] = []
+
+        if plan.mode in {"action", "mixed"}:
+            bias.extend([SYNTH_TYPE_USAGE, SYNTH_TYPE_CONSTRAINT])
+
+        missing_constraints = adequacy.get("missing_constraints") or plan.required_constraints
+        if missing_constraints:
+            bias.extend([SYNTH_TYPE_CONSTRAINT, SYNTH_TYPE_USAGE])
+
+        missing_slots = adequacy.get("missing_slots") or plan.missing_slots or action_state.missing_slots
+        if missing_slots:
+            bias.extend([SYNTH_TYPE_USAGE, SYNTH_TYPE_PATTERN])
+
+        missing_affordances = adequacy.get("missing_affordances") or plan.required_affordances
+        if missing_affordances or adequacy.get("needs_tool_selection_basis"):
+            bias.extend([SYNTH_TYPE_USAGE, SYNTH_TYPE_PATTERN])
+
+        if adequacy.get("needs_failure_avoidance") or action_state.failure_signal:
+            bias.extend([SYNTH_TYPE_PATTERN, SYNTH_TYPE_CONSTRAINT, SYNTH_TYPE_USAGE])
+
+        return CompactSemanticEngine._merge_unique(bias, [])
+
+    @staticmethod
+    def _build_reflection_scoring_context(
+        *,
+        adequacy: dict[str, Any],
+        action_state: ActionState,
+    ) -> dict[str, Any]:
+        return {
+            "missing_constraints": list(adequacy.get("missing_constraints") or []),
+            "missing_slots": list(adequacy.get("missing_slots") or []),
+            "missing_affordances": list(adequacy.get("missing_affordances") or []),
+            "needs_failure_avoidance": bool(adequacy.get("needs_failure_avoidance", False)),
+            "needs_tool_selection_basis": bool(adequacy.get("needs_tool_selection_basis", False)),
+            "available_tools": list(action_state.available_tools),
+        }
 
     @staticmethod
     def _record_to_candidate(record: MemoryRecord) -> dict[str, Any]:
