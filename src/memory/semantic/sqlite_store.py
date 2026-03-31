@@ -126,6 +126,7 @@ class SQLiteSemanticStore:
                     timestamp        TEXT NOT NULL,
                     query            TEXT NOT NULL,
                     retrieval_plan   TEXT NOT NULL DEFAULT '{}',
+                    action_state     TEXT NOT NULL DEFAULT '{}',
                     retrieved_record_ids TEXT NOT NULL DEFAULT '[]',
                     kept_record_ids  TEXT NOT NULL DEFAULT '[]',
                     final_response_excerpt TEXT NOT NULL DEFAULT '',
@@ -144,6 +145,12 @@ class SQLiteSemanticStore:
             # 兼容旧库：若 source_role 列不存在则追加（ALTER TABLE 幂等）
             try:
                 c.execute("ALTER TABLE memory_records ADD COLUMN source_role TEXT NOT NULL DEFAULT ''")
+                c.commit()
+            except sqlite3.OperationalError:
+                pass  # 列已存在
+
+            try:
+                c.execute("ALTER TABLE usage_logs ADD COLUMN action_state TEXT NOT NULL DEFAULT '{}' ")
                 c.commit()
             except sqlite3.OperationalError:
                 pass  # 列已存在
@@ -454,6 +461,7 @@ class SQLiteSemanticStore:
         constraint_tags: list[str] | None = None,
         task_tags: list[str] | None = None,
         failure_tags: list[str] | None = None,
+        affordance_tags: list[str] | None = None,
         limit: int = 30,
         user_id: str = "",
         include_expired: bool = False,
@@ -473,6 +481,7 @@ class SQLiteSemanticStore:
             (constraint_tags, "constraint_tags"),
             (task_tags, "task_tags"),
             (failure_tags, "failure_tags"),
+            (affordance_tags, "affordance_tags"),
         ]:
             if tags:
                 conditions = []
@@ -481,6 +490,48 @@ class SQLiteSemanticStore:
                     params.append(f"%{tag}%")
                 sql += "AND (" + " OR ".join(conditions) + ") "
 
+        sql += "ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
+        rows = self._conn.execute(sql, params).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    def search_by_slot_hints(
+        self,
+        *,
+        slot_terms: list[str],
+        limit: int = 30,
+        user_id: str = "",
+        include_expired: bool = False,
+    ) -> list[dict[str, Any]]:
+        """根据缺失 slot 关键字，在文本与 tags 上做定向召回。"""
+        cleaned_terms = [str(term or "").strip() for term in (slot_terms or []) if str(term or "").strip()]
+        if not cleaned_terms:
+            return []
+
+        sql = "SELECT * FROM memory_records WHERE 1=1 "
+        params: list[Any] = []
+
+        if user_id:
+            sql += "AND user_id = ? "
+            params.append(user_id)
+        if not include_expired:
+            sql += "AND expired = 0 "
+
+        group_conditions: list[str] = []
+        for term in cleaned_terms:
+            group_conditions.extend([
+                "normalized_text LIKE ?",
+                "semantic_text LIKE ?",
+                "entities LIKE ?",
+                "constraint_tags LIKE ?",
+                "tool_tags LIKE ?",
+                "affordance_tags LIKE ?",
+            ])
+            like_term = f"%{term}%"
+            params.extend([like_term] * 6)
+
+        sql += "AND (" + " OR ".join(group_conditions) + ") "
         sql += "ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
 
@@ -612,17 +663,72 @@ class SQLiteSemanticStore:
             self._conn.execute(
                 "INSERT OR IGNORE INTO usage_logs "
                 "(log_id, session_id, user_id, timestamp, query, "
-                "retrieval_plan, retrieved_record_ids, kept_record_ids, "
+                "retrieval_plan, action_state, retrieved_record_ids, kept_record_ids, "
                 "final_response_excerpt, user_feedback, action_outcome) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     log.log_id, log.session_id, log.user_id, log.timestamp,
                     log.query, _json_dumps(log.retrieval_plan),
+                    _json_dumps(log.action_state),
                     _json_dumps(log.retrieved_record_ids),
                     _json_dumps(log.kept_record_ids),
                     log.final_response_excerpt,
                     log.user_feedback, log.action_outcome,
                 ),
+            )
+            self._conn.commit()
+
+    def get_usage_log(self, log_id: str) -> UsageLog | None:
+        row = self._conn.execute(
+            "SELECT * FROM usage_logs WHERE log_id = ?",
+            (log_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return UsageLog(
+            log_id=row["log_id"],
+            session_id=row["session_id"],
+            user_id=row["user_id"],
+            timestamp=row["timestamp"],
+            query=row["query"],
+            retrieval_plan=_json_loads_dict(row["retrieval_plan"]),
+            action_state=_json_loads_dict(row["action_state"]),
+            retrieved_record_ids=_json_loads(row["retrieved_record_ids"]),
+            kept_record_ids=_json_loads(row["kept_record_ids"]),
+            final_response_excerpt=row["final_response_excerpt"],
+            user_feedback=row["user_feedback"],
+            action_outcome=row["action_outcome"],
+        )
+
+    def update_usage_log(
+        self,
+        log_id: str,
+        *,
+        final_response_excerpt: str | None = None,
+        user_feedback: str | None = None,
+        action_outcome: str | None = None,
+    ) -> None:
+        fields: list[str] = []
+        params: list[Any] = []
+
+        if final_response_excerpt is not None:
+            fields.append("final_response_excerpt = ?")
+            params.append(final_response_excerpt)
+        if user_feedback is not None:
+            fields.append("user_feedback = ?")
+            params.append(user_feedback)
+        if action_outcome is not None:
+            fields.append("action_outcome = ?")
+            params.append(action_outcome)
+
+        if not fields:
+            return
+
+        params.append(log_id)
+        with self._lock:
+            self._conn.execute(
+                f"UPDATE usage_logs SET {', '.join(fields)} WHERE log_id = ?",
+                params,
             )
             self._conn.commit()
 
@@ -643,6 +749,7 @@ class SQLiteSemanticStore:
                 timestamp=r["timestamp"],
                 query=r["query"],
                 retrieval_plan=_json_loads_dict(r["retrieval_plan"]),
+                action_state=_json_loads_dict(r["action_state"]),
                 retrieved_record_ids=_json_loads(r["retrieved_record_ids"]),
                 kept_record_ids=_json_loads(r["kept_record_ids"]),
                 final_response_excerpt=r["final_response_excerpt"],
@@ -700,6 +807,11 @@ class SQLiteSemanticStore:
                 f"WHERE record_id IN ({placeholders})",
                 record_ids,
             )
+            self._conn.execute(
+                f"UPDATE composite_records SET action_success_count = action_success_count + 1 "
+                f"WHERE composite_id IN ({placeholders})",
+                record_ids,
+            )
             self._conn.commit()
 
     def increment_action_fail(self, record_ids: list[str]) -> None:
@@ -710,6 +822,11 @@ class SQLiteSemanticStore:
             self._conn.execute(
                 f"UPDATE memory_records SET action_fail_count = action_fail_count + 1 "
                 f"WHERE record_id IN ({placeholders})",
+                record_ids,
+            )
+            self._conn.execute(
+                f"UPDATE composite_records SET action_fail_count = action_fail_count + 1 "
+                f"WHERE composite_id IN ({placeholders})",
                 record_ids,
             )
             self._conn.commit()

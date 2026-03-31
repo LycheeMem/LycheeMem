@@ -18,6 +18,10 @@ class SemanticSearchResult:
 
     context: str  # 可直接注入 LLM 的格式化文本块
     provenance: list[dict[str, Any]]  # 溯源信息列表
+    retrieval_plan: dict[str, Any] = field(default_factory=dict)
+    action_state: dict[str, Any] = field(default_factory=dict)
+    usage_log_id: str = ""
+    mode: str = "answer"
 
 
 @dataclass(slots=True)
@@ -43,8 +47,11 @@ class BaseSemanticMemoryEngine(ABC):
         *,
         query: str,
         session_id: str | None = None,
+        top_k: int = 0,
         query_embedding: list[float] | None = None,
         user_id: str = "",
+        recent_context: str = "",
+        action_state: dict[str, Any] | None = None,
         retrieval_plan: dict[str, Any] | None = None,
     ) -> SemanticSearchResult:
         """检索与 query 相关的长期记忆。
@@ -52,8 +59,11 @@ class BaseSemanticMemoryEngine(ABC):
         Args:
             query: 用户查询文本。
             session_id: 当前会话 ID（可选，用于 session-aware 检索）。
+            top_k: 检索返回上限；0 表示由 planner 的 depth 决定。
             query_embedding: 预计算的 query 向量。
             user_id: 用户 ID（多用户隔离）。
+            recent_context: 最近几轮对话上下文（用于 state-conditioned retrieval）。
+            action_state: 当前决策状态（可选）。
             retrieval_plan: Action-Aware Retrieval Plan 的 dict 表示（可选）。
 
         Returns:
@@ -97,4 +107,31 @@ class BaseSemanticMemoryEngine(ABC):
 
         Returns:
             dict 包含 records / composites / stats 等。
+        """
+
+    @abstractmethod
+    def finalize_usage_log(
+        self,
+        *,
+        log_id: str,
+        final_response_excerpt: str = "",
+    ) -> None:
+        """在回答生成后补充 usage log 的结果摘要。
+
+        该方法不直接判断 success/fail，只记录本轮最终回复的摘要，
+        供后续下一轮用户反馈或显式 outcome 回写使用。
+        """
+
+    @abstractmethod
+    def apply_feedback_from_user_turn(
+        self,
+        *,
+        session_id: str,
+        user_turn: str,
+        user_id: str = "",
+    ) -> dict[str, Any]:
+        """利用下一轮用户输入，对最近一次 action/mixed 检索做 outcome 回写。
+
+        Returns:
+            dict，通常包含 log_id / outcome / feedback；若未匹配到待回写日志则返回空 dict。
         """

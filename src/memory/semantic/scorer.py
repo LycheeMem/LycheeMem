@@ -2,8 +2,8 @@
 
 对多通道召回的候选 MemoryRecord / CompositeRecord 做综合评分：
 
-    Score = α·SemanticRelevance + β·ActionUtility + γ·TemporalFit
-          + δ·Recency + η·EvidenceDensity − λ·TokenCost
+    Score = α·SemanticRelevance + β·ActionUtility + κ·SlotUtility
+          + γ·TemporalFit + δ·Recency + η·EvidenceDensity − λ·TokenCost
 
 所有系数在 0–1 范围内，用户可通过 config 调整。
 
@@ -20,8 +20,9 @@ from typing import Any
 @dataclass
 class ScoringWeights:
     """评分权重配置。"""
-    alpha: float = 0.30   # SemanticRelevance
+    alpha: float = 0.25   # SemanticRelevance
     beta: float = 0.25    # ActionUtility
+    kappa: float = 0.15   # SlotUtility
     gamma: float = 0.15   # TemporalFit
     delta: float = 0.10   # Recency
     eta: float = 0.10     # EvidenceDensity
@@ -53,6 +54,7 @@ class MemoryScorer:
         plan_tool_hints: list[str] | None = None,
         plan_required_constraints: list[str] | None = None,
         plan_required_affordances: list[str] | None = None,
+        plan_missing_slots: list[str] | None = None,
         now: datetime | None = None,
     ) -> list[ScoredCandidate]:
         """对候选列表综合评分并排序。
@@ -83,6 +85,7 @@ class MemoryScorer:
         tool_hints = set(plan_tool_hints or [])
         req_constraints = set(plan_required_constraints or [])
         req_affordances = set(plan_required_affordances or [])
+        req_slots = [str(s or "").strip() for s in (plan_missing_slots or []) if str(s or "").strip()]
 
         scored: list[ScoredCandidate] = []
 
@@ -97,6 +100,9 @@ class MemoryScorer:
             bd["action_utility"] = self._compute_action_utility(
                 c, plan_mode, tool_hints, req_constraints, req_affordances,
             )
+
+            # 2.5 SlotUtility: 当前动作缺失参数的补全能力
+            bd["slot_utility"] = self._compute_slot_utility(c, req_slots)
 
             # 3. TemporalFit: 时间匹配度（近期的时间引用 → 高分）
             bd["temporal_fit"] = self._compute_temporal_fit(c, now)
@@ -114,6 +120,7 @@ class MemoryScorer:
             final = (
                 self.w.alpha * bd["semantic"]
                 + self.w.beta * bd["action_utility"]
+                + self.w.kappa * bd["slot_utility"]
                 + self.w.gamma * bd["temporal_fit"]
                 + self.w.delta * bd["recency"]
                 + self.w.eta * bd["evidence_density"]
@@ -194,6 +201,47 @@ class MemoryScorer:
             parts += 1
 
         return min(1.0, score / max(1, parts))
+
+    @staticmethod
+    def _compute_slot_utility(c: dict[str, Any], missing_slots: list[str]) -> float:
+        """评估候选是否能补齐当前动作缺失的 slot。"""
+        if not missing_slots:
+            return 0.0
+
+        searchable_parts: list[str] = []
+        for field in (
+            c.get("normalized_text", ""),
+            c.get("semantic_text", ""),
+            " ".join(c.get("entities", []) or []),
+            " ".join(c.get("constraint_tags", []) or []),
+            " ".join(c.get("tool_tags", []) or []),
+            " ".join(c.get("affordance_tags", []) or []),
+        ):
+            value = str(field or "").strip().lower()
+            if value:
+                searchable_parts.append(value)
+
+        searchable_text = " \n".join(searchable_parts)
+        if not searchable_text:
+            return 0.0
+
+        hits = 0
+        for slot in missing_slots:
+            slot_text = slot.lower()
+            slot_tokens = [tok for tok in slot_text.replace("/", " ").replace("-", " ").split() if tok]
+            if slot_text in searchable_text:
+                hits += 1
+                continue
+            if slot_tokens and any(tok in searchable_text for tok in slot_tokens):
+                hits += 1
+
+        if hits <= 0:
+            return 0.0
+
+        score = hits / max(1, len(missing_slots))
+        if c.get("memory_type", "") in {"constraint", "procedure", "tool_affordance"}:
+            score += 0.2
+        return min(1.0, score)
 
     @staticmethod
     def _compute_temporal_fit(c: dict[str, Any], now: datetime) -> float:

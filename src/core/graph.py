@@ -76,10 +76,19 @@ class LycheePipeline:
             user_query=state["user_query"],
             session_id=state.get("session_id"),
             user_id=state.get("user_id", ""),
+            compressed_history=state.get("compressed_history", []),
+            raw_recent_turns=state.get("raw_recent_turns", []),
+            wm_token_usage=state.get("wm_token_usage", 0),
+            tool_calls=state.get("tool_calls", []),
         )
         return {
             "retrieved_graph_memories": result["retrieved_graph_memories"],
             "retrieved_skills": result["retrieved_skills"],
+            "retrieval_plan": result.get("retrieval_plan", {}),
+            "action_state": result.get("action_state", {}),
+            "search_mode": result.get("search_mode", "answer"),
+            "semantic_usage_log_id": result.get("semantic_usage_log_id", ""),
+            "feedback_update": result.get("feedback_update", {}),
         }
 
     def _synthesize_node(self, state: PipelineState) -> dict[str, Any]:
@@ -110,6 +119,17 @@ class LycheePipeline:
             state["session_id"], result["final_response"],
             user_id=state.get("user_id", ""),
         )
+
+        semantic_engine = getattr(self.search_coordinator, "semantic_engine", None)
+        usage_log_id = str(state.get("semantic_usage_log_id") or "")
+        if semantic_engine is not None and usage_log_id:
+            try:
+                semantic_engine.finalize_usage_log(
+                    log_id=usage_log_id,
+                    final_response_excerpt=result["final_response"],
+                )
+            except Exception:
+                logger.warning("finalize_usage_log failed session=%s", state.get("session_id"), exc_info=True)
 
         # 标记固化待处理
         return {
@@ -262,6 +282,17 @@ class LycheePipeline:
                 streaming_response,
                 user_id,
             )
+            semantic_engine = getattr(self.search_coordinator, "semantic_engine", None)
+            usage_log_id = str(state.get("semantic_usage_log_id") or "")
+            if semantic_engine is not None and usage_log_id:
+                try:
+                    await asyncio.to_thread(
+                        semantic_engine.finalize_usage_log,
+                        log_id=usage_log_id,
+                        final_response_excerpt=streaming_response,
+                    )
+                except Exception:
+                    logger.warning("finalize_usage_log failed session=%s", state.get("session_id"), exc_info=True)
             patch = {"final_response": streaming_response, "consolidation_pending": True}
             state.update(patch)
             yield {"type": "step", "step": "reason", "status": "done", "patch": patch}

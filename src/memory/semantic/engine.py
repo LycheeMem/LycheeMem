@@ -23,7 +23,7 @@ from src.memory.semantic.base import (
     SemanticSearchResult,
 )
 from src.memory.semantic.encoder import CompactSemanticEncoder
-from src.memory.semantic.models import MemoryRecord, SearchPlan, UsageLog
+from src.memory.semantic.models import ActionState, MemoryRecord, SearchPlan, UsageLog
 from src.memory.semantic.planner import ActionAwareSearchPlanner
 from src.memory.semantic.prompts import (
     NOVELTY_CHECK_SYSTEM,
@@ -90,9 +90,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         *,
         query: str,
         session_id: str | None = None,
-        top_k: int = 10,
+        top_k: int = 0,
         query_embedding: list[float] | None = None,
         user_id: str = "",
+        recent_context: str = "",
+        action_state: dict[str, Any] | None = None,
         retrieval_plan: dict[str, Any] | None = None,
     ) -> SemanticSearchResult:
         """多通道检索 + 反思循环 + 打分 + 格式化。
@@ -107,10 +109,19 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         召回后去重 → Scorer 打分 → 反思循环（充分性检查 + 补充召回）→ 取 top_k → 格式化。
         """
         # Step 1: 确定检索计划
+        action_state_obj = self._dict_to_action_state(action_state)
+
         if retrieval_plan:
             plan = self._dict_to_plan(retrieval_plan)
         else:
-            plan = self._planner.plan(query)
+            plan = self._planner.plan(
+                query,
+                recent_context=recent_context,
+                action_state=action_state_obj,
+            )
+
+        top_k = max(1, int(top_k or plan.depth or 5))
+        resolved_action_state = self._merge_action_state_with_plan(action_state_obj, plan)
 
         # Step 2: 初始多通道召回
         seen_ids: set[str] = set()
@@ -125,7 +136,13 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             seen_ids.add(c.get("id", ""))
 
         if not raw_candidates:
-            return SemanticSearchResult(context="", provenance=[])
+            return SemanticSearchResult(
+                context="",
+                provenance=[],
+                retrieval_plan=self._plan_to_dict(plan),
+                action_state=self._action_state_to_dict(resolved_action_state),
+                mode=plan.mode,
+            )
 
         # Step 3: 初始打分
         scored = self._scorer.score_candidates(
@@ -134,6 +151,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             plan_tool_hints=plan.tool_hints,
             plan_required_constraints=plan.required_constraints,
             plan_required_affordances=plan.required_affordances,
+            plan_missing_slots=plan.missing_slots,
         )
 
         # Step 4: 反思循环（最多 max_reflection_rounds 轮）
@@ -156,9 +174,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             supplement_plan = SearchPlan(
                 mode=plan.mode,
                 semantic_queries=additional_queries,
-                pragmatic_queries=[],
+                pragmatic_queries=list(plan.pragmatic_queries),
                 tool_hints=plan.tool_hints,
                 required_constraints=plan.required_constraints,
+                required_affordances=plan.required_affordances,
+                missing_slots=plan.missing_slots,
                 depth=top_k,
             )
             extra_candidates = self._multi_channel_recall(
@@ -187,17 +207,19 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 plan_tool_hints=plan.tool_hints,
                 plan_required_constraints=plan.required_constraints,
                 plan_required_affordances=plan.required_affordances,
+                plan_missing_slots=plan.missing_slots,
             )
 
         # Step 5: 取 top_k
         top = scored[:top_k]
 
         # Step 6: 记录使用日志
-        self._log_usage(
+        log_id = self._log_usage(
             query=query,
             session_id=session_id or "",
             user_id=user_id,
             plan=plan,
+            action_state=resolved_action_state,
             retrieved_ids=[s.id for s in scored],
             kept_ids=[s.id for s in top],
         )
@@ -212,7 +234,14 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         context = self._format_context(top)
         provenance = self._build_provenance(top)
 
-        return SemanticSearchResult(context=context, provenance=provenance)
+        return SemanticSearchResult(
+            context=context,
+            provenance=provenance,
+            retrieval_plan=self._plan_to_dict(plan),
+            action_state=self._action_state_to_dict(resolved_action_state),
+            usage_log_id=log_id,
+            mode=plan.mode,
+        )
 
     def _multi_channel_recall(
         self,
@@ -329,11 +358,12 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                         c["semantic_distance"] = r.get("_distance", 1.0)
                         candidates.append(c)
 
-        # ── 通道 4: Tag 过滤 ──
-        if plan.tool_hints or plan.required_constraints:
+        # ── 通道 4: Tag 过滤（tool / constraint / affordance）──
+        if plan.tool_hints or plan.required_constraints or plan.required_affordances:
             tag_results = self._sqlite.search_by_tags(
                 tool_tags=plan.tool_hints or None,
                 constraint_tags=plan.required_constraints or None,
+                affordance_tags=plan.required_affordances or None,
                 user_id=user_id,
                 limit=recall_limit,
             )
@@ -345,6 +375,38 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                     r["source"] = "record"
                     r["semantic_distance"] = 0.5  # tag 匹配给中等距离
                     candidates.append(r)
+
+        # ── 通道 4.5: Slot 补全召回 ──
+        if plan.missing_slots:
+            slot_results = self._sqlite.search_by_slot_hints(
+                slot_terms=plan.missing_slots,
+                user_id=user_id,
+                limit=recall_limit,
+            )
+            for r in slot_results:
+                uid = r.get("record_id", "")
+                if uid and uid not in seen_ids:
+                    seen_ids.add(uid)
+                    r["id"] = uid
+                    r["source"] = "record"
+                    r["semantic_distance"] = 0.45
+                    candidates.append(r)
+
+            slot_query = " ".join(plan.missing_slots)
+            if slot_query.strip():
+                synth_slot_results = self._sqlite.fulltext_search_synthesized(
+                    slot_query,
+                    user_id=user_id,
+                    limit=10,
+                )
+                for r in synth_slot_results:
+                    sid = r.get("composite_id", "")
+                    if sid and sid not in seen_ids:
+                        seen_ids.add(sid)
+                        r["id"] = sid
+                        r["source"] = "composite"
+                        r["semantic_distance"] = 0.45
+                        candidates.append(r)
 
         # ── 通道 5: 时间范围 ──
         if plan.temporal_filter:
@@ -514,6 +576,69 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
     def export_debug(self, *, user_id: str = "") -> dict[str, Any]:
         return self._sqlite.export_all(user_id=user_id)
 
+    def finalize_usage_log(
+        self,
+        *,
+        log_id: str,
+        final_response_excerpt: str = "",
+    ) -> None:
+        if not log_id:
+            return
+        excerpt = str(final_response_excerpt or "").strip()
+        if len(excerpt) > 1000:
+            excerpt = excerpt[:1000] + "…"
+        self._sqlite.update_usage_log(
+            log_id,
+            final_response_excerpt=excerpt,
+        )
+
+    def apply_feedback_from_user_turn(
+        self,
+        *,
+        session_id: str,
+        user_turn: str,
+        user_id: str = "",
+    ) -> dict[str, Any]:
+        if not session_id or not str(user_turn or "").strip():
+            return {}
+
+        logs = self._sqlite.get_recent_usage_logs(session_id=session_id, limit=10)
+        pending_log = None
+        for log in logs:
+            if user_id and log.user_id and log.user_id != user_id:
+                continue
+            mode = str((log.retrieval_plan or {}).get("mode") or "").strip().lower()
+            if mode not in {"action", "mixed"}:
+                continue
+            outcome = str(log.action_outcome or "").strip().lower()
+            if outcome and outcome != "unknown":
+                continue
+            pending_log = log
+            break
+
+        if pending_log is None:
+            return {}
+
+        feedback = self._classify_feedback_from_user_turn(user_turn)
+        if feedback["outcome"] == "unknown":
+            return {}
+
+        self._sqlite.update_usage_log(
+            pending_log.log_id,
+            user_feedback=feedback["feedback"],
+            action_outcome=feedback["outcome"],
+        )
+        if feedback["outcome"] == "success":
+            self._sqlite.increment_action_success(pending_log.kept_record_ids)
+        elif feedback["outcome"] == "fail":
+            self._sqlite.increment_action_fail(pending_log.kept_record_ids)
+
+        return {
+            "log_id": pending_log.log_id,
+            "outcome": feedback["outcome"],
+            "feedback": feedback["feedback"],
+        }
+
     # ════════════════════════════════════════════════════════════════
     # 内部工具方法
     # ════════════════════════════════════════════════════════════════
@@ -608,10 +733,100 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             temporal_filter=temporal_filter,
             tool_hints=d.get("tool_hints", []),
             required_constraints=d.get("required_constraints", []),
+            required_affordances=d.get("required_affordances", []),
             missing_slots=d.get("missing_slots", []),
             depth=int(d.get("depth", 5)),
             reasoning=d.get("reasoning", ""),
         )
+
+    @staticmethod
+    def _dict_to_action_state(data: dict[str, Any] | None) -> ActionState:
+        if not isinstance(data, dict):
+            return ActionState()
+        return ActionState(
+            current_subgoal=str(data.get("current_subgoal") or ""),
+            tentative_action=str(data.get("tentative_action") or ""),
+            last_tool_name=str(data.get("last_tool_name") or ""),
+            last_tool_result=str(data.get("last_tool_result") or ""),
+            missing_slots=[str(x) for x in (data.get("missing_slots") or []) if str(x or "").strip()],
+            known_constraints=[str(x) for x in (data.get("known_constraints") or []) if str(x or "").strip()],
+            available_tools=[str(x) for x in (data.get("available_tools") or []) if str(x or "").strip()],
+            failure_signal=str(data.get("failure_signal") or ""),
+            token_budget=int(data.get("token_budget") or 0),
+            recent_context_excerpt=str(data.get("recent_context_excerpt") or ""),
+        )
+
+    @staticmethod
+    def _action_state_to_dict(action_state: ActionState) -> dict[str, Any]:
+        return {
+            "current_subgoal": action_state.current_subgoal,
+            "tentative_action": action_state.tentative_action,
+            "last_tool_name": action_state.last_tool_name,
+            "last_tool_result": action_state.last_tool_result,
+            "missing_slots": list(action_state.missing_slots),
+            "known_constraints": list(action_state.known_constraints),
+            "available_tools": list(action_state.available_tools),
+            "failure_signal": action_state.failure_signal,
+            "token_budget": action_state.token_budget,
+            "recent_context_excerpt": action_state.recent_context_excerpt,
+        }
+
+    @staticmethod
+    def _plan_to_dict(plan: SearchPlan) -> dict[str, Any]:
+        return {
+            "mode": plan.mode,
+            "semantic_queries": list(plan.semantic_queries),
+            "pragmatic_queries": list(plan.pragmatic_queries),
+            "temporal_filter": plan.temporal_filter,
+            "tool_hints": list(plan.tool_hints),
+            "required_constraints": list(plan.required_constraints),
+            "required_affordances": list(plan.required_affordances),
+            "missing_slots": list(plan.missing_slots),
+            "depth": plan.depth,
+            "reasoning": plan.reasoning,
+        }
+
+    @staticmethod
+    def _merge_action_state_with_plan(
+        action_state: ActionState,
+        plan: SearchPlan,
+    ) -> ActionState:
+        return ActionState(
+            current_subgoal=action_state.current_subgoal,
+            tentative_action=action_state.tentative_action,
+            last_tool_name=action_state.last_tool_name,
+            last_tool_result=action_state.last_tool_result,
+            missing_slots=CompactSemanticEngine._merge_unique(
+                action_state.missing_slots,
+                plan.missing_slots,
+            ),
+            known_constraints=CompactSemanticEngine._merge_unique(
+                action_state.known_constraints,
+                plan.required_constraints,
+            ),
+            available_tools=CompactSemanticEngine._merge_unique(
+                action_state.available_tools,
+                plan.tool_hints,
+            ),
+            failure_signal=action_state.failure_signal,
+            token_budget=action_state.token_budget,
+            recent_context_excerpt=action_state.recent_context_excerpt,
+        )
+
+    @staticmethod
+    def _merge_unique(primary: list[str], secondary: list[str]) -> list[str]:
+        seen: set[str] = set()
+        merged: list[str] = []
+        for value in list(primary or []) + list(secondary or []):
+            item = str(value or "").strip()
+            if not item:
+                continue
+            key = item.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+        return merged
 
     @staticmethod
     def _record_to_candidate(record: MemoryRecord) -> dict[str, Any]:
@@ -693,12 +908,14 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         session_id: str,
         user_id: str,
         plan: SearchPlan,
+        action_state: ActionState,
         retrieved_ids: list[str],
         kept_ids: list[str],
-    ) -> None:
+    ) -> str:
         """记录一次检索使用日志。"""
+        log_id = uuid.uuid4().hex
         log = UsageLog(
-            log_id=uuid.uuid4().hex,
+            log_id=log_id,
             session_id=session_id,
             user_id=user_id,
             timestamp=datetime.now(timezone.utc).isoformat(),
@@ -707,9 +924,39 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 "mode": plan.mode,
                 "semantic_queries": plan.semantic_queries,
                 "pragmatic_queries": plan.pragmatic_queries,
+                "required_constraints": plan.required_constraints,
+                "required_affordances": plan.required_affordances,
+                "missing_slots": plan.missing_slots,
                 "depth": plan.depth,
             },
+            action_state=self._action_state_to_dict(action_state),
             retrieved_record_ids=retrieved_ids,
             kept_record_ids=kept_ids,
         )
         self._sqlite.insert_usage_log(log)
+        return log_id
+
+    @staticmethod
+    def _classify_feedback_from_user_turn(user_turn: str) -> dict[str, str]:
+        text = str(user_turn or "").strip().lower()
+        if not text:
+            return {"feedback": "", "outcome": "unknown"}
+
+        positive_markers = (
+            "好了", "可以了", "搞定", "成功", "解决了", "生效了", "没问题了",
+            "可以用了", "worked", "that works", "resolved", "fixed",
+        )
+        negative_markers = (
+            "还是不行", "不行", "失败", "报错", "错误", "异常", "没生效",
+            "不对", "有问题", "超时", "冲突", "无法", "崩溃", "failed",
+            "error", "wrong", "not work", "doesn't work",
+        )
+        correction_markers = ("不是", "不对", "更正", "应该是", "改成", "其实")
+
+        if any(marker in text for marker in correction_markers):
+            return {"feedback": "correction", "outcome": "fail"}
+        if any(marker in text for marker in negative_markers):
+            return {"feedback": "negative", "outcome": "fail"}
+        if any(marker in text for marker in positive_markers):
+            return {"feedback": "positive", "outcome": "success"}
+        return {"feedback": "", "outcome": "unknown"}

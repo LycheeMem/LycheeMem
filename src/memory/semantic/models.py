@@ -136,6 +136,27 @@ class CompositeRecord:
 
 
 @dataclass
+class ActionState:
+    """当前决策状态（Decision State）。
+
+    用于把检索从“只看 query”推进到“结合当前动作意图、约束与执行状态”。
+    该结构会传入 planner，并随 usage log 一并记录，作为后续 usage-aware / RL
+    阶段的状态基座。
+    """
+
+    current_subgoal: str = ""
+    tentative_action: str = ""
+    last_tool_name: str = ""
+    last_tool_result: str = ""
+    missing_slots: list[str] = field(default_factory=list)
+    known_constraints: list[str] = field(default_factory=list)
+    available_tools: list[str] = field(default_factory=list)
+    failure_signal: str = ""
+    token_budget: int = 0
+    recent_context_excerpt: str = ""
+
+
+@dataclass
 class SearchPlan:
     """行动感知检索计划。
 
@@ -169,6 +190,7 @@ class UsageLog:
     timestamp: str  # ISO
     query: str
     retrieval_plan: dict[str, Any] = field(default_factory=dict)
+    action_state: dict[str, Any] = field(default_factory=dict)
     retrieved_record_ids: list[str] = field(default_factory=list)  # 被召回的 record IDs
     kept_record_ids: list[str] = field(default_factory=list)  # 被后续融合阶段最终保留的
     final_response_excerpt: str = ""

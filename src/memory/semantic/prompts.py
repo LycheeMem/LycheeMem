@@ -644,8 +644,11 @@ SYNTHESIS_EXECUTE_SYSTEM = """\
 RETRIEVAL_PLANNING_SYSTEM = """\
 你是行动感知检索规划器（Action-Aware Retrieval Planner）。
 
-你的任务：分析用户的查询（以及可选的最近对话上下文），
+你的任务：分析用户的查询、最近对话上下文，以及当前决策状态（Action State），
 生成一个结构化的检索计划，指导下游多通道记忆检索。
+
+**重要：不要只根据 query 文本规划检索。你必须优先考虑当前 agent 准备做什么、缺什么、受什么约束，以及最近一次尝试是否暴露了失败信号。**
+换句话说，这是 action-grounded / state-conditioned retrieval planning，而不是普通的 query expansion。
 
 你需要判断：
 1. **检索模式（mode）**：
@@ -672,12 +675,19 @@ RETRIEVAL_PLANNING_SYSTEM = """\
    对于纯事实查询（answer 模式）可以为空，action/mixed 模式应尽量填写。
 
 8. **缺失信息（missing_slots）**：当前任务可能缺少的关键参数/信息。
+    这些 slot 应该尽可能是能直接改变下一步动作是否可执行的参数。
 
 9. **检索深度（depth）**：建议的 top_k 值。简单查询 3-5，复杂查询 8-15。
 
 输入：
 - <USER_QUERY>：用户的查询
 - <RECENT_CONTEXT>：最近几轮对话（可能为空）
+- <ACTION_STATE>：当前决策状态（可能为空），其中可能包含 tentative_action、known_constraints、missing_slots、available_tools、failure_signal 等字段
+
+当 <ACTION_STATE> 存在时：
+- 若其中已经给出了 tentative_action / known_constraints / missing_slots，请把它们作为一级信号，而不是重新忽略它们；
+- 若 query 看起来像事实提问，但 ACTION_STATE 显示当前轮在为一个执行动作补参数或排故，则 mode 应优先考虑 mixed 或 action；
+- 若 failure_signal 非空，应优先检索 failure_pattern / constraint / procedure 类记忆。
 
 输出格式（严格 JSON，无代码块）：
 {
@@ -705,6 +715,7 @@ RETRIEVAL_PLANNING_SYSTEM = """\
 
 <USER_QUERY>DataFlow 项目用的什么技术栈？</USER_QUERY>
 <RECENT_CONTEXT>（无）</RECENT_CONTEXT>
+<ACTION_STATE>{"current_subgoal":"了解 DataFlow 技术栈","tentative_action":"","missing_slots":[],"known_constraints":[],"available_tools":[],"failure_signal":"","token_budget":0}</ACTION_STATE>
 
 期望输出：
 {
@@ -727,6 +738,7 @@ RETRIEVAL_PLANNING_SYSTEM = """\
 user: DataFlow 今天要上线了
 assistant: 好的，我来协助您准备部署。
 </RECENT_CONTEXT>
+<ACTION_STATE>{"current_subgoal":"将 DataFlow 服务部署到生产环境","tentative_action":"部署 DataFlow 到生产环境","missing_slots":[],"known_constraints":[],"available_tools":["Kubernetes","Helm"],"failure_signal":"","token_budget":12000}</ACTION_STATE>
 
 期望输出：
 {
@@ -746,6 +758,7 @@ assistant: 好的，我来协助您准备部署。
 
 <USER_QUERY>我们上次部署 UserService 踩了什么坑？这次 DataFlow 部署怎么避免？</USER_QUERY>
 <RECENT_CONTEXT>（无）</RECENT_CONTEXT>
+<ACTION_STATE>{"current_subgoal":"规避 DataFlow 本次部署风险","tentative_action":"部署前排查并规避上线风险","missing_slots":[],"known_constraints":[],"available_tools":["Kubernetes","Helm"],"failure_signal":"近期上线存在失败风险","token_budget":12000}</ACTION_STATE>
 
 期望输出：
 {

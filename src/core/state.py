@@ -28,6 +28,11 @@ class PipelineState(TypedDict, total=False):
     # ─── 检索协调器输出 ───
     retrieved_graph_memories: list[dict[str, Any]]
     retrieved_skills: list[dict[str, Any]]
+    retrieval_plan: dict[str, Any]
+    action_state: dict[str, Any]
+    search_mode: str
+    semantic_usage_log_id: str
+    feedback_update: dict[str, Any]
 
     # ─── 整合器输出 ───
     background_context: str  # 融合后的上下文注入字符串
