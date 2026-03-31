@@ -135,15 +135,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         for c in raw_candidates:
             seen_ids.add(c.get("id", ""))
 
-        if not raw_candidates:
-            return SemanticSearchResult(
-                context="",
-                provenance=[],
-                retrieval_plan=self._plan_to_dict(plan),
-                action_state=self._action_state_to_dict(resolved_action_state),
-                mode=plan.mode,
-            )
-
         # Step 3: 初始打分
         scored = self._scorer.score_candidates(
             raw_candidates,
@@ -152,33 +143,57 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             plan_required_constraints=plan.required_constraints,
             plan_required_affordances=plan.required_affordances,
             plan_missing_slots=plan.missing_slots,
-        )
+        ) if raw_candidates else []
 
         # Step 4: 反思循环（最多 max_reflection_rounds 轮）
         for _ in range(self._max_reflection_rounds):
             current_top = scored[:top_k]
             context_preview = self._format_context(current_top) or "（无检索结果）"
 
-            adequacy = self._check_adequacy(query, context_preview)
+            adequacy = self._check_adequacy(
+                query,
+                context_preview,
+                plan=plan,
+                action_state=resolved_action_state,
+            )
             if adequacy["is_sufficient"]:
                 break
 
-            missing_info = adequacy.get("missing_info", "")
-            additional_queries = self._generate_additional_queries(
-                query, context_preview, missing_info
+            supplement = self._generate_additional_queries(
+                query,
+                context_preview,
+                adequacy=adequacy,
+                plan=plan,
+                action_state=resolved_action_state,
             )
-            if not additional_queries:
+            supplement_semantic_queries = supplement.get("semantic_queries", [])
+            supplement_pragmatic_queries = supplement.get("pragmatic_queries", [])
+            supplement_tool_hints = supplement.get("tool_hints", [])
+            supplement_constraints = supplement.get("required_constraints", [])
+            supplement_affordances = supplement.get("required_affordances", [])
+            supplement_slots = supplement.get("missing_slots", [])
+
+            if not any(
+                [
+                    supplement_semantic_queries,
+                    supplement_pragmatic_queries,
+                    supplement_tool_hints,
+                    supplement_constraints,
+                    supplement_affordances,
+                    supplement_slots,
+                ]
+            ):
                 break
 
-            # 用补充查询做额外召回（复用 _multi_channel_recall，注入 semantic_queries）
+            # 用补充查询做额外召回（补充 plan 也必须继承新的 action 缺口）
             supplement_plan = SearchPlan(
                 mode=plan.mode,
-                semantic_queries=additional_queries,
-                pragmatic_queries=list(plan.pragmatic_queries),
-                tool_hints=plan.tool_hints,
-                required_constraints=plan.required_constraints,
-                required_affordances=plan.required_affordances,
-                missing_slots=plan.missing_slots,
+                semantic_queries=supplement_semantic_queries,
+                pragmatic_queries=supplement_pragmatic_queries,
+                tool_hints=self._merge_unique(plan.tool_hints, supplement_tool_hints),
+                required_constraints=self._merge_unique(plan.required_constraints, supplement_constraints),
+                required_affordances=self._merge_unique(plan.required_affordances, supplement_affordances),
+                missing_slots=self._merge_unique(plan.missing_slots, supplement_slots),
                 depth=top_k,
             )
             extra_candidates = self._multi_channel_recall(
@@ -188,6 +203,20 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 query_embedding=None,
                 top_k=top_k,
             )
+
+            plan = SearchPlan(
+                mode=plan.mode,
+                semantic_queries=self._merge_unique(plan.semantic_queries, supplement_semantic_queries),
+                pragmatic_queries=self._merge_unique(plan.pragmatic_queries, supplement_pragmatic_queries),
+                temporal_filter=plan.temporal_filter,
+                tool_hints=list(supplement_plan.tool_hints),
+                required_constraints=list(supplement_plan.required_constraints),
+                required_affordances=list(supplement_plan.required_affordances),
+                missing_slots=list(supplement_plan.missing_slots),
+                depth=max(plan.depth, top_k),
+                reasoning=plan.reasoning,
+            )
+            resolved_action_state = self._merge_action_state_with_plan(resolved_action_state, plan)
 
             # 去重合并
             new_candidates = [
@@ -643,14 +672,31 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
     # 内部工具方法
     # ════════════════════════════════════════════════════════════════
 
-    def _check_adequacy(self, query: str, context_text: str) -> dict[str, Any]:
-        """LLM 判断当前检索结果是否足以回应查询。
+    def _check_adequacy(
+        self,
+        query: str,
+        context_text: str,
+        *,
+        plan: SearchPlan,
+        action_state: ActionState,
+    ) -> dict[str, Any]:
+        """LLM 判断当前检索结果是否足以回应查询/支撑当前动作。
 
         Returns:
-            {"is_sufficient": bool, "missing_info": str}
+            {
+                "is_sufficient": bool,
+                "missing_info": str,
+                "missing_constraints": list[str],
+                "missing_slots": list[str],
+                "missing_affordances": list[str],
+                "needs_failure_avoidance": bool,
+                "needs_tool_selection_basis": bool,
+            }
         """
         user_content = (
             f"<USER_QUERY>\n{query}\n</USER_QUERY>\n\n"
+            f"<SEARCH_PLAN>\n{json.dumps(self._plan_to_dict(plan), ensure_ascii=False)}\n</SEARCH_PLAN>\n\n"
+            f"<ACTION_STATE>\n{json.dumps(self._action_state_to_dict(action_state), ensure_ascii=False)}\n</ACTION_STATE>\n\n"
             f"<RETRIEVED_MEMORY>\n{context_text}\n</RETRIEVED_MEMORY>"
         )
         response = self._llm.generate([
@@ -664,23 +710,56 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             return {
                 "is_sufficient": bool(parsed.get("is_sufficient", True)),
                 "missing_info": str(parsed.get("missing_info", "")),
+                "missing_constraints": [
+                    str(x) for x in (parsed.get("missing_constraints") or []) if str(x or "").strip()
+                ],
+                "missing_slots": [
+                    str(x) for x in (parsed.get("missing_slots") or []) if str(x or "").strip()
+                ],
+                "missing_affordances": [
+                    str(x) for x in (parsed.get("missing_affordances") or []) if str(x or "").strip()
+                ],
+                "needs_failure_avoidance": bool(parsed.get("needs_failure_avoidance", False)),
+                "needs_tool_selection_basis": bool(parsed.get("needs_tool_selection_basis", False)),
             }
         except (json.JSONDecodeError, ValueError):
             # 解析失败保守地视为充分，避免无限循环
-            return {"is_sufficient": True, "missing_info": ""}
+            return {
+                "is_sufficient": True,
+                "missing_info": "",
+                "missing_constraints": [],
+                "missing_slots": [],
+                "missing_affordances": [],
+                "needs_failure_avoidance": False,
+                "needs_tool_selection_basis": False,
+            }
 
     def _generate_additional_queries(
-        self, query: str, context_text: str, missing_info: str,
-    ) -> list[str]:
-        """LLM 根据缺失信息生成补充检索查询。
+        self,
+        query: str,
+        context_text: str,
+        *,
+        adequacy: dict[str, Any],
+        plan: SearchPlan,
+        action_state: ActionState,
+    ) -> dict[str, Any]:
+        """LLM 根据 action-grounded 缺失信息生成补充检索查询和补充计划。
 
         Returns:
-            补充查询字符串列表（2~4 条），失败时返回空列表。
+            dict，包含 semantic/pragmatic queries 以及需补充的约束/slot/affordance。
         """
+        missing_info = str(adequacy.get("missing_info", ""))
         user_content = (
             f"<USER_QUERY>\n{query}\n</USER_QUERY>\n\n"
+            f"<SEARCH_PLAN>\n{json.dumps(self._plan_to_dict(plan), ensure_ascii=False)}\n</SEARCH_PLAN>\n\n"
+            f"<ACTION_STATE>\n{json.dumps(self._action_state_to_dict(action_state), ensure_ascii=False)}\n</ACTION_STATE>\n\n"
             f"<CURRENT_MEMORY>\n{context_text}\n</CURRENT_MEMORY>\n\n"
-            f"<MISSING_INFO>\n{missing_info}\n</MISSING_INFO>"
+            f"<MISSING_INFO>\n{missing_info}\n</MISSING_INFO>\n\n"
+            f"<MISSING_CONSTRAINTS>\n{json.dumps(adequacy.get('missing_constraints', []), ensure_ascii=False)}\n</MISSING_CONSTRAINTS>\n\n"
+            f"<MISSING_SLOTS>\n{json.dumps(adequacy.get('missing_slots', []), ensure_ascii=False)}\n</MISSING_SLOTS>\n\n"
+            f"<MISSING_AFFORDANCES>\n{json.dumps(adequacy.get('missing_affordances', []), ensure_ascii=False)}\n</MISSING_AFFORDANCES>\n\n"
+            f"<NEEDS_FAILURE_AVOIDANCE>\n{json.dumps(bool(adequacy.get('needs_failure_avoidance', False)), ensure_ascii=False)}\n</NEEDS_FAILURE_AVOIDANCE>\n\n"
+            f"<NEEDS_TOOL_SELECTION_BASIS>\n{json.dumps(bool(adequacy.get('needs_tool_selection_basis', False)), ensure_ascii=False)}\n</NEEDS_TOOL_SELECTION_BASIS>"
         )
         response = self._llm.generate([
             {"role": "system", "content": RETRIEVAL_ADDITIONAL_QUERIES_SYSTEM},
@@ -690,12 +769,42 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             parsed = json.loads(
                 response.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
             )
-            queries = parsed.get("additional_queries", [])
-            if isinstance(queries, list):
-                return [q for q in queries if isinstance(q, str) and q.strip()]
+            return {
+                "semantic_queries": [
+                    q for q in (parsed.get("semantic_queries") or [])
+                    if isinstance(q, str) and q.strip()
+                ],
+                "pragmatic_queries": [
+                    q for q in (parsed.get("pragmatic_queries") or [])
+                    if isinstance(q, str) and q.strip()
+                ],
+                "tool_hints": [
+                    q for q in (parsed.get("tool_hints") or [])
+                    if isinstance(q, str) and q.strip()
+                ],
+                "required_constraints": [
+                    q for q in (parsed.get("required_constraints") or [])
+                    if isinstance(q, str) and q.strip()
+                ],
+                "required_affordances": [
+                    q for q in (parsed.get("required_affordances") or [])
+                    if isinstance(q, str) and q.strip()
+                ],
+                "missing_slots": [
+                    q for q in (parsed.get("missing_slots") or [])
+                    if isinstance(q, str) and q.strip()
+                ],
+            }
         except (json.JSONDecodeError, ValueError):
             pass
-        return []
+        return {
+            "semantic_queries": [],
+            "pragmatic_queries": [],
+            "tool_hints": [],
+            "required_constraints": [],
+            "required_affordances": [],
+            "missing_slots": [],
+        }
 
     def _check_novelty(
         self, turns: list[dict[str, Any]], retrieved_context: str,

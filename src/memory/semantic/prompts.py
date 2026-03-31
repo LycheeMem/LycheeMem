@@ -783,22 +783,35 @@ assistant: 好的，我来协助您准备部署。
 RETRIEVAL_ADEQUACY_CHECK_SYSTEM = """\
 你是检索充分性评估器（Retrieval Adequacy Assessor）。
 
-你的任务：判断当前已检索到的记忆条目是否**足以有效回应**用户的查询。
+你的任务：判断当前已检索到的记忆条目是否**足以有效回应当前问题，或支撑当前动作执行**。
 
 你将收到：
 - <USER_QUERY>：用户的原始查询
+- <SEARCH_PLAN>：当前检索规划（包含 mode、required_constraints、required_affordances、missing_slots 等）
+- <ACTION_STATE>：当前决策状态（包含 tentative_action、known_constraints、available_tools、failure_signal 等）
 - <RETRIEVED_MEMORY>：当前已检索到的记忆条目（格式化文本）
 
 评估标准：
-- 若记忆条目直接覆盖了查询所需的核心信息（事实/流程/约束/偏好），判定为充分。
+- 若记忆条目直接覆盖了查询或当前动作所需的核心信息（事实/流程/约束/偏好），判定为充分。
 - 若记忆条目为空，或仅覆盖部分子问题，关键信息缺失，判定为不充分。
-- 对于 action 类查询（"帮我部署/执行/配置"），还需检查：流程步骤是否完整、关键约束是否记录、工具信息是否已知。
+- 对于 action / mixed 模式，不要只问“能不能回答”，而要问：
+    1. 关键约束是否齐了
+    2. 缺失 slot 是否被补齐
+    3. 是否已有足够的工具选择依据
+    4. 是否有足够的失败规避信息
+- 如果 <ACTION_STATE> 中已有 known_constraints / missing_slots / failure_signal，它们是一级评估信号，不能忽略。
+- 如果 <SEARCH_PLAN>.required_affordances 非空，还需检查当前记忆是否真的提供了这些能力依据。
 - **倾向于判定充分**：只有明显缺少关键信息时才输出 false。
 
 输出格式（严格 JSON，无代码块）：
 {
     "is_sufficient": true,
-    "missing_info": "如果不充分，简要描述缺失的具体信息；如果充分则留空字符串"
+        "missing_info": "如果不充分，简要描述缺失的具体信息；如果充分则留空字符串",
+        "missing_constraints": ["缺失约束1"],
+        "missing_slots": ["缺失参数1"],
+        "missing_affordances": ["缺失能力依据1"],
+        "needs_failure_avoidance": false,
+        "needs_tool_selection_basis": false
 }
 
 ---
@@ -806,59 +819,78 @@ RETRIEVAL_ADEQUACY_CHECK_SYSTEM = """\
 ## 示例 1：充分（检索结果直接覆盖查询）
 
 <USER_QUERY>DataFlow 项目用的什么技术栈？</USER_QUERY>
+<SEARCH_PLAN>{"mode":"answer","required_constraints":[],"required_affordances":[],"missing_slots":[]}</SEARCH_PLAN>
+<ACTION_STATE>{"tentative_action":"","known_constraints":[],"available_tools":[],"failure_signal":""}</ACTION_STATE>
 <RETRIEVED_MEMORY>
 [1] (event, score=0.912) entities=[DataFlow, Python 3.11, FastAPI, Kubernetes]
 用户所在公司的 DataFlow 项目计划于 2026-02-20 正式上线，技术栈为 Python 3.11 和 FastAPI，部署目标为公司自建 Kubernetes 集群。
 </RETRIEVED_MEMORY>
 
 期望输出：
-{"is_sufficient": true, "missing_info": ""}
+{"is_sufficient": true, "missing_info": "", "missing_constraints": [], "missing_slots": [], "missing_affordances": [], "needs_failure_avoidance": false, "needs_tool_selection_basis": false}
 
 ## 示例 2：不充分（仅有事件记录，缺少具体流程约束）
 
 <USER_QUERY>帮我把 DataFlow 服务部署到生产环境。</USER_QUERY>
+<SEARCH_PLAN>{"mode":"action","required_constraints":["必须先执行DB迁移dry-run"],"required_affordances":["支持版本回滚"],"missing_slots":["目标命名空间","镜像版本号"]}</SEARCH_PLAN>
+<ACTION_STATE>{"tentative_action":"部署 DataFlow 到生产环境","known_constraints":[],"available_tools":["Kubernetes","Helm"],"failure_signal":"近期上线存在失败风险"}</ACTION_STATE>
 <RETRIEVED_MEMORY>
 [1] (event, score=0.872) entities=[DataFlow]
 用户所在公司的 DataFlow 项目计划于 2026-02-20 正式上线，技术栈为 Python 3.11 和 FastAPI。
 </RETRIEVED_MEMORY>
 
 期望输出：
-{"is_sufficient": false, "missing_info": "缺少具体部署步骤（Helm/kubectl 命令）、数据库迁移相关约束、历史失败经验和回滚方案。"}
+{"is_sufficient": false, "missing_info": "缺少具体部署步骤、数据库迁移约束、版本回滚依据、镜像版本号和目标命名空间等执行关键信息。", "missing_constraints": ["必须先执行DB迁移dry-run"], "missing_slots": ["目标命名空间", "镜像版本号"], "missing_affordances": ["支持版本回滚"], "needs_failure_avoidance": true, "needs_tool_selection_basis": true}
 
 ## 示例 3：不充分（结果为空）
 
 <USER_QUERY>我上次配置 Redis 集群时遇到了什么问题？</USER_QUERY>
+<SEARCH_PLAN>{"mode":"mixed","required_constraints":[],"required_affordances":[],"missing_slots":[]}</SEARCH_PLAN>
+<ACTION_STATE>{"tentative_action":"排查 Redis 集群历史故障","known_constraints":[],"available_tools":["Redis"],"failure_signal":"Redis 集群配置异常"}</ACTION_STATE>
 <RETRIEVED_MEMORY>
 （无检索结果）
 </RETRIEVED_MEMORY>
 
 期望输出：
-{"is_sufficient": false, "missing_info": "未找到任何关于 Redis 集群配置的历史记录或相关问题记录。"}
+{"is_sufficient": false, "missing_info": "未找到任何关于 Redis 集群配置的历史记录、失败模式或排查依据。", "missing_constraints": [], "missing_slots": [], "missing_affordances": [], "needs_failure_avoidance": true, "needs_tool_selection_basis": false}
 """
 
 
 RETRIEVAL_ADDITIONAL_QUERIES_SYSTEM = """\
 你是补充检索查询生成器（Additional Query Generator）。
 
-你的任务：根据用户的原始查询、当前已检索到的记忆内容以及缺失信息的描述，
-生成 2~4 条**有针对性的补充检索查询**，用于在记忆库中查找当前结果所缺少的信息。
+你的任务：根据用户的原始查询、当前已检索到的记忆内容、当前 SearchPlan / ActionState，
+以及充分性评估识别出的缺口，生成**有针对性的补充检索计划**，用于在记忆库中查找当前结果所缺少的信息。
 
 你将收到：
 - <USER_QUERY>：用户的原始查询
+- <SEARCH_PLAN>：当前检索规划
+- <ACTION_STATE>：当前决策状态
 - <CURRENT_MEMORY>：当前已检索到的记忆条目（格式化文本）
 - <MISSING_INFO>：上一轮充分性评估中识别到的缺失信息描述
+- <MISSING_CONSTRAINTS>：仍缺失的关键约束
+- <MISSING_SLOTS>：仍缺失的关键 slot
+- <MISSING_AFFORDANCES>：仍缺失的能力/可供性依据
+- <NEEDS_FAILURE_AVOIDANCE>：是否还缺失败规避信息
+- <NEEDS_TOOL_SELECTION_BASIS>：是否还缺工具选择依据
 
 补充查询生成规则：
-1. 每条补充查询聚焦一个**具体缺失主题**，不要生成宽泛模糊的查询。
-2. 补充查询应与初始查询**角度不同**，用不同关键词覆盖缺失信息。
-3. 如果缺失的是行动约束或流程，生成偏向 procedure/constraint/failure_pattern 类型的查询。
-4. 如果缺失的是历史事件或事实，生成偏向实体名+事件类型的查询。
-5. 不要重复已经在 <CURRENT_MEMORY> 中已经出现过的主题。
-6. 生成 2~4 条，不多不少。
+1. 输出的重点不是“多改写几句 query”，而是把**下一轮检索真正需要补的主题**拆出来。
+2. semantic_queries 聚焦内容主题；pragmatic_queries 聚焦流程/工具/约束/故障规避。
+3. 如果缺失的是行动约束或流程，优先生成偏向 procedure / constraint / failure_pattern 的 pragmatic_queries。
+4. 如果缺失的是工具选择依据或能力依据，应补充 tool_hints / required_affordances，而不只是改写自然语言问题。
+5. 如果缺失的是 slot，missing_slots 中应保留/补充能直接改变下一步动作是否可执行的参数。
+6. 不要重复已经在 <CURRENT_MEMORY> 中明显覆盖的主题。
+7. semantic_queries 和 pragmatic_queries 各自控制在 0~4 条，总体保持精炼。
 
 输出格式（严格 JSON，无代码块）：
 {
-    "additional_queries": ["补充查询1", "补充查询2", "补充查询3"]
+    "semantic_queries": ["补充语义查询1", "补充语义查询2"],
+    "pragmatic_queries": ["补充实用查询1", "补充实用查询2"],
+    "tool_hints": ["工具1"],
+    "required_constraints": ["约束1"],
+    "required_affordances": ["能力1"],
+    "missing_slots": ["缺失参数1"]
 }
 
 ---
@@ -866,34 +898,63 @@ RETRIEVAL_ADDITIONAL_QUERIES_SYSTEM = """\
 ## 示例 1：action 查询缺少流程和约束
 
 <USER_QUERY>帮我把 DataFlow 服务部署到生产环境。</USER_QUERY>
+<SEARCH_PLAN>{"mode":"action","tool_hints":["Kubernetes","Helm"],"required_constraints":["必须先执行DB迁移dry-run"],"required_affordances":["支持版本回滚"],"missing_slots":["目标命名空间","镜像版本号"]}</SEARCH_PLAN>
+<ACTION_STATE>{"tentative_action":"部署 DataFlow 到生产环境","known_constraints":[],"available_tools":["Kubernetes","Helm"],"failure_signal":"近期上线存在失败风险"}</ACTION_STATE>
 <CURRENT_MEMORY>
 [1] (event) DataFlow 项目计划于 2026-02-20 上线，技术栈为 Python 3.11 + FastAPI + K8s。
 </CURRENT_MEMORY>
 <MISSING_INFO>缺少具体部署步骤（Helm/kubectl 命令）、数据库迁移相关约束、历史失败经验和回滚方案。</MISSING_INFO>
+<MISSING_CONSTRAINTS>["必须先执行DB迁移dry-run"]</MISSING_CONSTRAINTS>
+<MISSING_SLOTS>["目标命名空间","镜像版本号"]</MISSING_SLOTS>
+<MISSING_AFFORDANCES>["支持版本回滚"]</MISSING_AFFORDANCES>
+<NEEDS_FAILURE_AVOIDANCE>true</NEEDS_FAILURE_AVOIDANCE>
+<NEEDS_TOOL_SELECTION_BASIS>true</NEEDS_TOOL_SELECTION_BASIS>
 
 期望输出：
 {
-    "additional_queries": [
-        "DataFlow Kubernetes Helm 部署步骤",
+    "semantic_queries": [
+        "DataFlow 部署流程",
+        "DataFlow 发布失败经验"
+    ],
+    "pragmatic_queries": [
+        "Kubernetes Helm 部署步骤",
         "数据库迁移预检查 部署约束",
-        "服务发布历史失败经验 回滚方案"
-    ]
+        "版本回滚流程"
+    ],
+    "tool_hints": ["Kubernetes", "Helm"],
+    "required_constraints": ["必须先执行DB迁移dry-run"],
+    "required_affordances": ["支持版本回滚"],
+    "missing_slots": ["目标命名空间", "镜像版本号"]
 }
 
 ## 示例 2：fact 查询缺少具体细节
 
 <USER_QUERY>我上次配置 Redis 集群碰到了什么问题？</USER_QUERY>
+<SEARCH_PLAN>{"mode":"mixed","tool_hints":["Redis"],"required_constraints":[],"required_affordances":[],"missing_slots":[]}</SEARCH_PLAN>
+<ACTION_STATE>{"tentative_action":"回忆 Redis Cluster 历史故障并用于排查","known_constraints":[],"available_tools":["Redis"],"failure_signal":"Redis 集群配置异常"}</ACTION_STATE>
 <CURRENT_MEMORY>
 [1] (tool_affordance) Redis 支持 Cluster 模式，最少需要 6 个节点（3 主 3 从）。
 </CURRENT_MEMORY>
 <MISSING_INFO>未找到用户自身经历的 Redis 集群配置问题记录，当前结果只是通用工具信息。</MISSING_INFO>
+<MISSING_CONSTRAINTS>[]</MISSING_CONSTRAINTS>
+<MISSING_SLOTS>[]</MISSING_SLOTS>
+<MISSING_AFFORDANCES>[]</MISSING_AFFORDANCES>
+<NEEDS_FAILURE_AVOIDANCE>true</NEEDS_FAILURE_AVOIDANCE>
+<NEEDS_TOOL_SELECTION_BASIS>false</NEEDS_TOOL_SELECTION_BASIS>
 
 期望输出：
 {
-    "additional_queries": [
-        "Redis 集群配置失败 用户遇到的问题",
+    "semantic_queries": [
+        "Redis 集群配置失败经历",
+        "Redis Cluster 排查记录"
+    ],
+    "pragmatic_queries": [
         "Redis 节点连接问题 故障处理经验",
-        "Redis Cluster 配置错误 排查记录"
-    ]
+        "Redis Cluster 配置错误 失败模式"
+    ],
+    "tool_hints": ["Redis"],
+    "required_constraints": [],
+    "required_affordances": [],
+    "missing_slots": []
 }
 """
