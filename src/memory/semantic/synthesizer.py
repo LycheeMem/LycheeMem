@@ -19,6 +19,7 @@ from src.llm.base import BaseLLM
 from src.memory.semantic.models import (
     MemoryRecord,
     CompositeRecord,
+    VALID_MEMORY_TYPES,
     VALID_SYNTH_TYPES,
 )
 from src.memory.semantic.prompts import (
@@ -50,6 +51,22 @@ class RecordFusionEngine:
         self._min_records = min_records_for_synthesis
         self._max_records_per_group = max_records_per_group
         self._max_hierarchy_rounds = max(0, int(max_hierarchy_rounds))
+        self._last_run_stats = self._empty_run_stats()
+
+    @staticmethod
+    def _empty_run_stats() -> dict[str, Any]:
+        return {
+            "expired_record_ids": [],
+            "updated_record_ids": [],
+            "invalidated_composite_ids": [],
+        }
+
+    def get_last_run_stats(self) -> dict[str, Any]:
+        return {
+            "expired_record_ids": list(self._last_run_stats.get("expired_record_ids", [])),
+            "updated_record_ids": list(self._last_run_stats.get("updated_record_ids", [])),
+            "invalidated_composite_ids": list(self._last_run_stats.get("invalidated_composite_ids", [])),
+        }
 
     def synthesize_on_ingest(
         self,
@@ -68,14 +85,33 @@ class RecordFusionEngine:
         Returns:
             生成的 CompositeRecord 列表
         """
+        self._last_run_stats = self._empty_run_stats()
         if not new_records:
             return []
 
         existing_composites = self._sqlite.list_synthesized(user_id=user_id)
         covered_record_ids, _ = self._build_existing_hierarchy_maps(existing_composites)
 
-        synthesized = self._synthesize_records_on_ingest(
+        active_new_records, updated_existing_records = self._resolve_conflicts_on_ingest(
             new_records,
+            user_id=user_id,
+        )
+        frontier_records_map = {
+            record.record_id: record
+            for record in [*active_new_records, *updated_existing_records]
+            if str(record.record_id or "").strip() and not record.expired
+        }
+        if not frontier_records_map:
+            return []
+
+        if self._last_run_stats.get("invalidated_composite_ids"):
+            existing_composites = self._sqlite.list_synthesized(user_id=user_id)
+            covered_record_ids, _ = self._build_existing_hierarchy_maps(existing_composites)
+
+        frontier_records = list(frontier_records_map.values())
+
+        synthesized = self._synthesize_records_on_ingest(
+            frontier_records,
             user_id=user_id,
             covered_record_ids=covered_record_ids,
         )
@@ -91,7 +127,7 @@ class RecordFusionEngine:
         frontier: list[MemoryRecord | CompositeRecord] = list(synthesized)
         frontier.extend(
             record
-            for record in new_records
+            for record in frontier_records
             if record.record_id not in covered_by_first_layer
         )
         seen_ids = {item.composite_id for item in synthesized}
@@ -116,6 +152,7 @@ class RecordFusionEngine:
         covered_record_ids: set[str] | None = None,
     ) -> list[CompositeRecord]:
         """第一层融合：new/existing records -> composite。"""
+        new_records = [record for record in new_records if not record.expired]
         if not new_records:
             return []
 
@@ -149,8 +186,14 @@ class RecordFusionEngine:
             return []
 
         # LLM 判断合成可行性
-        groups = self._judge_synthesis(candidates)
-        groups = self._normalize_disjoint_groups(groups, allowed_ids=candidate_map.keys())
+        decision = self._judge_synthesis(
+            candidates,
+            new_record_ids={record.record_id for record in new_records},
+        )
+        groups = self._normalize_disjoint_groups(
+            decision.get("groups", []),
+            allowed_ids=candidate_map.keys(),
+        )
         if not groups:
             return []
 
@@ -256,8 +299,11 @@ class RecordFusionEngine:
         if len(candidates) < self._min_records:
             return []
 
-        groups = self._judge_synthesis(candidates)
-        groups = self._normalize_disjoint_groups(groups, allowed_ids=candidate_map.keys())
+        decision = self._judge_synthesis(candidates)
+        groups = self._normalize_disjoint_groups(
+            decision.get("groups", []),
+            allowed_ids=candidate_map.keys(),
+        )
         if not groups:
             return []
 
@@ -331,6 +377,240 @@ class RecordFusionEngine:
             synthesized.append(composite)
 
         return synthesized
+
+    def _resolve_conflicts_on_ingest(
+        self,
+        new_records: list[MemoryRecord],
+        *,
+        user_id: str = "",
+    ) -> tuple[list[MemoryRecord], list[MemoryRecord]]:
+        active_new_records = [record for record in new_records if not record.expired]
+        if not active_new_records:
+            return [], []
+
+        new_record_ids = {
+            str(record.record_id or "").strip()
+            for record in active_new_records
+            if str(record.record_id or "").strip()
+        }
+        candidate_map: dict[str, MemoryRecord] = {
+            record.record_id: record
+            for record in active_new_records
+            if str(record.record_id or "").strip()
+        }
+        existing_record_ids: set[str] = set()
+
+        for record in active_new_records:
+            for related in self._find_related_existing_records(
+                record,
+                user_id=user_id,
+                exclude_ids=new_record_ids,
+            ):
+                if related.expired:
+                    continue
+                candidate_map.setdefault(related.record_id, related)
+                existing_record_ids.add(related.record_id)
+
+        if not existing_record_ids:
+            return active_new_records, []
+
+        decision = self._judge_synthesis(
+            list(candidate_map.values()),
+            new_record_ids=new_record_ids,
+        )
+        conflicts = self._normalize_conflicts(
+            decision.get("conflicts", []),
+            allowed_ids=candidate_map.keys(),
+            new_ids=new_record_ids,
+            existing_ids=existing_record_ids,
+        )
+        if not conflicts:
+            return active_new_records, []
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        updated_records: list[MemoryRecord] = []
+        expired_record_ids: set[str] = set()
+        invalidated_composite_ids: set[str] = set()
+
+        for conflict in conflicts:
+            anchor_id = conflict["anchor_record_id"]
+            incoming_ids = conflict["incoming_record_ids"]
+            anchor_record = candidate_map.get(anchor_id)
+            incoming_records = [candidate_map[record_id] for record_id in incoming_ids if record_id in candidate_map]
+            if anchor_record is None or not incoming_records:
+                continue
+
+            resolved = self._execute_synthesis(
+                [anchor_record, *incoming_records],
+                conflict.get("conflict_reason", ""),
+                anchor_record.memory_type,
+                resolution_mode="conflict_update",
+                target_record_id=anchor_id,
+                new_record_ids=new_record_ids,
+            )
+            if not resolved:
+                continue
+
+            resolved_memory_type = str(resolved.get("resolved_memory_type") or anchor_record.memory_type).strip()
+            if resolved_memory_type not in VALID_MEMORY_TYPES:
+                resolved_memory_type = anchor_record.memory_type
+
+            merged_source_role = self._merge_source_roles(
+                [anchor_record, *incoming_records],
+                preferred=getattr(incoming_records[-1], "source_role", "") if incoming_records else anchor_record.source_role,
+            )
+            merged_session = next(
+                (
+                    record.source_session
+                    for record in reversed(incoming_records)
+                    if str(record.source_session or "").strip()
+                ),
+                anchor_record.source_session,
+            )
+            merged_evidence_turns = sorted({
+                *[int(turn) for turn in (anchor_record.evidence_turn_range or []) if isinstance(turn, int)],
+                *[
+                    int(turn)
+                    for record in incoming_records
+                    for turn in (record.evidence_turn_range or [])
+                    if isinstance(turn, int)
+                ],
+            })
+
+            updated_record = MemoryRecord(
+                record_id=anchor_record.record_id,
+                memory_type=resolved_memory_type,
+                semantic_text=str(resolved.get("semantic_text") or anchor_record.semantic_text).strip(),
+                normalized_text=str(resolved.get("normalized_text") or anchor_record.normalized_text).strip(),
+                entities=[str(v) for v in (resolved.get("entities") or anchor_record.entities or []) if str(v or "").strip()],
+                temporal=resolved.get("temporal") or dict(anchor_record.temporal),
+                task_tags=[str(v) for v in (resolved.get("task_tags") or anchor_record.task_tags or []) if str(v or "").strip()],
+                tool_tags=[str(v) for v in (resolved.get("tool_tags") or anchor_record.tool_tags or []) if str(v or "").strip()],
+                constraint_tags=[str(v) for v in (resolved.get("constraint_tags") or anchor_record.constraint_tags or []) if str(v or "").strip()],
+                failure_tags=[str(v) for v in (resolved.get("failure_tags") or anchor_record.failure_tags or []) if str(v or "").strip()],
+                affordance_tags=[str(v) for v in (resolved.get("affordance_tags") or anchor_record.affordance_tags or []) if str(v or "").strip()],
+                confidence=float(resolved.get("confidence") or anchor_record.confidence or 1.0),
+                evidence_turn_range=merged_evidence_turns,
+                source_session=merged_session,
+                source_role=merged_source_role,
+                user_id=anchor_record.user_id,
+                created_at=anchor_record.created_at,
+                updated_at=now_iso,
+                retrieval_count=anchor_record.retrieval_count,
+                retrieval_hit_count=anchor_record.retrieval_hit_count,
+                action_success_count=anchor_record.action_success_count,
+                action_fail_count=anchor_record.action_fail_count,
+                last_retrieved_at=anchor_record.last_retrieved_at,
+                expired=False,
+                expired_at="",
+                expired_reason="",
+            )
+
+            self._sqlite.upsert_record(updated_record)
+            self._vector.upsert(
+                record_id=updated_record.record_id,
+                user_id=updated_record.user_id,
+                memory_type=updated_record.memory_type,
+                semantic_text=updated_record.semantic_text,
+                normalized_text=updated_record.normalized_text,
+            )
+            updated_records.append(updated_record)
+
+            for incoming_record in incoming_records:
+                self._sqlite.expire_record(
+                    incoming_record.record_id,
+                    expired_at=now_iso,
+                    expired_reason=f"conflict_update:{anchor_record.record_id}",
+                )
+                self._vector.mark_expired(incoming_record.record_id)
+                expired_record_ids.add(incoming_record.record_id)
+
+            affected_source_ids = [anchor_record.record_id, *incoming_ids]
+            stale_composites = self._sqlite.get_synthesized_by_source(affected_source_ids)
+            stale_composite_ids = sorted({
+                composite.composite_id
+                for composite in stale_composites
+                if str(composite.composite_id or "").strip()
+            })
+            if stale_composite_ids:
+                self._sqlite.delete_synthesized_many(stale_composite_ids, user_id=user_id)
+                for composite_id in stale_composite_ids:
+                    self._vector.delete_synthesized(composite_id)
+                invalidated_composite_ids.update(stale_composite_ids)
+
+        surviving_new_records = [
+            record
+            for record in active_new_records
+            if record.record_id not in expired_record_ids
+        ]
+
+        self._last_run_stats = {
+            "expired_record_ids": sorted(expired_record_ids),
+            "updated_record_ids": sorted({record.record_id for record in updated_records}),
+            "invalidated_composite_ids": sorted(invalidated_composite_ids),
+        }
+
+        return surviving_new_records, updated_records
+
+    def _find_related_existing_records(
+        self,
+        record: MemoryRecord,
+        *,
+        user_id: str = "",
+        exclude_ids: set[str] | None = None,
+    ) -> list[MemoryRecord]:
+        exclude_ids = {
+            str(record_id or "").strip()
+            for record_id in (exclude_ids or set())
+            if str(record_id or "").strip()
+        }
+        related: dict[str, MemoryRecord] = {}
+        queries: list[str] = []
+
+        for text in [
+            record.normalized_text,
+            record.semantic_text,
+            " ".join(record.entities),
+            " ".join([
+                *record.task_tags,
+                *record.tool_tags,
+                *record.constraint_tags,
+                *record.failure_tags,
+                *record.affordance_tags,
+            ]),
+        ]:
+            cleaned = str(text or "").strip()
+            if cleaned and cleaned not in queries:
+                queries.append(cleaned)
+
+        for query_text in queries[:4]:
+            for result in self._sqlite.fulltext_search(
+                query_text,
+                user_id=user_id,
+                limit=6,
+            ):
+                record_id = str(result.get("record_id") or "").strip()
+                if not record_id or record_id == record.record_id or record_id in exclude_ids:
+                    continue
+                fetched = self._sqlite.get_record(record_id)
+                if fetched is not None and not fetched.expired:
+                    related[record_id] = fetched
+
+            for column in ("vector", "normalized_vector"):
+                for result in self._vector.search(
+                    query_text,
+                    user_id=user_id,
+                    column=column,
+                    limit=6,
+                ):
+                    record_id = str(result.get("record_id") or "").strip()
+                    if not record_id or record_id == record.record_id or record_id in exclude_ids:
+                        continue
+                    fetched = self._sqlite.get_record(record_id)
+                    if fetched is not None and not fetched.expired:
+                        related[record_id] = fetched
+
+        return list(related.values())
 
     def _persist_composite(self, composite: CompositeRecord) -> None:
         self._sqlite.upsert_synthesized(composite)
@@ -517,10 +797,16 @@ class RecordFusionEngine:
         groups: list[dict[str, Any]],
         *,
         allowed_ids: Any,
+        blocked_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         allowed = {
             str(item_id or "").strip()
             for item_id in allowed_ids
+            if str(item_id or "").strip()
+        }
+        blocked_ids = {
+            str(item_id or "").strip()
+            for item_id in (blocked_ids or set())
             if str(item_id or "").strip()
         }
         normalized_groups: list[dict[str, Any]] = []
@@ -530,7 +816,12 @@ class RecordFusionEngine:
             seen: set[str] = set()
             for raw_id in raw_ids:
                 normalized = str(raw_id or "").strip()
-                if not normalized or normalized not in allowed or normalized in seen:
+                if (
+                    not normalized
+                    or normalized not in allowed
+                    or normalized in seen
+                    or normalized in blocked_ids
+                ):
                     continue
                 seen.add(normalized)
                 source_ids.append(normalized)
@@ -562,6 +853,125 @@ class RecordFusionEngine:
             used_ids.update(source_ids)
 
         return disjoint_groups
+
+    def _normalize_conflicts(
+        self,
+        conflicts: list[dict[str, Any]],
+        *,
+        allowed_ids: Any,
+        new_ids: set[str],
+        existing_ids: set[str],
+    ) -> list[dict[str, Any]]:
+        allowed = {
+            str(item_id or "").strip()
+            for item_id in allowed_ids
+            if str(item_id or "").strip()
+        }
+        new_ids = {
+            str(item_id or "").strip()
+            for item_id in new_ids
+            if str(item_id or "").strip()
+        }
+        existing_ids = {
+            str(item_id or "").strip()
+            for item_id in existing_ids
+            if str(item_id or "").strip()
+        }
+
+        merged_by_anchor: dict[str, dict[str, Any]] = {}
+        for conflict in conflicts or []:
+            anchor_id = str(conflict.get("anchor_record_id") or "").strip()
+            if not anchor_id or anchor_id not in allowed or anchor_id not in existing_ids:
+                continue
+
+            incoming_ids: list[str] = []
+            seen_incoming: set[str] = set()
+            for raw_id in conflict.get("incoming_record_ids", []) or []:
+                incoming_id = str(raw_id or "").strip()
+                if (
+                    not incoming_id
+                    or incoming_id not in allowed
+                    or incoming_id not in new_ids
+                    or incoming_id == anchor_id
+                    or incoming_id in seen_incoming
+                ):
+                    continue
+                seen_incoming.add(incoming_id)
+                incoming_ids.append(incoming_id)
+
+            if not incoming_ids:
+                continue
+
+            entry = merged_by_anchor.setdefault(
+                anchor_id,
+                {
+                    "anchor_record_id": anchor_id,
+                    "incoming_record_ids": [],
+                    "conflict_reason": "",
+                    "resolution_mode": "update_existing",
+                },
+            )
+            entry["incoming_record_ids"] = self._merge_unique_str(
+                entry["incoming_record_ids"],
+                incoming_ids,
+            )
+            if not entry["conflict_reason"]:
+                entry["conflict_reason"] = str(conflict.get("conflict_reason") or "").strip()
+
+        normalized = sorted(
+            merged_by_anchor.values(),
+            key=lambda item: (-len(item["incoming_record_ids"]), item["anchor_record_id"]),
+        )
+
+        disjoint_conflicts: list[dict[str, Any]] = []
+        used_anchors: set[str] = set()
+        used_incoming: set[str] = set()
+        for conflict in normalized:
+            anchor_id = conflict["anchor_record_id"]
+            incoming_ids = conflict["incoming_record_ids"]
+            if anchor_id in used_anchors or any(record_id in used_incoming for record_id in incoming_ids):
+                continue
+            disjoint_conflicts.append(conflict)
+            used_anchors.add(anchor_id)
+            used_incoming.update(incoming_ids)
+
+        return disjoint_conflicts
+
+    @staticmethod
+    def _merge_unique_str(primary: list[str], secondary: list[str]) -> list[str]:
+        seen: set[str] = set()
+        merged: list[str] = []
+        for value in list(primary or []) + list(secondary or []):
+            item = str(value or "").strip()
+            if not item:
+                continue
+            key = item.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+        return merged
+
+    @staticmethod
+    def _merge_source_roles(
+        records: list[MemoryRecord],
+        *,
+        preferred: str = "",
+    ) -> str:
+        preferred = str(preferred or "").strip()
+        if preferred:
+            return preferred
+
+        roles = {
+            str(record.source_role or "").strip()
+            for record in records
+            if str(record.source_role or "").strip()
+        }
+        if not roles:
+            return ""
+        if len(roles) == 1:
+            return next(iter(roles))
+        return "both"
 
     @staticmethod
     def _item_id(item: MemoryRecord | CompositeRecord) -> str:
@@ -596,12 +1006,15 @@ class RecordFusionEngine:
         return left_set.issubset(right_set) or right_set.issubset(left_set)
 
     def _judge_synthesis(
-        self, candidates: list[MemoryRecord | CompositeRecord],
-    ) -> list[dict[str, Any]]:
-        """LLM 判断候选集是否可融合 + 分组。"""
+        self,
+        candidates: list[MemoryRecord | CompositeRecord],
+        *,
+        new_record_ids: set[str] | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """LLM 判断候选集是否可融合或做冲突更新。"""
         records_json = json.dumps(
             [
-                self._serialize_candidate_for_judge(item)
+                self._serialize_candidate_for_judge(item, new_record_ids=new_record_ids)
                 for item in candidates
             ],
             ensure_ascii=False,
@@ -617,22 +1030,27 @@ class RecordFusionEngine:
 
         try:
             parsed = self._parse_json(response)
-            if not parsed.get("should_synthesize", False):
-                return []
-            return parsed.get("groups", [])
+            return {
+                "groups": parsed.get("groups", []) or [],
+                "conflicts": parsed.get("conflicts", []) or [],
+            }
         except (ValueError, json.JSONDecodeError):
-            return []
+            return {"groups": [], "conflicts": []}
 
     def _execute_synthesis(
         self,
         source_records: list[MemoryRecord | CompositeRecord],
         reason: str,
         suggested_type: str,
+        *,
+        resolution_mode: str = "synthesize",
+        target_record_id: str = "",
+        new_record_ids: set[str] | None = None,
     ) -> dict[str, Any] | None:
         """LLM 执行融合，返回聚合结果。"""
         records_json = json.dumps(
             [
-                self._serialize_candidate_for_execute(item)
+                self._serialize_candidate_for_execute(item, new_record_ids=new_record_ids)
                 for item in source_records
             ],
             ensure_ascii=False,
@@ -642,7 +1060,9 @@ class RecordFusionEngine:
         user_content = (
             f"<SOURCE_RECORDS>\n{records_json}\n</SOURCE_RECORDS>\n\n"
             f"<SYNTHESIS_REASON>\n{reason}\n</SYNTHESIS_REASON>\n\n"
-            f"<SUGGESTED_TYPE>\n{suggested_type}\n</SUGGESTED_TYPE>"
+            f"<SUGGESTED_TYPE>\n{suggested_type}\n</SUGGESTED_TYPE>\n\n"
+            f"<RESOLUTION_MODE>\n{resolution_mode}\n</RESOLUTION_MODE>\n\n"
+            f"<TARGET_RECORD_ID>\n{target_record_id}\n</TARGET_RECORD_ID>"
         )
 
         response = self._llm.generate([
@@ -663,7 +1083,14 @@ class RecordFusionEngine:
     @staticmethod
     def _serialize_candidate_for_judge(
         item: MemoryRecord | CompositeRecord,
+        *,
+        new_record_ids: set[str] | None = None,
     ) -> dict[str, Any]:
+        new_record_ids = {
+            str(record_id or "").strip()
+            for record_id in (new_record_ids or set())
+            if str(record_id or "").strip()
+        }
         if isinstance(item, CompositeRecord):
             item_id = item.composite_id
             source_record_ids = list(item.source_record_ids)
@@ -676,12 +1103,17 @@ class RecordFusionEngine:
         return {
             "record_id": item_id,
             "item_kind": item_kind,
+            "ingest_status": "new" if item_id in new_record_ids else "existing",
             "memory_type": item.memory_type,
             "semantic_text": item.semantic_text,
             "normalized_text": item.normalized_text,
             "entities": item.entities,
+            "temporal": item.temporal,
             "task_tags": item.task_tags,
             "tool_tags": item.tool_tags,
+            "constraint_tags": item.constraint_tags,
+            "failure_tags": item.failure_tags,
+            "affordance_tags": item.affordance_tags,
             "source_record_ids": source_record_ids,
             "child_composite_ids": list(item.child_composite_ids) if isinstance(item, CompositeRecord) else [],
         }
@@ -689,7 +1121,14 @@ class RecordFusionEngine:
     @staticmethod
     def _serialize_candidate_for_execute(
         item: MemoryRecord | CompositeRecord,
+        *,
+        new_record_ids: set[str] | None = None,
     ) -> dict[str, Any]:
+        new_record_ids = {
+            str(record_id or "").strip()
+            for record_id in (new_record_ids or set())
+            if str(record_id or "").strip()
+        }
         if isinstance(item, CompositeRecord):
             item_id = item.composite_id
             source_record_ids = list(item.source_record_ids)
@@ -702,6 +1141,7 @@ class RecordFusionEngine:
         return {
             "record_id": item_id,
             "item_kind": item_kind,
+            "ingest_status": "new" if item_id in new_record_ids else "existing",
             "memory_type": item.memory_type,
             "semantic_text": item.semantic_text,
             "normalized_text": item.normalized_text,

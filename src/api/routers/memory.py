@@ -125,7 +125,11 @@ def _build_tree_relationships(
 def _build_semantic_tree_payload(
     data: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    records = list(data.get("records", []))
+    records = [
+        record
+        for record in data.get("records", [])
+        if not bool(record.get("expired", False))
+    ]
     composites = list(data.get("composites", []))
 
     record_by_id = {

@@ -647,6 +647,47 @@ class SQLiteSemanticStore:
             return None
         return self._row_to_synth(row)
 
+    def delete_synthesized(self, composite_id: str, *, user_id: str = "") -> None:
+        """硬删除单个 CompositeRecord。"""
+        with self._lock:
+            if user_id:
+                row = self._conn.execute(
+                    "SELECT rowid FROM composite_records WHERE composite_id = ? AND user_id = ?",
+                    (composite_id, user_id),
+                ).fetchone()
+            else:
+                row = self._conn.execute(
+                    "SELECT rowid FROM composite_records WHERE composite_id = ?",
+                    (composite_id,),
+                ).fetchone()
+
+            if row is None:
+                return
+
+            rowid = row["rowid"]
+            self._conn.execute(
+                "DELETE FROM composite_records_fts WHERE rowid = ?",
+                (rowid,),
+            )
+            if user_id:
+                self._conn.execute(
+                    "DELETE FROM composite_records WHERE composite_id = ? AND user_id = ?",
+                    (composite_id, user_id),
+                )
+            else:
+                self._conn.execute(
+                    "DELETE FROM composite_records WHERE composite_id = ?",
+                    (composite_id,),
+                )
+            self._conn.commit()
+
+    def delete_synthesized_many(self, composite_ids: list[str], *, user_id: str = "") -> None:
+        """批量硬删除 CompositeRecord。"""
+        for composite_id in composite_ids:
+            if not str(composite_id or "").strip():
+                continue
+            self.delete_synthesized(str(composite_id).strip(), user_id=user_id)
+
     def list_synthesized(self, *, user_id: str = "") -> list[CompositeRecord]:
         """获取指定用户的全部 CompositeRecord。"""
         sql = "SELECT * FROM composite_records"

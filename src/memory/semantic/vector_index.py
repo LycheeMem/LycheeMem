@@ -347,6 +347,13 @@ class LanceVectorIndex:
         except Exception:
             pass
 
+    def delete_synthesized(self, composite_id: str) -> None:
+        try:
+            table = self._db.open_table(self.SYNTH_TABLE)
+            table.delete(f"composite_id = '{self._escape_sql(composite_id)}'")
+        except Exception:
+            pass
+
     def mark_expired(self, record_id: str) -> None:
         """标记过期（向量层面：删除后以 expired=True 重新插入开销大，直接删除即可，
         具体过期条目不参与 ANN 召回，靠 sqlite 侧查询）。"""

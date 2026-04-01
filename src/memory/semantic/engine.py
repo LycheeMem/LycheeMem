@@ -1458,6 +1458,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         # Step 3: 去重 + 写入
         actually_added = 0
         sensitive_skipped = 0
+        persisted_records: list[MemoryRecord] = []
         for record in new_records:
             # 3a. 敏感信息过滤：密码/API key/私钥/信用卡号不写入长期记忆
             check_text = record.semantic_text + " " + record.normalized_text
@@ -1529,6 +1530,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                         "vector upsert failed for record %s", record.record_id, exc_info=True
                     )
                 actually_added += 1
+                persisted_records.append(record)
 
         sensitive_note = f"，{sensitive_skipped} 条含敏感信息跳过" if sensitive_skipped else ""
         steps.append({
@@ -1539,28 +1541,38 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
         # Step 4: Record Fusion（在线聚合）
         composite_records = []
+        fusion_stats: dict[str, Any] = {}
         if actually_added > 0:
             composite_records = self._synthesizer.synthesize_on_ingest(
-                [u for u in new_records if not any(
-                    s.record_id == u.record_id
-                    for s in self._sqlite.find_similar_by_normalized_text(
-                        u.normalized_text, user_id=user_id, limit=1,
-                    )
-                    if s.record_id != u.record_id
-                )],
+                persisted_records,
                 user_id=user_id,
             )
+            fusion_stats = self._synthesizer.get_last_run_stats()
+
+        expired_count = len(fusion_stats.get("expired_record_ids", []))
+        updated_count = len(fusion_stats.get("updated_record_ids", []))
+        invalidated_composite_count = len(fusion_stats.get("invalidated_composite_ids", []))
+        fusion_detail = f"聚合 {len(composite_records)} 条 CompositeRecord"
+        if updated_count or expired_count or invalidated_composite_count:
+            extras: list[str] = []
+            if updated_count:
+                extras.append(f"更新 {updated_count} 条冲突旧记忆")
+            if expired_count:
+                extras.append(f"过期 {expired_count} 条冲突新记忆")
+            if invalidated_composite_count:
+                extras.append(f"失效 {invalidated_composite_count} 条受影响 composite")
+            fusion_detail += "，" + "，".join(extras)
 
         steps.append({
             "name": "record_fusion",
             "status": "done",
-            "detail": f"聚合 {len(composite_records)} 条 CompositeRecord",
+            "detail": fusion_detail,
         })
 
         return ConsolidationResult(
             records_added=actually_added,
             records_merged=len(composite_records),
-            records_expired=0,
+            records_expired=expired_count,
             steps=steps,
         )
 

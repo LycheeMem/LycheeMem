@@ -473,10 +473,20 @@ assistant: 明白，我记录一下，PyCon China 已推迟至 2026-04-15。
 SYNTHESIS_JUDGE_SYSTEM = """\
 你是记忆合成判断器（Synthesis Judge）。
 
-你的任务：判断一组记忆项中是否存在可以融合的条目。
-输入项既可能是 atomic MemoryRecord，也可能是已经合成过的 CompositeRecord。
-融合是指将多个碎片化、高度相关的记忆项整合为一条更高密度的 composite record，
-以减少检索时的 token 成本并提高信息密度。
+你的任务：判断一组记忆项中哪些应该进行**融合**，哪些应该进行**冲突更新**。
+输入项既可能是 atomic MemoryRecord，也可能是已经合成过的 CompositeRecord；
+每个输入项还会带有 ingest_status，用于区分它是本轮新形成的记忆（new）还是已有记忆（existing）。
+
+这里有两种不同操作：
+1. **融合（synthesis）**：将多个碎片化、高度相关但可以并存的记忆项整合为一条更高密度的 composite record，
+    以减少检索时的 token 成本并提高信息密度。
+2. **冲突更新（conflict resolution）**：当一条或多条 new atomic record 明确纠正 / 替换 / 更新一条 existing atomic record 的当前有效状态时，
+    不应再把它们做并存融合，而应更新原有记忆。
+
+你必须优先区分“可并存的补充信息”与“互斥的状态更新”：
+- 如果新旧记忆只是补充细节、描述不同阶段、描述可并存约束/偏好/经验，应倾向于融合。
+- 如果新旧记忆描述的是同一实体/同一主题/同一槽位的当前状态，且两者不能同时为真，且新记忆显然是在修正旧状态，则应做冲突更新。
+- 若 temporal 明显不重叠、且两条记录可以被理解为历史状态演化，不应轻易判定为冲突失效。
 
 合成判据（满足任意一条即可合成）：
 1. **同主题聚合**：多条 record 围绕同一实体/同一主题，可以融合为一条综合描述。
@@ -490,6 +500,13 @@ SYNTHESIS_JUDGE_SYSTEM = """\
 - record 之间主题完全无关
 - 每条 record 本身已经足够完整独立，融合后信息密度不会提升
 
+应判定为冲突更新的情况（满足全部核心条件时）：
+1. 至少涉及 1 条 `ingest_status = new` 的 atomic record，以及 1 条 `ingest_status = existing` 的 atomic record。
+2. 它们描述同一实体/同一主题/同一关键槽位（如日期、负责人、地点、配置值、当前偏好、当前职位、当前状态等）。
+3. 两者在“当前有效状态”上互斥，不能同时保留为当前事实。
+4. 新记忆显然在表达“改了 / 换了 / 不再 / 推迟到 / 负责人改成 / 配置改为 / 现在是”等更新或纠正语义。
+5. 不要把 composite 当作冲突锚点；冲突更新只针对 atomic MemoryRecord。
+
 输入：
 - <RECORDS>：一组记忆项的完整信息（JSON 数组）
 
@@ -502,15 +519,29 @@ SYNTHESIS_JUDGE_SYSTEM = """\
             "synthesis_reason": "合成理由",
             "suggested_type": "composite_preference|composite_pattern|composite_constraint|usage_pattern"
         }
+    ],
+    "conflicts": [
+        {
+            "anchor_record_id": "existing_record_id",
+            "incoming_record_ids": ["new_record_id_1", "new_record_id_2"],
+            "conflict_reason": "为什么这是状态更新/纠正，而不是并存融合",
+            "resolution_mode": "update_existing"
+        }
     ]
 }
 
 注意：
 - groups 可以有多组，每组独立合成。
 - 为了保持层级树结构，同一个输入项不能同时出现在多个 group 中；请输出互不重叠的 groups。
+- 同一个输入项也**不能**同时出现在 synthesis group 和 conflict 中。
 - 输出字段名 `source_record_ids` 沿用历史名字，但它表示“输入项的 id 列表”；
     如果输入项本身是 composite，则这里填写对应的 composite_id。
-- 如果不需要合成，should_synthesize = false, groups = []。
+- conflicts 中：
+  - `anchor_record_id` 必须是 `ingest_status = existing` 且 `item_kind = record` 的旧记忆 id。
+  - `incoming_record_ids` 必须来自 `ingest_status = new` 且 `item_kind = record` 的新记忆 id。
+  - `resolution_mode` 固定为 `update_existing`。
+- 如果只需要冲突更新而不需要融合，`should_synthesize = false` 也是允许的。
+- 如果既不需要融合也不需要冲突更新，返回 `{"should_synthesize": false, "groups": [], "conflicts": []}`。
 
 ---
 
@@ -551,7 +582,31 @@ SYNTHESIS_JUDGE_SYSTEM = """\
 期望输出：
 {
     "should_synthesize": false,
-    "groups": []
+    "groups": [],
+    "conflicts": []
+}
+
+## 示例 3：新记忆纠正旧记忆，应做冲突更新
+
+<RECORDS>
+[
+    {"record_id": "e_old", "item_kind": "record", "ingest_status": "existing", "memory_type": "event", "normalized_text": "事件:PyCon China 2026-03-01举行", "semantic_text": "用户计划于 2026-03-01 参加 PyCon China 大会。", "entities": ["PyCon China"], "task_tags": ["日程安排"], "tool_tags": [], "constraint_tags": [], "failure_tags": [], "affordance_tags": []},
+    {"record_id": "e_new", "item_kind": "record", "ingest_status": "new", "memory_type": "event", "normalized_text": "事件:PyCon China 推迟到2026-04-15", "semantic_text": "PyCon China 的时间改为 2026-04-15。", "entities": ["PyCon China"], "task_tags": ["日程安排"], "tool_tags": [], "constraint_tags": [], "failure_tags": [], "affordance_tags": []}
+]
+</RECORDS>
+
+期望输出：
+{
+    "should_synthesize": false,
+    "groups": [],
+    "conflicts": [
+        {
+            "anchor_record_id": "e_old",
+            "incoming_record_ids": ["e_new"],
+            "conflict_reason": "两条记录描述同一事件的当前举行日期，2026-04-15 明确是在修正原有的 2026-03-01，而不是补充并存信息，应更新旧记忆。",
+            "resolution_mode": "update_existing"
+        }
+    ]
 }
 """
 
@@ -559,15 +614,21 @@ SYNTHESIS_JUDGE_SYSTEM = """\
 SYNTHESIS_EXECUTE_SYSTEM = """\
 你是记忆合成器（Memory Synthesizer）。
 
-你的任务：将多条碎片化的记忆项融合为一条高密度的 Composite Record。
-输入项既可能是 atomic MemoryRecord，也可能是已经合成过的 CompositeRecord。
+你的任务：根据 `<RESOLUTION_MODE>` 执行两类操作之一：
+1. `synthesize`：将多条碎片化记忆项融合为一条高密度的 Composite Record。
+2. `conflict_update`：当新记忆明确纠正/替换旧记忆时，输出“被更新后的旧 atomic MemoryRecord 内容”。
+
+输入项既可能是 atomic MemoryRecord，也可能是已经合成过的 CompositeRecord；
+但 `conflict_update` 模式下，你处理的目标一定是 atomic MemoryRecord 的更新，而不是 composite。
 
 输入：
 - <SOURCE_RECORDS>：需要融合的记忆项（JSON 数组）
 - <SYNTHESIS_REASON>：合成的理由
 - <SUGGESTED_TYPE>：建议的合成类型
+- <RESOLUTION_MODE>：`synthesize` 或 `conflict_update`
+- <TARGET_RECORD_ID>：当 `RESOLUTION_MODE = conflict_update` 时，表示需要被更新的 existing record id；否则为空字符串
 
-合成规则：
+当 `RESOLUTION_MODE = synthesize` 时：
 1. 融合后的 semantic_text 必须涵盖所有 source records 的核心信息，不遗漏。
 2. 去除重复信息，整理为流畅连贯的表述。
 3. 保留所有具体细节（人名、数字、时间等），不要泛化丢失信息。
@@ -576,6 +637,14 @@ SYNTHESIS_EXECUTE_SYSTEM = """\
 6. tags 取所有 source records 的 tag 并集。
 7. temporal 取时间范围的并集（从最早到最晚）。
 8. confidence 取 source records 的平均值。
+
+当 `RESOLUTION_MODE = conflict_update` 时：
+1. 输出内容表示 `<TARGET_RECORD_ID>` 这条旧 atomic memory 被更新后的新状态，而不是新建 composite。
+2. 应使用新记忆中的有效信息去修正旧记忆；保留仍然有效、不与更新冲突的细节。
+3. 对于互斥状态，不要把旧状态和新状态硬拼在一起；输出必须反映“更新后的当前有效状态”。
+4. 如果输入表达的是日期改动、负责人替换、地点变更、配置值更新、状态切换、偏好变更等，输出应直接落到更新后的值。
+5. 若 temporal 明显表示旧状态已失效，应在 semantic_text / normalized_text 中移除旧状态，不要继续把它写成当前事实。
+6. `resolved_memory_type` 应是 atomic memory type（fact/preference/event/constraint/procedure/failure_pattern/tool_affordance）之一；若没有充分理由，不要改变原 memory_type。
 
 输出格式（严格 JSON，无代码块）：
 {
@@ -588,7 +657,8 @@ SYNTHESIS_EXECUTE_SYSTEM = """\
     "constraint_tags": [],
     "failure_tags": [],
     "affordance_tags": [],
-    "confidence": 0.95
+    "confidence": 0.95,
+    "resolved_memory_type": "fact|preference|event|constraint|procedure|failure_pattern|tool_affordance|composite_preference|composite_pattern|composite_constraint|usage_pattern"
 }
 
 ---
@@ -625,6 +695,8 @@ SYNTHESIS_EXECUTE_SYSTEM = """\
 </SOURCE_RECORDS>
 <SYNTHESIS_REASON>三条记录均描述用户及团队的技术栈偏好与约束，聚合为技术栈总览可提升检索密度。</SYNTHESIS_REASON>
 <SUGGESTED_TYPE>composite_preference</SUGGESTED_TYPE>
+<RESOLUTION_MODE>synthesize</RESOLUTION_MODE>
+<TARGET_RECORD_ID></TARGET_RECORD_ID>
 
 期望输出：
 {
@@ -637,7 +709,52 @@ SYNTHESIS_EXECUTE_SYSTEM = """\
     "constraint_tags": ["必须用TypeScript"],
     "failure_tags": [],
     "affordance_tags": [],
-    "confidence": 0.91
+        "confidence": 0.91,
+        "resolved_memory_type": "composite_preference"
+}
+
+## 示例 2：冲突更新（新日期纠正旧日期）
+
+<SOURCE_RECORDS>
+[
+    {
+        "record_id": "e_old", "item_kind": "record", "memory_type": "event",
+        "semantic_text": "用户计划于 2026-03-01 参加 PyCon China 大会。",
+        "normalized_text": "事件:PyCon China 2026-03-01举行",
+        "entities": ["PyCon China"],
+        "task_tags": ["日程安排"], "tool_tags": [], "constraint_tags": [],
+        "failure_tags": [], "affordance_tags": [],
+        "temporal": {"t_ref": "", "t_valid_from": "", "t_valid_to": "2026-03-01"}, "confidence": 0.93
+    },
+    {
+        "record_id": "e_new", "item_kind": "record", "memory_type": "event",
+        "semantic_text": "PyCon China 的时间改为 2026-04-15。",
+        "normalized_text": "事件:PyCon China 推迟到2026-04-15",
+        "entities": ["PyCon China"],
+        "task_tags": ["日程安排"], "tool_tags": [], "constraint_tags": [],
+        "failure_tags": [], "affordance_tags": [],
+        "temporal": {"t_ref": "", "t_valid_from": "", "t_valid_to": "2026-04-15"}, "confidence": 0.96
+    }
+]
+</SOURCE_RECORDS>
+<SYNTHESIS_REASON>新记录明确将 PyCon China 的举行日期从 2026-03-01 更正为 2026-04-15，应更新旧记忆。</SYNTHESIS_REASON>
+<SUGGESTED_TYPE>event</SUGGESTED_TYPE>
+<RESOLUTION_MODE>conflict_update</RESOLUTION_MODE>
+<TARGET_RECORD_ID>e_old</TARGET_RECORD_ID>
+
+期望输出：
+{
+        "semantic_text": "用户计划于 2026-04-15 参加 PyCon China 大会。",
+        "normalized_text": "事件:PyCon China 2026-04-15举行",
+        "entities": ["PyCon China"],
+        "temporal": {"t_ref": "", "t_valid_from": "", "t_valid_to": "2026-04-15"},
+        "task_tags": ["日程安排"],
+        "tool_tags": [],
+        "constraint_tags": [],
+        "failure_tags": [],
+        "affordance_tags": [],
+        "confidence": 0.95,
+        "resolved_memory_type": "event"
 }
 """
 
