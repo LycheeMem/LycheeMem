@@ -77,7 +77,8 @@ LycheeMem 将记忆组织为三个相辅相成的存储库：
         <p>(类型化行动存储)</p>
         <ul>
           <li>7 类 MemoryRecord</li>
-          <li>Record 融合</li>
+          <li>冲突感知的 Record 融合</li>
+          <li>层级记忆树</li>
           <li>action-grounded 检索规划</li>
           <li>usage feedback 闭环 + RL-ready 使用统计</li>
         </ul>
@@ -122,7 +123,7 @@ LycheeMem 将记忆组织为三个相辅相成的存储库：
 
 每个 `MemoryRecord` 除语义文本外，还携带**行动导向元数据**（`tool_tags`、`constraint_tags`、`failure_tags`、`affordance_tags`），以及**使用统计字段**（`retrieval_count`、`action_success_count` 等），为后续强化学习阶段储备信号。检索日志还会额外保存 `retrieval_plan`、`action_state`、回答摘要以及后续用户反馈，从而在不训练的前提下形成轻量的 action outcome 闭环。
 
-多个相关 `MemoryRecord` 可由 **Record Fusion Engine** 在线融合为高密度 `CompositeRecord`，融合后的条目在检索排序中优先于碎片记录。
+多个相关 `MemoryRecord` 可由 **Record Fusion Engine** 在线融合为高密度 `CompositeRecord`。融合后的节点会持久化直接 `child_composite_ids`，因此长期语义记忆不再只是扁平摘要集合，而是组织成一棵**层级记忆树**。
 
 #### 四模块流水线
 
@@ -136,13 +137,15 @@ LycheeMem 将记忆组织为三个相辅相成的存储库：
 
 `record_id = SHA256(normalized_text)`，天然幂等，重复内容自动去重。
 
-##### 模块二：Record Fusion（记录融合）
+##### 模块二：记录融合、冲突更新与层级整合
 
 每次固化后在线触发：
 
-1. FTS 检测与新 record 文本相似的已有条目（候选池）。
-2. LLM 判断候选池是否值得合并（`synthesis_judge`）。
-3. 若判断为是，LLM 执行合并并生成 `CompositeRecord`，写入 SQLite + LanceDB；原始 record 保留不删除。
+1. 先通过 FTS / 向量召回，为新 record 收集相关的**已有 atomic record** 候选池。
+2. 复用原有 synthesis judge prompt，让 LLM 判断当前候选集是应该生成新的 `CompositeRecord`，还是对某条已有 atomic record 执行 `conflict_update`。
+3. 若判定为 `conflict_update`，则原有 anchor record 原地更新，冲突的新 incoming records 被软过期，同时覆盖相关 source records 的 composite 会被失效。
+4. 若判定为 synthesis，则写入新的 `CompositeRecord` 到 SQLite + LanceDB。
+5. 随后继续执行 `record -> composite` 与 `composite -> composite` 的多轮层级融合，并持久化 `child_composite_ids`，让记忆树持续向上生长。
 
 ##### 模块三：Action-Grounded Retrieval Planning（action-grounded 检索规划）
 
@@ -155,6 +158,7 @@ LycheeMem 将记忆组织为三个相辅相成的存储库：
 - `required_constraints`：必须满足的约束条件
 - `required_affordances`：检索结果应提供的能力/可供性
 - `missing_slots`：缺失的参数/slot
+- `tree_retrieval_mode` / `tree_expansion_depth` / `include_leaf_records`：检索是停留在高层 composite（`root_only`），还是继续下钻到子 composite / 直接叶子 record（`balanced` / `descend`）
 
 `ActionState` 可以携带 `current_subgoal`、`tentative_action`、`known_constraints`、`available_tools`、`failure_signal`、recent-context 摘要等字段。planner 会把这些状态与 LLM 生成的计划合并，因此检索不再只由 query 决定，而是由当前决策状态共同决定。
 
@@ -167,9 +171,11 @@ LycheeMem 将记忆组织为三个相辅相成的存储库：
 5. **时间通道** —— 按 `SearchPlan.temporal_filter` 过滤时间区间内的记忆
 6. **slot 补全通道** —— 当 `missing_slots` 非空时，额外触发基于 slot hints 的 FTS / tag 召回，用于寻找能补齐缺失参数的记忆
 
+在基础召回之后，检索还可以沿着**记忆树**继续扩展：`root_only` 只保留高层 composite 摘要，`balanced` 在 tree hints 命中时下钻一层，而 `descend` 会在行动型查询中继续取子 composite 与直接叶子 record，以补齐更细粒度的执行细节。
+
 ##### 模块四：Multi-Dimensional Scorer（多维度打分）
 
-全通道候选汇聚后去重，由 `MemoryScorer` 按加权线性公式综合评分并排序：
+全通道候选汇聚后去重，由 `MemoryScorer` 按加权线性公式综合评分并排序。最终 top-k 选择是 **composite-first** 的：优先保留覆盖面更大的父 composite，折叠被覆盖的 child record，并抑制近重复碎片。
 
 $$\text{Score} = \alpha \cdot S_\text{sem} + \beta \cdot S_\text{action} + \kappa \cdot S_\text{slot} + \gamma \cdot S_\text{temporal} + \delta \cdot S_\text{recency} + \eta \cdot S_\text{evidence} - \lambda \cdot C_\text{token}$$
 
@@ -240,13 +246,13 @@ $$\text{Score} = \alpha \cdot S_\text{sem} + \beta \cdot S_\text{action} + \kapp
 
 ### 阶段 2 —— SearchCoordinator
 
-`SearchCoordinator` 会先用压缩摘要 + 最近原始轮次构造 `recent_context`，再从当前 query、约束、最近失败信号、token 预算和最近工具使用中推导 `ActionState`。`ActionAwareSearchPlanner` 基于这些状态生成包含 `mode`、`semantic_queries`、`pragmatic_queries`、`tool_hints`、`required_affordances`、`missing_slots` 等字段的搜索计划。随后通过多通道召回（FTS 全文、语义向量、归一化向量、标签/affordance 过滤、时间过滤、slot 补全）在 SQLite + LanceDB 中取出候选，经 Scorer 排序后，合并为 `background_context` 供下游使用。技能检索现在也是 mode-aware 的：只在 `answer / action / mixed` 模式下按需启用 HyDE 查询技能库。
+`SearchCoordinator` 会先用压缩摘要 + 最近原始轮次构造 `recent_context`，再从当前 query、约束、最近失败信号、token 预算和最近工具使用中推导 `ActionState`。`ActionAwareSearchPlanner` 基于这些状态生成包含 `mode`、`semantic_queries`、`pragmatic_queries`、`tool_hints`、`required_affordances`、`missing_slots`、树遍历策略等字段的搜索计划。随后通过多通道召回（FTS 全文、语义向量、归一化向量、标签/affordance 过滤、时间过滤、slot 补全，以及按需的树下钻）在 SQLite + LanceDB 中取出候选。这个阶段输出的是原始语义片段、技能结果、检索 provenance，以及专门用于新颖性检查的 `novelty_retrieved_context`（**pre-synthesis** 的原始语义片段）；它本身**不会**构造最终的 `background_context`。技能检索现在也是 mode-aware 的：只在 `answer / action / mixed` 模式下按需启用 HyDE 查询技能库。
 
 当新一轮用户输入到来时，`SearchCoordinator` 还会尝试把它解释为上一轮 action/mixed 检索的轻量 outcome feedback，用于将之前的记忆使用标记为 success / fail / correction。
 
 ### 阶段 3 —— SynthesizerAgent
 
-作为 **LLM-as-Judge**：对每条检索的记忆片段进行 0-1 绝对相关度评分，丢弃低于阈值（默认 0.6）的片段，将存活者融合成单一密集的 `background_context` 字符串。它还识别能直接指导最终回答的 `skill_reuse_plan` 条目。此阶段输出 `provenance` —— 人工可读的引文列表，包含每条保留记忆的评分拆解与来源引用。
+作为 **LLM-as-Judge**：对每条检索的记忆片段进行 0-1 绝对相关度评分，丢弃低于阈值（默认 0.6）的片段，将存活者融合成单一密集的 `background_context` 字符串。它还识别能直接指导最终回答的 `skill_reuse_plan` 条目。最终用于回答阶段的融合上下文是在这里生成的。此阶段输出 `provenance` —— 人工可读的引文列表，包含每条保留记忆的评分拆解与来源引用。
 
 ### 阶段 4 —— ReasoningAgent
 
@@ -257,7 +263,7 @@ $$\text{Score} = \alpha \cdot S_\text{sem} + \beta \cdot S_\text{action} + \kapp
 在 `ReasoningAgent` 完成后立即触发，在线程池中运行且**不阻塞响应**。它执行：
 
 1. **新颖性检查** —— LLM 判断对话是否引入值得持久化的新信息。跳过纯检索交互的固化。
-2. **Compact 编码固化** —— 调用 `CompactSemanticEngine.ingest_conversation()`，经单次编码（类型化提取 → 指代消解 → 行动元数据标注）将对话内容提取为 `MemoryRecord` 并写入 SQLite + LanceDB；随后触发 Record Fusion，融合相关条目生成 `CompositeRecord`。
+2. **Compact 编码固化** —— 调用 `CompactSemanticEngine.ingest_conversation()`，经单次编码（类型化提取 → 指代消解 → 行动元数据标注）将对话内容提取为 `MemoryRecord` 并写入 SQLite + LanceDB；随后触发带冲突处理的 Record Fusion。这里的新颖性检查使用的是 search 阶段的 `novelty_retrieved_context`（原始语义片段），而不是回答期的 `background_context`，从而避免 query-conditioned 融合文本误伤真正的新记忆。
 3. **技能提取** —— 从对话中识别成功的工具使用模式，提取技能条目并添加到技能库；与 Compact 固化并行执行（ThreadPoolExecutor）。
 
 ---
@@ -292,10 +298,8 @@ LLM_API_BASE=                     # 可选，用于代理
 # 嵌入模型
 EMBEDDING_MODEL=openai/text-embedding-3-small
 EMBEDDING_DIM=1536
-
-# 语义记忆存储路径（可选，默认 data/ 目录）
-COMPACT_MEMORY_DB_PATH=data/compact_memory.db
-COMPACT_VECTOR_DB_PATH=data/compact_vector
+EMBEDDING_API_KEY=                # 可选
+EMBEDDING_API_BASE=               # 可选
 ```
 
 > **支持的 LLM 供应商**（经 [litellm](https://github.com/BerriAI/litellm)）：  
@@ -321,7 +325,7 @@ API 服务于 `http://localhost:8000`。交互式文档于 `/docs`。
 
 ## 🎨 前端演示
 
-项目根目录下的 `web-demo/` 包含一个 React + Vite 前端。它提供对话界面加上语义记忆、技能库和工作记忆状态的实时视图。
+项目根目录下的 `web-demo/` 包含一个 React + Vite 前端。它提供对话界面加上**语义记忆树**、技能库和工作记忆状态的实时视图。
 
 ```bash
 cd web-demo
@@ -481,7 +485,7 @@ curl -X POST http://localhost:8000/mcp \
 
 ### `POST /memory/search` —— 统一记忆检索
 
-在一次调用中同时查询语义记忆通道和技能库。
+在一次调用中同时查询语义记忆通道和技能库。新的接入方式应优先使用 `semantic_results`；`graph_results` 仅作为兼容别名保留。响应里还会返回 `novelty_retrieved_context`，用于后续 `/memory/consolidate` 的新颖性检查。
 
 ```json
 // 请求
@@ -500,20 +504,21 @@ curl -X POST http://localhost:8000/mcp \
       "anchor": {
         "node_id": "compact_context",
         "name": "CompactSemanticMemory",
-        "label": "Context",
+        "label": "SemanticContext",
         "score": 1.0
       },
       "constructed_context": "...",
-      "provenance": [ { "id": "...", "source": "semantic_memory", "relevance": 0.91, ... } ]
+      "provenance": [ { "record_id": "...", "source": "record", "semantic_source_type": "record", "score": 0.91, ... } ]
     }
   ],
   "semantic_results": [
     {
       "anchor": { "node_id": "compact_context", "name": "CompactSemanticMemory", "label": "SemanticContext", "score": 1.0 },
       "constructed_context": "...",
-      "provenance": [ { "record_id": "...", "source": "record", "score": 0.91, ... } ]
+      "provenance": [ { "record_id": "...", "source": "record", "semantic_source_type": "record", "score": 0.91, ... } ]
     }
   ],
+  "novelty_retrieved_context": "[1] (procedure, source=record) 使用 pg_dump 配合 cron ...",
   "skill_results": [ { "id": "...", "intent": "pg_dump 备份到 S3", "score": 0.87, ... } ],
   "total": 6
 }
@@ -523,7 +528,7 @@ curl -X POST http://localhost:8000/mcp \
 
 ### `POST /memory/smart-search` —— 一体化检索
 
-在一个 API 调用中完成 search，并可按需自动执行 synthesize。`mode=compact` 是默认推荐集成方式，适合直接拿到简洁的 `background_context`。
+在一个 API 调用中完成 search，并可按需自动执行 synthesize。`mode=compact` 是默认推荐集成方式，适合直接拿到简洁的 `background_context`。即使在 compact 模式下，响应仍会返回 `novelty_retrieved_context`，便于宿主在固化时使用“原始召回记忆”而不是回答期融合上下文。
 
 ```json
 // 请求
@@ -542,6 +547,7 @@ curl -X POST http://localhost:8000/mcp \
   "background_context": "用户通常使用 pg_dump 配合 cron 任务...",
   "skill_reuse_plan": [ { "skill_id": "...", "intent": "...", "doc_markdown": "..." } ],
   "provenance": [ { "record_id": "...", "source": "record", "score": 0.91, ... } ],
+  "novelty_retrieved_context": "[1] (procedure, source=record) 使用 pg_dump 配合 cron ...",
   "kept_count": 4,
   "dropped_count": 2,
   "total": 6
@@ -558,7 +564,8 @@ curl -X POST http://localhost:8000/mcp \
 // 请求
 {
   "user_query": "我用什么工具做数据库备份",
-  "graph_results": [...],   // 来自 /memory/search
+  "semantic_results": [...], // 优先使用 /memory/search 的该字段
+  "graph_results": [...],    // 兼容别名也可接受
   "skill_results": [...]
 }
 
@@ -566,7 +573,7 @@ curl -X POST http://localhost:8000/mcp \
 {
   "background_context": "用户通常使用 pg_dump 配合 cron 任务...",
   "skill_reuse_plan": [ { "skill_id": "...", "intent": "...", "doc_markdown": "..." } ],
-  "provenance": [ { "id": "...", "source": "semantic_memory", "relevance": 0.91, ... } ],
+  "provenance": [ { "record_id": "...", "source": "semantic", "semantic_source_type": "record", "score": 0.91, ... } ],
   "kept_count": 4,
   "dropped_count": 2
 }
@@ -624,11 +631,13 @@ curl -X POST http://localhost:8000/mcp \
 
 手动为会话触发记忆固化。这是当前的主固化接口，支持后台异步和同步等待两种模式。
 
+`retrieved_context` 建议直接使用 `/memory/search` 或 `/memory/smart-search` 返回的 `novelty_retrieved_context`，也就是 **search 阶段的原始语义记忆片段**，而不是 `/memory/synthesize` 的 `background_context`。
+
 ```json
 // 请求
 {
   "session_id": "my-session",
-  "retrieved_context": "",
+  "retrieved_context": "[1] (procedure, source=record) 使用 pg_dump 配合 cron ...",
   "background": true
 }
 
@@ -642,6 +651,12 @@ curl -X POST http://localhost:8000/mcp \
 ```
 
 兼容旧路径：`POST /memory/consolidate/{session_id}`。
+
+---
+
+### `GET /memory/graph` —— 语义记忆树
+
+返回当前语义记忆的层级结构。默认 `mode=cleaned` 会输出 `tree_roots` 和直接树边，供前端“记忆树”视图使用；`mode=debug` 则导出更底层的扁平关系，便于排查。
 
 ---
 
