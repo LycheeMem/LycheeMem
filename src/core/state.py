@@ -28,6 +28,7 @@ class PipelineState(TypedDict, total=False):
     # ─── 检索协调器输出 ───
     retrieved_graph_memories: list[dict[str, Any]]
     retrieved_skills: list[dict[str, Any]]
+    novelty_retrieved_context: str  # search 阶段原始语义记忆片段，用于 novelty check
     retrieval_plan: dict[str, Any]
     action_state: dict[str, Any]
     search_mode: str

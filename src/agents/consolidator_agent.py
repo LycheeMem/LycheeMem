@@ -156,8 +156,9 @@ class ConsolidatorAgent(BaseAgent):
         Args:
             turns: 完整的对话轮次列表。
             session_id: 会话 ID。
-            retrieved_context: Pipeline 检索阶段合成的已有记忆上下文，
-                用于与本轮对话比对，判断是否有新信息需要固化。
+            retrieved_context: search 阶段召回的原始已有语义记忆片段，
+                用于与本轮对话比对，判断是否有新信息需要固化；
+                应优先传 pre-synthesis raw context，而不是回答期的 background_context。
 
         Returns:
             dict 包含：entities_added (int), skills_added (int), facts_added (int)

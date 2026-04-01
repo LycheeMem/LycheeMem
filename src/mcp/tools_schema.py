@@ -168,7 +168,7 @@ TOOLS_SCHEMA = [
                 "retrieved_context": {
                     "type": "string",
                     "default": "",
-                    "description": "background_context from the current synthesize step, used for novelty checks.",
+                    "description": "pre-synthesis raw semantic memory context from the current search step, used for novelty checks; do not pass synthesized background_context here.",
                 },
                 "background": {
                     "type": "boolean",

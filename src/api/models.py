@@ -286,6 +286,7 @@ class MemorySearchResponse(BaseModel):
     graph_results: list[dict[str, Any]]
     semantic_results: list[dict[str, Any]]
     skill_results: list[dict[str, Any]]
+    novelty_retrieved_context: str = ""
     total: int
 
 
@@ -330,6 +331,7 @@ class MemorySmartSearchResponse(BaseModel):
     graph_results: list[dict[str, Any]]
     semantic_results: list[dict[str, Any]]
     skill_results: list[dict[str, Any]]
+    novelty_retrieved_context: str = ""
     total: int
     synthesized: bool = False
     background_context: str = ""
@@ -394,7 +396,8 @@ class MemoryConsolidateRequest(BaseModel):
     """记忆固化请求：对当前会话进行记忆萃取，写入图谱与技能库。
 
     传入 retrieved_context 有助于新颖性判断（避免重复固化已有记忆）。
-    retrieved_context 可取自 /memory/synthesize 的 background_context。
+    retrieved_context 应优先取自 search 阶段召回的原始语义记忆片段（pre-synthesis raw context），
+    而不是 /memory/synthesize 的 background_context。
 
     background=True（默认）：在后台线程中异步执行固化，立即返回 status="started"，
         与 Pipeline 内部行为一致，适合生产调用（固化耗时可能超过 60 秒）。
@@ -402,7 +405,7 @@ class MemoryConsolidateRequest(BaseModel):
     """
 
     session_id: str = Field(..., min_length=1, max_length=128)
-    # 本轮检索合成的已有记忆上下文，用于判断对话是否引入了新信息
+    # search 阶段召回的原始已有语义记忆片段，用于判断对话是否引入了新信息
     retrieved_context: str = ""
     # 是否在后台线程中异步执行（默认 True，避免 HTTP 超时）
     background: bool = True

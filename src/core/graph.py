@@ -167,9 +167,13 @@ class LycheePipeline:
             wm_token_usage=state.get("wm_token_usage", 0),
             tool_calls=state.get("tool_calls", []),
         )
+        retrieved_graph_memories = result["retrieved_graph_memories"]
         return {
-            "retrieved_graph_memories": result["retrieved_graph_memories"],
+            "retrieved_graph_memories": retrieved_graph_memories,
             "retrieved_skills": result["retrieved_skills"],
+            "novelty_retrieved_context": self._build_novelty_retrieved_context(
+                retrieved_graph_memories,
+            ),
             "retrieval_plan": result.get("retrieval_plan", {}),
             "action_state": result.get("action_state", {}),
             "search_mode": result.get("search_mode", "answer"),
@@ -246,6 +250,77 @@ class LycheePipeline:
 
         return g.compile()
 
+    @staticmethod
+    def _build_novelty_retrieved_context(
+        retrieved_graph_memories: list[dict[str, Any]] | None,
+    ) -> str:
+        """将 search 阶段召回的原始语义记忆片段格式化为 novelty check 上下文。
+
+        这里刻意使用 pre-synthesis 的 provenance/raw fragments，而不是回答阶段的
+        background_context，避免 LLM 融合改写后的文本与当前对话表述过度重叠，误判“无新信息”。
+        """
+        if not retrieved_graph_memories:
+            return ""
+
+        parts: list[str] = []
+        seen_keys: set[str] = set()
+        total_chars = 0
+        max_items = 16
+        max_chars = 6000
+
+        def _append_part(part: str, *, dedupe_key: str) -> None:
+            nonlocal total_chars
+            text = str(part or "").strip()
+            if not text or dedupe_key in seen_keys:
+                return
+            candidate_size = len(text) + (2 if parts else 0)
+            if len(parts) >= max_items or total_chars + candidate_size > max_chars:
+                return
+            seen_keys.add(dedupe_key)
+            parts.append(text)
+            total_chars += candidate_size
+
+        for wrapper in retrieved_graph_memories:
+            provenance = wrapper.get("provenance")
+            if isinstance(provenance, list) and provenance:
+                for idx, item in enumerate(provenance, 1):
+                    if not isinstance(item, dict):
+                        continue
+                    semantic_text = str(
+                        item.get("semantic_text")
+                        or item.get("summary")
+                        or item.get("fact_text")
+                        or ""
+                    ).strip()
+                    if not semantic_text:
+                        continue
+                    entities = [
+                        str(entity or "").strip()
+                        for entity in (item.get("entities") or [])
+                        if str(entity or "").strip()
+                    ]
+                    header = f"[{idx}] ({item.get('memory_type') or 'unknown'}, source={item.get('source') or 'semantic'})"
+                    if entities:
+                        header += f" entities=[{', '.join(entities[:8])}]"
+                    dedupe_key = str(
+                        item.get("record_id")
+                        or item.get("fact_id")
+                        or item.get("skill_id")
+                        or semantic_text
+                    )
+                    _append_part(f"{header}\n{semantic_text}", dedupe_key=dedupe_key)
+
+            if parts:
+                continue
+
+            constructed = str(wrapper.get("constructed_context") or "").strip()
+            if constructed:
+                anchor = wrapper.get("anchor", {}) or {}
+                dedupe_key = str(anchor.get("node_id") or constructed)
+                _append_part(constructed, dedupe_key=dedupe_key)
+
+        return "\n\n".join(parts)
+
     # ──────────────────────────────────────
     # Public API
     # ──────────────────────────────────────
@@ -283,7 +358,7 @@ class LycheePipeline:
             job_id = self._begin_consolidation(session_id, user_id=user_id)
             self._trigger_consolidation_bg(
                 session_id,
-                retrieved_context=str(result.get("background_context") or ""),
+                retrieved_context=str(result.get("novelty_retrieved_context") or ""),
                 user_id=user_id,
                 job_id=job_id,
             )
@@ -305,7 +380,7 @@ class LycheePipeline:
             asyncio.create_task(
                 self._aconsolidate(
                     session_id,
-                    retrieved_context=str(result.get("background_context") or ""),
+                    retrieved_context=str(result.get("novelty_retrieved_context") or ""),
                     user_id=user_id,
                     job_id=job_id,
                 )
@@ -397,7 +472,7 @@ class LycheePipeline:
                 asyncio.create_task(
                     self._aconsolidate(
                         session_id,
-                        retrieved_context=str(state.get("background_context") or ""),
+                        retrieved_context=str(state.get("novelty_retrieved_context") or ""),
                         user_id=user_id,
                         job_id=job_id,
                     )
@@ -417,8 +492,9 @@ class LycheePipeline:
 
         Args:
             session_id: 会话 ID。
-            retrieved_context: Pipeline 检索阶段合成的已有记忆上下文，
-                用于新颖性判断，避免重复固化纯查询型对话。
+            retrieved_context: search 阶段召回的原始已有语义记忆片段，
+                用于新颖性判断；应优先传 pre-synthesis raw context，
+                而不是回答期的 background_context。
 
         Returns:
             dict 包含：entities_added, skills_added

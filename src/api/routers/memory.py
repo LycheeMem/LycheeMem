@@ -312,11 +312,17 @@ def run_memory_search(
             graph_total += 1
 
     total = graph_total + len(skill_results)
+    novelty_retrieved_context = ""
+    build_novelty_context = getattr(pipeline, "_build_novelty_retrieved_context", None)
+    if callable(build_novelty_context):
+        novelty_retrieved_context = str(build_novelty_context(semantic_results) or "")
+
     return MemorySearchResponse(
         query=req.query,
         graph_results=graph_results,
         semantic_results=semantic_results,
         skill_results=skill_results,
+        novelty_retrieved_context=novelty_retrieved_context,
         total=total,
     )
 
@@ -380,6 +386,7 @@ def run_memory_smart_search(
             graph_results=search_result.graph_results,
             semantic_results=search_result.semantic_results,
             skill_results=search_result.skill_results,
+            novelty_retrieved_context=search_result.novelty_retrieved_context,
             total=search_result.total,
             synthesized=False,
         )
@@ -391,6 +398,7 @@ def run_memory_smart_search(
             graph_results=search_result.graph_results,
             semantic_results=search_result.semantic_results,
             skill_results=search_result.skill_results,
+            novelty_retrieved_context=search_result.novelty_retrieved_context,
             total=search_result.total,
             synthesized=False,
         )
@@ -411,6 +419,7 @@ def run_memory_smart_search(
             graph_results=[],
             semantic_results=[],
             skill_results=[],
+            novelty_retrieved_context=search_result.novelty_retrieved_context,
             total=search_result.total,
             synthesized=True,
             background_context=synth_result.background_context,
@@ -426,6 +435,7 @@ def run_memory_smart_search(
         graph_results=search_result.graph_results,
         semantic_results=search_result.semantic_results,
         skill_results=search_result.skill_results,
+        novelty_retrieved_context=search_result.novelty_retrieved_context,
         total=search_result.total,
         synthesized=True,
         background_context=synth_result.background_context,
@@ -646,8 +656,9 @@ async def memory_consolidate(
 ):
     """对当前会话进行记忆萃取固化，提取实体/事实写入图谱，提取技能写入技能库。
 
-    retrieved_context 建议传入本轮 /memory/synthesize 的 background_context，
-    用于新颖性判断（避免将已有记忆重复固化）。
+    retrieved_context 建议传入 search 阶段召回的原始语义记忆片段（pre-synthesis raw context），
+    而不是 /memory/synthesize 的 background_context；
+    这样 novelty check 判断的是“原始已知记忆 vs 本轮对话”，而不是“回答期融合改写后的上下文 vs 本轮对话”。
 
     background=True（默认）：在后台线程中异步执行，立即返回 status="started"；
         与 Pipeline 内部行为一致，适合生产调用（固化耗时通常超过 60 秒）。
