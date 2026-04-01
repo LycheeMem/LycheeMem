@@ -100,6 +100,7 @@ class SQLiteSemanticStore:
                     semantic_text    TEXT NOT NULL,
                     normalized_text  TEXT NOT NULL,
                     source_record_ids TEXT NOT NULL DEFAULT '[]',
+                    child_composite_ids TEXT NOT NULL DEFAULT '[]',
                     synthesis_reason TEXT NOT NULL DEFAULT '',
                     entities         TEXT NOT NULL DEFAULT '[]',
                     temporal         TEXT NOT NULL DEFAULT '{}',
@@ -151,6 +152,12 @@ class SQLiteSemanticStore:
 
             try:
                 c.execute("ALTER TABLE usage_logs ADD COLUMN action_state TEXT NOT NULL DEFAULT '{}' ")
+                c.commit()
+            except sqlite3.OperationalError:
+                pass  # 列已存在
+
+            try:
+                c.execute("ALTER TABLE composite_records ADD COLUMN child_composite_ids TEXT NOT NULL DEFAULT '[]'")
                 c.commit()
             except sqlite3.OperationalError:
                 pass  # 列已存在
@@ -564,18 +571,19 @@ class SQLiteSemanticStore:
                 """
                 INSERT INTO composite_records (
                     composite_id, memory_type, semantic_text, normalized_text,
-                    source_record_ids, synthesis_reason,
+                    source_record_ids, child_composite_ids, synthesis_reason,
                     entities, temporal, task_tags, tool_tags,
                     constraint_tags, failure_tags, affordance_tags,
                     confidence, user_id, created_at, updated_at,
                     retrieval_count, retrieval_hit_count,
                     action_success_count, action_fail_count, last_retrieved_at
-                ) VALUES (?, ?, ?, ?,  ?, ?,  ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?,  ?, ?,  ?, ?, ?)
+                ) VALUES (?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?,  ?, ?,  ?, ?, ?)
                 ON CONFLICT(composite_id) DO UPDATE SET
                     memory_type = excluded.memory_type,
                     semantic_text = excluded.semantic_text,
                     normalized_text = excluded.normalized_text,
                     source_record_ids = excluded.source_record_ids,
+                    child_composite_ids = excluded.child_composite_ids,
                     synthesis_reason = excluded.synthesis_reason,
                     entities = excluded.entities,
                     temporal = excluded.temporal,
@@ -590,7 +598,9 @@ class SQLiteSemanticStore:
                 (
                     composite.composite_id, composite.memory_type,
                     composite.semantic_text, composite.normalized_text,
-                    _json_dumps(composite.source_record_ids), composite.synthesis_reason,
+                    _json_dumps(composite.source_record_ids),
+                    _json_dumps(composite.child_composite_ids),
+                    composite.synthesis_reason,
                     _json_dumps(composite.entities), _json_dumps(composite.temporal),
                     _json_dumps(composite.task_tags), _json_dumps(composite.tool_tags),
                     _json_dumps(composite.constraint_tags), _json_dumps(composite.failure_tags),
@@ -636,6 +646,16 @@ class SQLiteSemanticStore:
         if row is None:
             return None
         return self._row_to_synth(row)
+
+    def list_synthesized(self, *, user_id: str = "") -> list[CompositeRecord]:
+        """获取指定用户的全部 CompositeRecord。"""
+        sql = "SELECT * FROM composite_records"
+        params: list[Any] = []
+        if user_id:
+            sql += " WHERE user_id = ?"
+            params.append(user_id)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [self._row_to_synth(r) for r in rows]
 
     # ──────────────────────────────────────
     # 重复检测
@@ -880,6 +900,16 @@ class SQLiteSemanticStore:
             "SELECT COUNT(*) FROM memory_records WHERE expired = 0"
         ).fetchone()[0]
 
+    def count_composites(self, *, user_id: str = "") -> int:
+        if user_id:
+            return self._conn.execute(
+                "SELECT COUNT(*) FROM composite_records WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()[0]
+        return self._conn.execute(
+            "SELECT COUNT(*) FROM composite_records"
+        ).fetchone()[0]
+
     # ──────────────────────────────────────
     # 内部工具
     # ──────────────────────────────────────
@@ -917,7 +947,7 @@ class SQLiteSemanticStore:
         for key in (
             "entities", "temporal", "task_tags", "tool_tags",
             "constraint_tags", "failure_tags", "affordance_tags",
-            "evidence_turn_range", "source_record_ids",
+            "evidence_turn_range", "source_record_ids", "child_composite_ids",
             "retrieval_plan", "retrieved_record_ids", "kept_record_ids",
         ):
             if key in d and isinstance(d[key], str):
@@ -966,6 +996,7 @@ class SQLiteSemanticStore:
             semantic_text=row["semantic_text"],
             normalized_text=row["normalized_text"],
             source_record_ids=_json_loads(row["source_record_ids"]),
+            child_composite_ids=_json_loads(row["child_composite_ids"]),
             synthesis_reason=row["synthesis_reason"],
             entities=_json_loads(row["entities"]),
             temporal=_json_loads_dict(row["temporal"]),

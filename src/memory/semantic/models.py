@@ -111,6 +111,7 @@ class CompositeRecord:
 
     # ── 聚合来源 ──
     source_record_ids: list[str] = field(default_factory=list)
+    child_composite_ids: list[str] = field(default_factory=list)  # 直接子 composite，形成层级树
     synthesis_reason: str = ""  # LLM 给出的聚合理由
 
     # ── 继承自 source records 的聚合元数据 ──
@@ -172,6 +173,9 @@ class SearchPlan:
     required_constraints: list[str] = field(default_factory=list)  # 当前 action 缺的约束
     required_affordances: list[str] = field(default_factory=list)  # 当前 action 所需的能力/可供性
     missing_slots: list[str] = field(default_factory=list)  # 当前 action 缺的参数/slot
+    tree_retrieval_mode: str = "balanced"  # "root_only" | "balanced" | "descend"
+    tree_expansion_depth: int = 1  # 树下钻深度；0=不下钻
+    include_leaf_records: bool = False  # 是否将叶子 record 纳入最终候选池
     depth: int = 5  # 建议检索深度 (top_k)
     reasoning: str = ""  # 规划理由
 

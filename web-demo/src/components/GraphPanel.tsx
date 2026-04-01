@@ -1,38 +1,138 @@
-import { BorderOuterOutlined, LinkOutlined, ReloadOutlined } from "@ant-design/icons";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+    ApartmentOutlined,
+    DownOutlined,
+    ReloadOutlined,
+    RightOutlined,
+} from "@ant-design/icons";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchGraphData, fetchPipelineStatus } from "../api";
-import { useGraphCanvas } from "../hooks/useGraphCanvas";
 import { useStore } from "../state";
+import type { GraphTreeNode } from "../types";
+
+function collectCompositeIds(nodes: GraphTreeNode[]): string[] {
+  const ids: string[] = [];
+  const visit = (node: GraphTreeNode) => {
+    if (node.nodeKind === "composite") {
+      ids.push(node.id);
+    }
+    for (const child of node.children) {
+      visit(child);
+    }
+  };
+  for (const node of nodes) {
+    visit(node);
+  }
+  return ids;
+}
+
+function fallbackTreeRoots(nodes: ReturnType<typeof useStore.getState>["graphData"]["nodes"]): GraphTreeNode[] {
+  return nodes.map((node) => ({
+    id: node.id,
+    label: node.label,
+    typeLabel: node.typeLabel,
+    nodeKind: node.nodeKind || "record",
+    properties: node.properties,
+    children: [],
+  }));
+}
+
+function TreeNodeCard({
+  node,
+  collapsedIds,
+  onToggle,
+}: {
+  node: GraphTreeNode;
+  collapsedIds: Set<string>;
+  onToggle: (nodeId: string) => void;
+}) {
+  const isComposite = node.nodeKind === "composite";
+  const hasChildren = node.children.length > 0;
+  const collapsed = isComposite && collapsedIds.has(node.id);
+  const semanticText = String(node.properties.semantic_text || "").trim();
+  const sourceRecordCount = Number(node.properties.source_record_count || (isComposite ? 0 : 1));
+  const childCompositeCount = Number(node.properties.child_composite_count || 0);
+  const directRecordCount = Number(node.properties.direct_record_count || 0);
+
+  return (
+    <li className={`memory-tree-item ${isComposite ? "composite" : "record"}`}>
+      <div className="memory-tree-row">
+        {isComposite ? (
+          <button
+            type="button"
+            className="memory-tree-toggle"
+            onClick={() => onToggle(node.id)}
+            title={collapsed ? "展开子节点" : "收起子节点"}
+          >
+            {collapsed ? <RightOutlined /> : <DownOutlined />}
+          </button>
+        ) : (
+          <span className="memory-tree-leaf-dot" />
+        )}
+
+        <div className="memory-tree-card">
+          <div className="memory-tree-card-header">
+            <span className={`memory-tree-kind ${isComposite ? "composite" : "record"}`}>
+              {isComposite ? "融合记忆" : "原子记录"}
+            </span>
+            {node.typeLabel && <span className="memory-tree-type">{node.typeLabel}</span>}
+          </div>
+          <div className="memory-tree-title">{node.label}</div>
+          {semanticText && <div className="memory-tree-summary">{semanticText}</div>}
+          <div className="memory-tree-meta">
+            {isComposite ? (
+              <>
+                <span>{sourceRecordCount} 条底层记录</span>
+                <span>{childCompositeCount} 个子记忆</span>
+                <span>{directRecordCount} 个直接叶子</span>
+              </>
+            ) : (
+              <>
+                {node.properties.created_at && <span>{String(node.properties.created_at)}</span>}
+                {node.properties.confidence != null && (
+                  <span>置信度 {(Number(node.properties.confidence) * 100).toFixed(0)}%</span>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {hasChildren && !collapsed && (
+        <ul className="memory-tree-children">
+          {node.children.map((child) => (
+            <TreeNodeCard
+              key={child.id}
+              node={child}
+              collapsedIds={collapsedIds}
+              onToggle={onToggle}
+            />
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
 
 export default function GraphPanel() {
   const graphData = useStore((s) => s.graphData);
-  const hoveredEdge = useStore((s) => s.hoveredEdge);
-  const selectedEdge = useStore((s) => s.selectedEdge);
   const setGraphData = useStore((s) => s.setGraphData);
-  const setHoveredEdge = useStore((s) => s.setHoveredEdge);
-  const setSelectedEdge = useStore((s) => s.setSelectedEdge);
-
-  const containerRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const tooltipRef = useRef<HTMLDivElement>(null);
 
   // 定时检测图谱更新：保存上次检测的统计数据
   const [lastStatus, setLastStatus] = useState<{
     node_count: number;
     edge_count: number;
   } | null>(null);
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
 
-  const { fitGraph } = useGraphCanvas({
-    canvasRef,
-    containerRef,
-    tooltipRef,
-    nodes: graphData.nodes,
-    edges: graphData.edges,
-    hoveredEdge,
-    selectedEdge,
-    onEdgeHover: setHoveredEdge,
-    onEdgeSelect: setSelectedEdge,
-  });
+  const treeRoots = useMemo(
+    () => (graphData.treeRoots.length > 0 ? graphData.treeRoots : fallbackTreeRoots(graphData.nodes)),
+    [graphData.treeRoots, graphData.nodes]
+  );
+  const compositeIds = useMemo(() => collectCompositeIds(treeRoots), [treeRoots]);
+
+  useEffect(() => {
+    setCollapsedIds(new Set());
+  }, [treeRoots]);
 
   const handleRefresh = useCallback(async () => {
     try {
@@ -83,35 +183,62 @@ export default function GraphPanel() {
     return () => clearInterval(pollTimer);
   }, [lastStatus, setGraphData]);
 
-  const hasNodes = graphData.nodes.length > 0;
+  const hasNodes = treeRoots.length > 0;
+  const allCollapsed = compositeIds.length > 0 && collapsedIds.size >= compositeIds.length;
+
+  const toggleNode = useCallback((nodeId: string) => {
+    setCollapsedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) {
+        next.delete(nodeId);
+      } else {
+        next.add(nodeId);
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleAll = useCallback(() => {
+    if (compositeIds.length === 0) return;
+    setCollapsedIds(allCollapsed ? new Set() : new Set(compositeIds));
+  }, [allCollapsed, compositeIds]);
 
   return (
     <section id="panel-graph" className="panel">
       <div className="panel-header">
-        <h2><LinkOutlined /> 记忆图谱</h2>
+        <h2><ApartmentOutlined /> 记忆树</h2>
         <div className="panel-actions">
           <button
             className="icon-btn"
-            title="刷新图谱"
+            title="刷新记忆树"
             onClick={handleRefresh}
           >
             <ReloadOutlined />
           </button>
-          <button className="icon-btn" title="适配视图" onClick={fitGraph}>
-            <BorderOuterOutlined />
+          <button className="icon-btn" title={allCollapsed ? "展开全部" : "折叠全部"} onClick={toggleAll}>
+            {allCollapsed ? <DownOutlined /> : <RightOutlined />}
           </button>
         </div>
       </div>
-      <div className="graph-container" ref={containerRef}>
-        <canvas id="graph-canvas" ref={canvasRef} />
-        <div
-          className="graph-tooltip hidden"
-          ref={tooltipRef}
-        />
+      <div className="graph-container graph-tree-container">
         {!hasNodes && (
           <div className="empty-state">
-            <span>暂无图谱数据</span>
-            <span className="sub">对话后知识实体将自动提取并展示</span>
+            <span>暂无树状记忆</span>
+            <span className="sub">对话后长期记忆会自动固化并组织为层级树</span>
+          </div>
+        )}
+        {hasNodes && (
+          <div className="memory-tree-scroll">
+            <ul className="memory-tree-list">
+              {treeRoots.map((node) => (
+                <TreeNodeCard
+                  key={node.id}
+                  node={node}
+                  collapsedIds={collapsedIds}
+                  onToggle={toggleNode}
+                />
+              ))}
+            </ul>
           </div>
         )}
       </div>

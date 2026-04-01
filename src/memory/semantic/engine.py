@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any
@@ -183,6 +184,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             plan=plan,
             action_state=resolved_action_state,
         )
+        plan = self._normalize_tree_retrieval_plan(
+            plan,
+            resolved_action_state,
+            focus_terms=focus_terms,
+        )
         scoring_slots = self._merge_unique(plan.missing_slots, focus_terms)
 
         # Step 2: 初始多通道召回
@@ -265,7 +271,16 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 required_constraints=self._merge_unique(plan.required_constraints, supplement_constraints),
                 required_affordances=self._merge_unique(plan.required_affordances, supplement_affordances),
                 missing_slots=self._merge_unique(plan.missing_slots, supplement_slots),
+                tree_retrieval_mode=plan.tree_retrieval_mode,
+                tree_expansion_depth=plan.tree_expansion_depth,
+                include_leaf_records=plan.include_leaf_records,
                 depth=top_k,
+            )
+            supplement_plan = self._normalize_tree_retrieval_plan(
+                supplement_plan,
+                resolved_action_state,
+                focus_terms=focus_terms,
+                adequacy=adequacy,
             )
             extra_candidates = self._multi_channel_recall(
                 plan=supplement_plan,
@@ -295,10 +310,19 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 required_constraints=list(supplement_plan.required_constraints),
                 required_affordances=list(supplement_plan.required_affordances),
                 missing_slots=list(supplement_plan.missing_slots),
+                tree_retrieval_mode=supplement_plan.tree_retrieval_mode,
+                tree_expansion_depth=supplement_plan.tree_expansion_depth,
+                include_leaf_records=supplement_plan.include_leaf_records,
                 depth=max(plan.depth, top_k),
                 reasoning=plan.reasoning,
             )
             resolved_action_state = self._merge_action_state_with_plan(resolved_action_state, plan)
+            plan = self._normalize_tree_retrieval_plan(
+                plan,
+                resolved_action_state,
+                focus_terms=focus_terms,
+                adequacy=adequacy,
+            )
             scoring_slots = self._merge_unique(plan.missing_slots, focus_terms)
             reflection_scoring_context = self._build_reflection_scoring_context(
                 adequacy=adequacy,
@@ -332,6 +356,8 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             scored,
             top_k=top_k,
             focus_terms=focus_terms,
+            tree_retrieval_mode=plan.tree_retrieval_mode,
+            include_leaf_records=plan.include_leaf_records,
         )
 
         # Step 6: 记录使用日志
@@ -691,6 +717,19 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 seen_ids.add(sid)
                 candidates.append(candidate)
 
+        tree_expanded = self._expand_tree_candidates(
+            plan=plan,
+            base_candidates=candidates,
+            user_id=user_id,
+            top_k=top_k,
+            focus_terms=focus_terms,
+        )
+        for candidate in tree_expanded:
+            cid = str(candidate.get("id") or "")
+            if cid and cid not in seen_ids:
+                seen_ids.add(cid)
+                candidates.append(candidate)
+
         return candidates
 
     @staticmethod
@@ -725,12 +764,15 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         *,
         top_k: int,
         focus_terms: list[str] | None = None,
+        tree_retrieval_mode: str = "balanced",
+        include_leaf_records: bool = False,
     ) -> list[ScoredCandidate]:
         """最终候选选择：优先 composite，并折叠被覆盖或近重复的 record/composite。"""
         if not scored:
             return []
 
         focus_terms = [str(term or "").strip() for term in (focus_terms or []) if str(term or "").strip()]
+        detail_preferred = tree_retrieval_mode == "descend" or include_leaf_records
         composite_index = {
             candidate.id: candidate
             for candidate in scored
@@ -779,6 +821,12 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             if candidate.id in selected_ids:
                 continue
 
+            preserve_tree_detail = (
+                detail_preferred
+                and bool(candidate.data.get("tree_expanded"))
+                and bool(candidate.data.get("tree_hint_match") or candidate.data.get("tree_leaf"))
+            )
+
             if candidate.source == "composite":
                 candidate_sources = composite_source_sets.get(candidate.id, set())
                 selected_covering_parents = [
@@ -788,7 +836,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                     and candidate_sources.issubset(composite_source_sets.get(item.id, set()))
                     and len(composite_source_sets.get(item.id, set())) > len(candidate_sources)
                 ]
-                if selected_covering_parents and not self._record_adds_unique_value(
+                if selected_covering_parents and not preserve_tree_detail and not self._record_adds_unique_value(
                     candidate,
                     selected_covering_parents,
                     focus_terms=focus_terms,
@@ -800,13 +848,19 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                     best_parent is not None
                     and best_parent.id not in selected_ids
                     and best_parent.final_score >= candidate.final_score - 0.05
+                    and not preserve_tree_detail
                     and not self._record_adds_unique_value(
                         candidate,
                         [best_parent],
                         focus_terms=focus_terms,
                     )
                 ):
-                    if not self._is_duplicate_candidate(best_parent, selected, focus_terms=focus_terms):
+                    if not self._is_duplicate_candidate(
+                        best_parent,
+                        selected,
+                        focus_terms=focus_terms,
+                        detail_preferred=detail_preferred,
+                    ):
                         selected.append(best_parent)
                         selected_ids.add(best_parent.id)
                         covered_record_ids.update(
@@ -822,7 +876,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                     if item.source == "composite"
                     and candidate.id in set(item.data.get("source_record_ids", []) or [])
                 ]
-                if selected_covering and not self._record_adds_unique_value(
+                if selected_covering and not preserve_tree_detail and not self._record_adds_unique_value(
                     candidate,
                     selected_covering,
                     focus_terms=focus_terms,
@@ -834,13 +888,19 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                     best_cover is not None
                     and best_cover.id not in selected_ids
                     and best_cover.final_score >= candidate.final_score - 0.05
+                    and not preserve_tree_detail
                     and not self._record_adds_unique_value(
                         candidate,
                         [best_cover],
                         focus_terms=focus_terms,
                     )
                 ):
-                    if not self._is_duplicate_candidate(best_cover, selected, focus_terms=focus_terms):
+                    if not self._is_duplicate_candidate(
+                        best_cover,
+                        selected,
+                        focus_terms=focus_terms,
+                        detail_preferred=detail_preferred,
+                    ):
                         selected.append(best_cover)
                         selected_ids.add(best_cover.id)
                         covered_record_ids.update(
@@ -853,7 +913,12 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 if candidate.id in covered_record_ids:
                     continue
 
-            if self._is_duplicate_candidate(candidate, selected, focus_terms=focus_terms):
+            if self._is_duplicate_candidate(
+                candidate,
+                selected,
+                focus_terms=focus_terms,
+                detail_preferred=detail_preferred,
+            ):
                 continue
 
             selected.append(candidate)
@@ -872,7 +937,12 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             for candidate in ordered:
                 if candidate.id in selected_ids:
                     continue
-                if self._is_duplicate_candidate(candidate, selected, focus_terms=focus_terms):
+                if self._is_duplicate_candidate(
+                    candidate,
+                    selected,
+                    focus_terms=focus_terms,
+                    detail_preferred=detail_preferred,
+                ):
                     continue
                 selected.append(candidate)
                 selected_ids.add(candidate.id)
@@ -967,13 +1037,22 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         selected: list[ScoredCandidate],
         *,
         focus_terms: list[str] | None = None,
+        detail_preferred: bool = False,
     ) -> bool:
         for existing in selected:
             if candidate.id == existing.id:
                 return True
 
+            preserve_tree_detail = (
+                detail_preferred
+                and bool(candidate.data.get("tree_expanded"))
+                and bool(candidate.data.get("tree_hint_match") or candidate.data.get("tree_leaf"))
+            )
+
             if candidate.source == "record" and existing.source == "composite":
                 if candidate.id in self._candidate_source_record_set(existing.data):
+                    if preserve_tree_detail:
+                        continue
                     if not self._record_adds_unique_value(candidate, [existing], focus_terms=focus_terms):
                         return True
 
@@ -989,6 +1068,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                     if (
                         candidate_sources.issubset(existing_sources)
                         and len(existing_sources) > len(candidate_sources)
+                        and not preserve_tree_detail
                         and not self._record_adds_unique_value(candidate, [existing], focus_terms=focus_terms)
                     ):
                         return True
@@ -1071,6 +1151,249 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             for value in (data.get("source_record_ids") or [])
             if str(value or "").strip()
         }
+
+    def _expand_tree_candidates(
+        self,
+        *,
+        plan: SearchPlan,
+        base_candidates: list[dict[str, Any]],
+        user_id: str,
+        top_k: int,
+        focus_terms: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        if plan.tree_retrieval_mode == "root_only" or int(plan.tree_expansion_depth or 0) <= 0:
+            return []
+
+        composite_map, source_sets, parent_to_children = self._build_composite_tree_index(user_id=user_id)
+        if not composite_map:
+            return []
+
+        seed_distances: dict[str, float] = {}
+        for candidate in base_candidates:
+            if candidate.get("source") != "composite":
+                continue
+            composite_id = str(candidate.get("id") or "").strip()
+            if not composite_id or composite_id not in composite_map:
+                continue
+            distance = float(candidate.get("semantic_distance", 0.5) or 0.5)
+            current = seed_distances.get(composite_id)
+            seed_distances[composite_id] = distance if current is None else min(current, distance)
+
+        if not seed_distances:
+            return []
+
+        max_depth = max(0, int(plan.tree_expansion_depth or 0))
+        detail_mode = plan.tree_retrieval_mode == "descend"
+        tree_hints = self._collect_tree_retrieval_hints(plan=plan, focus_terms=focus_terms)
+        expanded: list[dict[str, Any]] = []
+        visited_composites: set[tuple[str, int]] = set()
+        seen_record_ids: set[str] = set()
+        queue: deque[tuple[str, float, int]] = deque(
+            (composite_id, distance, 0)
+            for composite_id, distance in seed_distances.items()
+        )
+        max_expanded_candidates = max(top_k * 4, 16)
+
+        while queue and len(expanded) < max_expanded_candidates:
+            composite_id, base_distance, depth = queue.popleft()
+            if depth >= max_depth:
+                continue
+            if (composite_id, depth) in visited_composites:
+                continue
+            visited_composites.add((composite_id, depth))
+
+            child_composites = parent_to_children.get(composite_id, [])
+            for child_id in child_composites:
+                child = composite_map.get(child_id)
+                if child is None:
+                    continue
+                child_candidate = self._synth_to_candidate(child)
+                hint_match = self._candidate_matches_tree_hints(child_candidate, tree_hints)
+                if plan.tree_retrieval_mode == "balanced" and tree_hints and not hint_match:
+                    continue
+                child_candidate["semantic_distance"] = min(1.0, base_distance + 0.04 * (depth + 1))
+                child_candidate["tree_expanded"] = True
+                child_candidate["tree_parent_id"] = composite_id
+                child_candidate["tree_depth"] = depth + 1
+                child_candidate["tree_hint_match"] = hint_match
+                expanded.append(child_candidate)
+                if len(expanded) >= max_expanded_candidates:
+                    break
+                if depth + 1 < max_depth and (detail_mode or hint_match):
+                    queue.append((child_id, base_distance + 0.04 * (depth + 1), depth + 1))
+
+            if len(expanded) >= max_expanded_candidates or not plan.include_leaf_records:
+                continue
+
+            direct_record_ids = self._direct_record_ids_for_composite(
+                composite_id=composite_id,
+                source_sets=source_sets,
+                parent_to_children=parent_to_children,
+            )
+            per_parent_leaf_limit = max(2, min(top_k, 6 if detail_mode else 4))
+            leaf_count = 0
+            for record_id in sorted(direct_record_ids):
+                if record_id in seen_record_ids:
+                    continue
+                record = self._sqlite.get_record(record_id)
+                if record is None:
+                    continue
+                leaf_candidate = self._record_to_candidate(record)
+                hint_match = self._candidate_matches_tree_hints(leaf_candidate, tree_hints)
+                if plan.tree_retrieval_mode == "balanced" and tree_hints and not hint_match:
+                    continue
+                leaf_candidate["semantic_distance"] = min(1.0, base_distance + 0.06 * (depth + 1))
+                leaf_candidate["tree_expanded"] = True
+                leaf_candidate["tree_parent_id"] = composite_id
+                leaf_candidate["tree_depth"] = depth + 1
+                leaf_candidate["tree_hint_match"] = hint_match
+                leaf_candidate["tree_leaf"] = True
+                expanded.append(leaf_candidate)
+                seen_record_ids.add(record_id)
+                leaf_count += 1
+                if len(expanded) >= max_expanded_candidates or leaf_count >= per_parent_leaf_limit:
+                    break
+
+        return expanded
+
+    def _build_composite_tree_index(
+        self,
+        *,
+        user_id: str,
+    ) -> tuple[dict[str, CompositeRecord], dict[str, set[str]], dict[str, list[str]]]:
+        composites = self._sqlite.list_synthesized(user_id=user_id)
+        composite_map = {
+            composite.composite_id: composite
+            for composite in composites
+            if str(composite.composite_id or "").strip()
+        }
+        if not composite_map:
+            return {}, {}, {}
+
+        source_sets = {
+            composite_id: {
+                str(source_id or "").strip()
+                for source_id in (composite.source_record_ids or [])
+                if str(source_id or "").strip()
+            }
+            for composite_id, composite in composite_map.items()
+        }
+
+        child_to_parent_candidates: dict[str, set[str]] = {}
+        parents_with_explicit_children: set[str] = set()
+        for parent_id, composite in composite_map.items():
+            explicit_children: set[str] = set()
+            for raw_child_id in composite.child_composite_ids or []:
+                child_id = str(raw_child_id or "").strip()
+                if not child_id or child_id == parent_id or child_id not in composite_map:
+                    continue
+                explicit_children.add(child_id)
+                child_to_parent_candidates.setdefault(child_id, set()).add(parent_id)
+            if explicit_children:
+                parents_with_explicit_children.add(parent_id)
+
+        composite_ids = list(composite_map)
+        for parent_id in composite_ids:
+            if parent_id in parents_with_explicit_children:
+                continue
+            parent_sources = source_sets.get(parent_id, set())
+            if len(parent_sources) < 2:
+                continue
+
+            eligible_children: list[str] = []
+            for child_id in composite_ids:
+                if child_id == parent_id:
+                    continue
+                child_sources = source_sets.get(child_id, set())
+                if not child_sources or child_sources == parent_sources:
+                    continue
+                if child_sources.issubset(parent_sources):
+                    eligible_children.append(child_id)
+
+            for child_id in eligible_children:
+                child_sources = source_sets.get(child_id, set())
+                has_intermediate = False
+                for sibling_id in eligible_children:
+                    if sibling_id in {child_id, parent_id}:
+                        continue
+                    sibling_sources = source_sets.get(sibling_id, set())
+                    if not sibling_sources or sibling_sources == child_sources:
+                        continue
+                    if child_sources.issubset(sibling_sources) and sibling_sources.issubset(parent_sources):
+                        has_intermediate = True
+                        break
+                if not has_intermediate:
+                    child_to_parent_candidates.setdefault(child_id, set()).add(parent_id)
+
+        child_to_parent: dict[str, str] = {}
+        for child_id, parent_candidates in child_to_parent_candidates.items():
+            chosen_parent = min(
+                parent_candidates,
+                key=lambda parent_id: (
+                    len(source_sets.get(parent_id, set())),
+                    parent_id,
+                ),
+            )
+            child_to_parent[child_id] = chosen_parent
+
+        parent_to_children: dict[str, list[str]] = {}
+        for child_id, parent_id in child_to_parent.items():
+            parent_to_children.setdefault(parent_id, []).append(child_id)
+        for child_ids in parent_to_children.values():
+            child_ids.sort(key=lambda composite_id: (len(source_sets.get(composite_id, set())), composite_id))
+
+        return composite_map, source_sets, parent_to_children
+
+    def _direct_record_ids_for_composite(
+        self,
+        *,
+        composite_id: str,
+        source_sets: dict[str, set[str]],
+        parent_to_children: dict[str, list[str]],
+    ) -> set[str]:
+        direct_ids = set(source_sets.get(composite_id, set()))
+        for child_id in parent_to_children.get(composite_id, []):
+            direct_ids.difference_update(source_sets.get(child_id, set()))
+        return direct_ids
+
+    @staticmethod
+    def _collect_tree_retrieval_hints(
+        *,
+        plan: SearchPlan,
+        focus_terms: list[str] | None = None,
+    ) -> list[str]:
+        hints: list[str] = []
+        for values in (
+            focus_terms or [],
+            plan.missing_slots,
+            plan.tool_hints,
+            plan.required_constraints,
+            plan.required_affordances,
+            plan.semantic_queries,
+            plan.pragmatic_queries,
+        ):
+            hints = CompactSemanticEngine._merge_unique(hints, list(values or []))
+        return hints
+
+    def _candidate_matches_tree_hints(
+        self,
+        candidate: dict[str, Any],
+        hints: list[str],
+    ) -> bool:
+        if not hints:
+            return False
+
+        searchable_text = self._candidate_text_blob(candidate).lower()
+        for hint in hints:
+            normalized = str(hint or "").strip().lower()
+            if not normalized:
+                continue
+            if normalized in searchable_text:
+                return True
+            tokens = [token for token in re.split(r"[\s/,_:：\-]+", normalized) if token]
+            if tokens and any(token in searchable_text for token in tokens):
+                return True
+        return False
 
     # ════════════════════════════════════════════════════════════════
     # ingest_conversation() — 固化管线
@@ -1492,6 +1815,9 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             required_constraints=d.get("required_constraints", []),
             required_affordances=d.get("required_affordances", []),
             missing_slots=d.get("missing_slots", []),
+            tree_retrieval_mode=str(d.get("tree_retrieval_mode", "balanced") or "balanced"),
+            tree_expansion_depth=int(d.get("tree_expansion_depth", 1) or 0),
+            include_leaf_records=bool(d.get("include_leaf_records", False)),
             depth=int(d.get("depth", 5)),
             reasoning=d.get("reasoning", ""),
         )
@@ -1539,9 +1865,67 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             "required_constraints": list(plan.required_constraints),
             "required_affordances": list(plan.required_affordances),
             "missing_slots": list(plan.missing_slots),
+            "tree_retrieval_mode": plan.tree_retrieval_mode,
+            "tree_expansion_depth": plan.tree_expansion_depth,
+            "include_leaf_records": plan.include_leaf_records,
             "depth": plan.depth,
             "reasoning": plan.reasoning,
         }
+
+    @staticmethod
+    def _normalize_tree_retrieval_plan(
+        plan: SearchPlan,
+        action_state: ActionState,
+        *,
+        focus_terms: list[str] | None = None,
+        adequacy: dict[str, Any] | None = None,
+    ) -> SearchPlan:
+        valid_modes = {"root_only", "balanced", "descend"}
+        if plan.tree_retrieval_mode not in valid_modes:
+            plan.tree_retrieval_mode = "balanced"
+
+        adequacy = adequacy or {}
+        detail_signals = any([
+            focus_terms,
+            plan.pragmatic_queries,
+            plan.required_constraints,
+            plan.required_affordances,
+            plan.missing_slots,
+            action_state.missing_slots,
+            action_state.known_constraints,
+            action_state.failure_signal,
+            adequacy.get("missing_constraints"),
+            adequacy.get("missing_affordances"),
+            adequacy.get("missing_slots"),
+            adequacy.get("needs_failure_avoidance"),
+            adequacy.get("needs_tool_selection_basis"),
+        ])
+
+        if plan.mode == "answer" and not detail_signals:
+            plan.tree_retrieval_mode = "root_only"
+            plan.tree_expansion_depth = 0
+            plan.include_leaf_records = False
+            return plan
+
+        if plan.mode == "mixed":
+            if plan.tree_retrieval_mode == "root_only":
+                plan.tree_retrieval_mode = "balanced"
+            if detail_signals and adequacy.get("needs_failure_avoidance"):
+                plan.tree_retrieval_mode = "descend"
+            plan.tree_expansion_depth = max(
+                1,
+                min(
+                    int(plan.tree_expansion_depth or 1),
+                    3 if plan.tree_retrieval_mode == "descend" else 2,
+                ),
+            )
+            plan.include_leaf_records = bool(plan.include_leaf_records or detail_signals)
+            return plan
+
+        plan.tree_retrieval_mode = "descend"
+        plan.tree_expansion_depth = max(2, min(int(plan.tree_expansion_depth or 2), 3))
+        plan.include_leaf_records = True
+        return plan
 
     @staticmethod
     def _merge_action_state_with_plan(
@@ -1709,6 +2093,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             "temporal": record.temporal,
             "entities": record.entities,
             "source_record_ids": list(record.source_record_ids),
+            "child_composite_ids": list(record.child_composite_ids),
         }
 
     @staticmethod
@@ -1758,6 +2143,9 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 "semantic_text": d.get("semantic_text", ""),
                 "entities": d.get("entities", []),
                 "source_record_ids": d.get("source_record_ids", []),
+                "tree_parent_id": d.get("tree_parent_id", ""),
+                "tree_depth": d.get("tree_depth", 0),
+                "tree_expanded": bool(d.get("tree_expanded", False)),
             })
         return provenance
 
@@ -1787,6 +2175,9 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 "required_constraints": plan.required_constraints,
                 "required_affordances": plan.required_affordances,
                 "missing_slots": plan.missing_slots,
+                "tree_retrieval_mode": plan.tree_retrieval_mode,
+                "tree_expansion_depth": plan.tree_expansion_depth,
+                "include_leaf_records": plan.include_leaf_records,
                 "depth": plan.depth,
             },
             action_state=self._action_state_to_dict(action_state),

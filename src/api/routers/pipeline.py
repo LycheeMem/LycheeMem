@@ -23,7 +23,10 @@ async def pipeline_status(pipeline=Depends(get_pipeline)):
     # Compact 后端：从 sqlite_store 计数
     if getattr(sc, "semantic_engine", None) is not None:
         try:
-            node_count = sc.semantic_engine._sqlite.count_records()
+            node_count = (
+                sc.semantic_engine._sqlite.count_records()
+                + sc.semantic_engine._sqlite.count_composites()
+            )
         except Exception:
             node_count = 0
         # composite records 作为"边"的近似

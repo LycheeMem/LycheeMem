@@ -507,7 +507,7 @@ SYNTHESIS_JUDGE_SYSTEM = """\
 
 注意：
 - groups 可以有多组，每组独立合成。
-- 一个 record 可以同时出现在多组中（如果它跨主题）。
+- 为了保持层级树结构，同一个输入项不能同时出现在多个 group 中；请输出互不重叠的 groups。
 - 输出字段名 `source_record_ids` 沿用历史名字，但它表示“输入项的 id 列表”；
     如果输入项本身是 composite，则这里填写对应的 composite_id。
 - 如果不需要合成，should_synthesize = false, groups = []。
@@ -572,10 +572,10 @@ SYNTHESIS_EXECUTE_SYSTEM = """\
 2. 去除重复信息，整理为流畅连贯的表述。
 3. 保留所有具体细节（人名、数字、时间等），不要泛化丢失信息。
 4. 如果某些输入项本身已经是 composite，必须保留其关键细节，不要在二次合成时丢信息。
-4. entities 取所有 source records 的实体并集。
-5. tags 取所有 source records 的 tag 并集。
-6. temporal 取时间范围的并集（从最早到最晚）。
-7. confidence 取 source records 的平均值。
+5. entities 取所有 source records 的实体并集。
+6. tags 取所有 source records 的 tag 并集。
+7. temporal 取时间范围的并集（从最早到最晚）。
+8. confidence 取 source records 的平均值。
 
 输出格式（严格 JSON，无代码块）：
 {
@@ -682,7 +682,16 @@ RETRIEVAL_PLANNING_SYSTEM = """\
 8. **缺失信息（missing_slots）**：当前任务可能缺少的关键参数/信息。
     这些 slot 应该尽可能是能直接改变下一步动作是否可执行的参数。
 
-9. **检索深度（depth）**：建议的 top_k 值。简单查询 3-5，复杂查询 8-15。
+9. **树检索策略（tree_retrieval_mode / tree_expansion_depth / include_leaf_records）**：
+   决定检索命中 composite 之后，是只保留高层摘要，还是继续下钻子 composite / 叶子 record。
+   - "root_only"：只保留高层 composite，不主动下钻
+   - "balanced"：下钻一层，优先取与当前问题直接相关的子 composite / 叶子
+   - "descend"：把树遍历当作检索的一部分，继续下钻子节点以补齐 action 所需细节
+   对于纯事实查询，通常应选 root_only；
+   对于 mixed 查询，通常应选 balanced；
+   对于 action 查询，尤其当存在 missing_slots / required_constraints / required_affordances / failure_signal 时，应优先选 descend。
+
+10. **检索深度（depth）**：建议的 top_k 值。简单查询 3-5，复杂查询 8-15。
 
 输入：
 - <USER_QUERY>：用户的查询
@@ -704,6 +713,9 @@ RETRIEVAL_PLANNING_SYSTEM = """\
     "required_constraints": ["约束1"],
     "required_affordances": ["所需能力1"],
     "missing_slots": ["缺失参数1"],
+    "tree_retrieval_mode": "root_only|balanced|descend",
+    "tree_expansion_depth": 0,
+    "include_leaf_records": false,
     "depth": 5,
     "reasoning": "规划理由"
 }
@@ -732,6 +744,9 @@ RETRIEVAL_PLANNING_SYSTEM = """\
     "required_constraints": [],
     "required_affordances": [],
     "missing_slots": [],
+    "tree_retrieval_mode": "root_only",
+    "tree_expansion_depth": 0,
+    "include_leaf_records": false,
     "depth": 5,
     "reasoning": "用户查询特定项目的技术事实，属于纯信息检索，无需行动支撑记忆，depth 取小值即可。"
 }
@@ -755,6 +770,9 @@ assistant: 好的，我来协助您准备部署。
     "required_constraints": ["必须先执行DB迁移dry-run"],
     "required_affordances": ["支持滚动升级", "支持版本回滚"],
     "missing_slots": ["目标命名空间", "镜像版本号"],
+    "tree_retrieval_mode": "descend",
+    "tree_expansion_depth": 2,
+    "include_leaf_records": true,
     "depth": 10,
     "reasoning": "用户要求直接执行部署操作，需要检索完整部署流程、工具约束和历史失败经验，提高 depth 确保覆盖所有约束条目。"
 }
@@ -775,6 +793,9 @@ assistant: 好的，我来协助您准备部署。
     "required_constraints": [],
     "required_affordances": ["支持版本回滚", "支持迁移预检查"],
     "missing_slots": [],
+    "tree_retrieval_mode": "balanced",
+    "tree_expansion_depth": 1,
+    "include_leaf_records": true,
     "depth": 12,
     "reasoning": "用户既查询历史失败事实（UserService 教训）又需要行动指导（DataFlow 如何规避），属于 mixed 模式；depth 调高以同时覆盖失败模式记忆与操作流程记忆。"
 }

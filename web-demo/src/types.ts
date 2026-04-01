@@ -26,12 +26,22 @@ export interface GraphNode {
   id: string;
   label: string;
   typeLabel: string;
+  nodeKind?: string;
   properties: Record<string, unknown>;
   // simulation coordinates (set by d3-force)
   x?: number;
   y?: number;
   fx?: number | null;
   fy?: number | null;
+}
+
+export interface GraphTreeNode {
+  id: string;
+  label: string;
+  typeLabel: string;
+  nodeKind: string;
+  properties: Record<string, unknown>;
+  children: GraphTreeNode[];
 }
 
 export interface GraphEdge {
@@ -48,6 +58,7 @@ export interface GraphEdge {
 export interface GraphData {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  treeRoots: GraphTreeNode[];
 }
 
 // ── Agent ──

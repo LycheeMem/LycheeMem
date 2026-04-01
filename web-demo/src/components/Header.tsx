@@ -36,7 +36,7 @@ export default function Header() {
           <span className="chip" title="会话数">
             <FileTextOutlined /> {pipelineStatus.session_count}
           </span>
-          <span className="chip" title="图谱节点">
+          <span className="chip" title="记忆树节点">
             ● {pipelineStatus.graph_node_count}
           </span>
           <span className="chip" title="技能数">

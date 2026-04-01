@@ -175,6 +175,7 @@ class GraphEdge(BaseModel):
 class GraphResponse(BaseModel):
     nodes: list[dict[str, Any]]
     edges: list[dict[str, Any]]
+    tree_roots: list[dict[str, Any]] = []
 
 
 class FactEdge(BaseModel):

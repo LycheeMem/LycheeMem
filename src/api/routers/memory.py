@@ -31,6 +31,221 @@ logger = logging.getLogger("src.api")
 router = APIRouter()
 
 
+def _normalize_graph_id(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _build_tree_relationships(
+    composites: list[dict[str, Any]],
+) -> tuple[dict[str, set[str]], dict[str, str], dict[str, list[str]]]:
+    source_sets: dict[str, set[str]] = {}
+    explicit_candidates: dict[str, set[str]] = {}
+    parent_ids_with_explicit: set[str] = set()
+
+    for composite in composites:
+        composite_id = _normalize_graph_id(composite.get("composite_id"))
+        if not composite_id:
+            continue
+        source_sets[composite_id] = {
+            _normalize_graph_id(source_id)
+            for source_id in (composite.get("source_record_ids") or [])
+            if _normalize_graph_id(source_id)
+        }
+
+    for composite in composites:
+        parent_id = _normalize_graph_id(composite.get("composite_id"))
+        parent_sources = source_sets.get(parent_id, set())
+        for raw_child_id in (composite.get("child_composite_ids") or []):
+            child_id = _normalize_graph_id(raw_child_id)
+            child_sources = source_sets.get(child_id, set())
+            if (
+                child_id
+                and child_id != parent_id
+                and child_sources
+                and child_sources.issubset(parent_sources)
+                and len(parent_sources) > len(child_sources)
+            ):
+                explicit_candidates.setdefault(child_id, set()).add(parent_id)
+                parent_ids_with_explicit.add(parent_id)
+
+    inferred_candidates: dict[str, set[str]] = {}
+    composite_ids = list(source_sets.keys())
+    for parent_id in composite_ids:
+        if parent_id in parent_ids_with_explicit:
+            continue
+        parent_sources = source_sets[parent_id]
+        if not parent_sources:
+            continue
+
+        eligible_children = [
+            child_id
+            for child_id in composite_ids
+            if child_id != parent_id
+            and source_sets[child_id]
+            and source_sets[child_id].issubset(parent_sources)
+            and len(parent_sources) > len(source_sets[child_id])
+        ]
+
+        for child_id in eligible_children:
+            child_sources = source_sets[child_id]
+            has_intermediate = any(
+                mid_id not in {child_id, parent_id}
+                and source_sets[mid_id]
+                and child_sources.issubset(source_sets[mid_id])
+                and source_sets[mid_id].issubset(parent_sources)
+                and len(parent_sources) > len(source_sets[mid_id]) > len(child_sources)
+                for mid_id in eligible_children
+            )
+            if not has_intermediate:
+                inferred_candidates.setdefault(child_id, set()).add(parent_id)
+
+    parent_candidates = {child_id: set(parents) for child_id, parents in explicit_candidates.items()}
+    for child_id, parents in inferred_candidates.items():
+        parent_candidates.setdefault(child_id, set()).update(parents)
+
+    child_to_parent: dict[str, str] = {}
+    for child_id, parents in parent_candidates.items():
+        valid_parents = [parent_id for parent_id in parents if parent_id in source_sets]
+        if not valid_parents:
+            continue
+        child_to_parent[child_id] = min(
+            valid_parents,
+            key=lambda parent_id: (len(source_sets.get(parent_id, set())) or 10**9, parent_id),
+        )
+
+    parent_to_children: dict[str, list[str]] = {}
+    for child_id, parent_id in child_to_parent.items():
+        parent_to_children.setdefault(parent_id, []).append(child_id)
+    for child_ids in parent_to_children.values():
+        child_ids.sort(key=lambda child_id: (len(source_sets.get(child_id, set())), child_id))
+
+    return source_sets, child_to_parent, parent_to_children
+
+
+def _build_semantic_tree_payload(
+    data: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    records = list(data.get("records", []))
+    composites = list(data.get("composites", []))
+
+    record_by_id = {
+        _normalize_graph_id(record.get("record_id")): record
+        for record in records
+        if _normalize_graph_id(record.get("record_id"))
+    }
+    composite_by_id = {
+        _normalize_graph_id(composite.get("composite_id")): composite
+        for composite in composites
+        if _normalize_graph_id(composite.get("composite_id"))
+    }
+
+    source_sets, child_to_parent, parent_to_children = _build_tree_relationships(composites)
+    covered_record_ids = set().union(*source_sets.values()) if source_sets else set()
+
+    node_cache: dict[str, dict[str, Any]] = {}
+
+    def _build_record_node(record_id: str) -> dict[str, Any]:
+        record = record_by_id[record_id]
+        if record_id in node_cache:
+            return node_cache[record_id]
+        node = {
+            "id": record_id,
+            "name": str(record.get("normalized_text") or record.get("semantic_text") or record_id)[:120],
+            "label": record.get("memory_type", "record"),
+            "node_kind": "record",
+            "properties": {
+                "semantic_text": record.get("semantic_text", ""),
+                "entities": record.get("entities", []),
+                "confidence": record.get("confidence", 1.0),
+                "created_at": record.get("created_at", ""),
+                "source_record_count": 1,
+                "child_composite_count": 0,
+                "direct_record_count": 0,
+            },
+            "children": [],
+        }
+        node_cache[record_id] = node
+        return node
+
+    def _build_composite_node(composite_id: str) -> dict[str, Any]:
+        composite = composite_by_id[composite_id]
+        if composite_id in node_cache:
+            return node_cache[composite_id]
+
+        child_ids = parent_to_children.get(composite_id, [])
+        covered_by_children = set().union(*(source_sets.get(child_id, set()) for child_id in child_ids)) if child_ids else set()
+        direct_record_ids = sorted(
+            record_id
+            for record_id in (source_sets.get(composite_id, set()) - covered_by_children)
+            if record_id in record_by_id
+        )
+
+        children = [_build_composite_node(child_id) for child_id in child_ids]
+        children.extend(_build_record_node(record_id) for record_id in direct_record_ids)
+
+        node = {
+            "id": composite_id,
+            "name": str(composite.get("normalized_text") or composite.get("semantic_text") or composite_id)[:120],
+            "label": composite.get("memory_type", "composite"),
+            "node_kind": "composite",
+            "properties": {
+                "semantic_text": composite.get("semantic_text", ""),
+                "source_record_ids": list(sorted(source_sets.get(composite_id, set()))),
+                "child_composite_ids": list(child_ids),
+                "child_composite_count": len(child_ids),
+                "direct_record_count": len(direct_record_ids),
+                "source_record_count": len(source_sets.get(composite_id, set())),
+                "confidence": composite.get("confidence", 1.0),
+                "created_at": composite.get("created_at", ""),
+            },
+            "children": children,
+        }
+        node_cache[composite_id] = node
+        return node
+
+    root_composite_ids = sorted(
+        composite_id
+        for composite_id in composite_by_id
+        if composite_id not in child_to_parent
+    )
+    root_record_ids = sorted(
+        record_id
+        for record_id in record_by_id
+        if record_id not in covered_record_ids
+    )
+
+    tree_roots = [_build_composite_node(composite_id) for composite_id in root_composite_ids]
+    tree_roots.extend(_build_record_node(record_id) for record_id in root_record_ids)
+
+    tree_nodes = list(node_cache.values())
+    tree_edges: list[dict[str, Any]] = []
+    for parent_id, child_ids in parent_to_children.items():
+        for child_id in child_ids:
+            tree_edges.append({
+                "source": parent_id,
+                "target": child_id,
+                "relation": "composed_from_composite",
+            })
+
+    all_parent_ids = sorted(set(root_composite_ids) | set(parent_to_children.keys()))
+    for composite_id in all_parent_ids:
+        child_ids = parent_to_children.get(composite_id, [])
+        covered_by_children = set().union(*(source_sets.get(child_id, set()) for child_id in child_ids)) if child_ids else set()
+        direct_record_ids = sorted(
+            record_id
+            for record_id in (source_sets.get(composite_id, set()) - covered_by_children)
+            if record_id in record_by_id
+        )
+        for record_id in direct_record_ids:
+            tree_edges.append({
+                "source": composite_id,
+                "target": record_id,
+                "relation": "composed_from_record",
+            })
+
+    return tree_nodes, tree_edges, tree_roots
+
+
 def _build_memory_search_context(
     pipeline,
     *,
@@ -448,10 +663,9 @@ async def get_graph(
     mode: str = Query(
         default="cleaned",
         description=(
-            "cleaned（默认）：只显示顶层 CompositeRecord 及未被任何 composite 覆盖的"
-            " MemoryRecord，隐藏已被 composite 吸收的 source records，以及被更高层"
-            " composite 覆盖的子 composite，视图更干净；"
-            "debug：导出全部 records + composites，用于底层排查。"
+            "cleaned（默认）：输出层级记忆树，保留父/子 composite 以及直接叶子 record，"
+            "用于前端树视图展示；"
+            "debug：导出全部 records + composites 的底层关系，用于底层排查。"
         ),
     ),
 ):
@@ -459,41 +673,19 @@ async def get_graph(
     sc = pipeline.search_coordinator
     try:
         data = sc.semantic_engine.export_debug(user_id=user_id)
+        if mode == "cleaned":
+            nodes, edges, tree_roots = _build_semantic_tree_payload(data)
+            return GraphResponse(nodes=nodes, edges=edges, tree_roots=tree_roots)
+
         nodes = []
         edges = []
-
-        # 在 cleaned 模式下，计算被 composite 覆盖的 source record id 集合
-        covered_ids: set[str] = set()
-        covered_composite_ids: set[str] = set()
-        if mode == "cleaned":
-            composite_sources: dict[str, set[str]] = {}
-            for s in data.get("composites", []):
-                composite_id = str(s.get("composite_id", "") or "").strip()
-                source_ids = {
-                    str(src_id or "").strip()
-                    for src_id in (s.get("source_record_ids", []) or [])
-                    if str(src_id or "").strip()
-                }
-                covered_ids.update(source_ids)
-                if composite_id and source_ids:
-                    composite_sources[composite_id] = source_ids
-
-            for child_id, child_sources in composite_sources.items():
-                for parent_id, parent_sources in composite_sources.items():
-                    if child_id == parent_id:
-                        continue
-                    if child_sources.issubset(parent_sources) and len(parent_sources) > len(child_sources):
-                        covered_composite_ids.add(child_id)
-                        break
-
         for u in data.get("records", []):
             rid = u.get("record_id", "")
-            if mode == "cleaned" and rid in covered_ids:
-                continue  # 已被 composite 覆盖，cleaned 模式下隐藏
             nodes.append({
                 "id": rid,
                 "name": u.get("normalized_text", "")[:80],
                 "label": u.get("memory_type", "record"),
+                "node_kind": "record",
                 "properties": {
                     "semantic_text": u.get("semantic_text", ""),
                     "entities": u.get("entities", []),
@@ -503,15 +695,15 @@ async def get_graph(
             })
         for s in data.get("composites", []):
             composite_id = s.get("composite_id", "")
-            if mode == "cleaned" and composite_id in covered_composite_ids:
-                continue
             nodes.append({
                 "id": composite_id,
                 "name": s.get("normalized_text", "")[:80],
                 "label": s.get("memory_type", "composite"),
+                "node_kind": "composite",
                 "properties": {
                     "semantic_text": s.get("semantic_text", ""),
                     "source_record_ids": s.get("source_record_ids", []),
+                    "child_composite_ids": s.get("child_composite_ids", []),
                 },
             })
             for src_id in s.get("source_record_ids", []):
@@ -520,7 +712,8 @@ async def get_graph(
                     "target": src_id,
                     "relation": "composed_from",
                 })
-        return GraphResponse(nodes=nodes, edges=edges)
+        _, _, tree_roots = _build_semantic_tree_payload(data)
+        return GraphResponse(nodes=nodes, edges=edges, tree_roots=tree_roots)
     except Exception as exc:
         logger.exception("export_debug failed")
         raise HTTPException(status_code=500, detail=f"Export failed: {exc}")

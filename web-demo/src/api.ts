@@ -4,6 +4,7 @@ import type {
     GraphData,
     GraphEdge,
     GraphNode,
+    GraphTreeNode,
     PipelineStatus,
     PipelineTrace,
     SessionInfo,
@@ -254,6 +255,19 @@ function getNodeTypeLabel(n: Record<string, unknown>): string {
   );
 }
 
+function toGraphTreeNode(n: Record<string, unknown>): GraphTreeNode {
+  return {
+    id: (n.node_id as string) || (n.id as string),
+    label: getNodeDisplayText(n),
+    typeLabel: getNodeTypeLabel(n),
+    nodeKind: String((n.node_kind as string) || "record"),
+    properties: (n.properties as Record<string, unknown>) || n,
+    children: Array.isArray(n.children)
+      ? (n.children as Record<string, unknown>[]).map((child) => toGraphTreeNode(child))
+      : [],
+  };
+}
+
 export async function fetchGraphData(): Promise<GraphData> {
   const r = await fetch(`${API}/memory/graph`, { headers: authHeaders() });
   const data = await r.json();
@@ -263,6 +277,7 @@ export async function fetchGraphData(): Promise<GraphData> {
       label: getNodeDisplayText(n),
       properties: (n.properties as Record<string, unknown>) || n,
       typeLabel: getNodeTypeLabel(n),
+      nodeKind: (n.node_kind as string) || "record",
     })
   );
   const edges: GraphEdge[] = ((data.edges || []) as Record<string, unknown>[]).map(
@@ -277,7 +292,10 @@ export async function fetchGraphData(): Promise<GraphData> {
       source_session: (e.source_session as string) || "",
     })
   );
-  return { nodes, edges };
+  const treeRoots: GraphTreeNode[] = ((data.tree_roots || []) as Record<string, unknown>[]).map(
+    (node) => toGraphTreeNode(node)
+  );
+  return { nodes, edges, treeRoots };
 }
 
 export async function fetchGraphEdges(): Promise<GraphEdge[]> {
@@ -378,7 +396,7 @@ export async function searchGraphNodes(
       source_session: (e.source_session as string) || "",
     })
   );
-  return { nodes, edges };
+  return { nodes, edges, treeRoots: [] };
 }
 
 export async function addGraphNode(

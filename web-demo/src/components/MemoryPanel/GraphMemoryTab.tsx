@@ -125,7 +125,7 @@ export default function GraphMemoryTab() {
   const handleClearAll = async () => {
     const total = graphData.nodes.length;
     if (!window.confirm(
-      `确定清空所有图谱记忆？\n当前共 ${total} 个节点及所有关联边将被永久删除，此操作不可撤销。`
+      `确定清空所有语义记忆树？\n当前共 ${total} 个节点及所有关联边将被永久删除，此操作不可撤销。`
     )) return;
     try {
       await clearGraphMemory();
@@ -182,7 +182,7 @@ export default function GraphMemoryTab() {
               className="crud-btn crud-btn-sm"
               style={{ color: "var(--red)", borderColor: "var(--red)" }}
               onClick={handleClearAll}
-              title="清空当前用户的所有图谱记忆"
+              title="清空当前用户的所有语义记忆树"
               disabled={graphData.nodes.length === 0}
             >
               <DeleteOutlined /> 清空
@@ -225,7 +225,7 @@ export default function GraphMemoryTab() {
           {/* Node list */}
           <div className="memory-list">
             {displayNodes.length === 0 ? (
-              <div className="empty-hint">{searchResults ? "未找到匹配节点" : "暂无图谱节点"}</div>
+              <div className="empty-hint">{searchResults ? "未找到匹配节点" : "暂无记忆树节点"}</div>
             ) : (
               displayNodes.map((n) => (
                 <div key={n.id} className="memory-item">

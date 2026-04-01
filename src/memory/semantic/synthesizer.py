@@ -2,10 +2,10 @@
 
 在 ingest 完成后，对同一用户的记忆执行在线聚合：
 1. 检测新写入 records 与已有 records 之间是否可融合
-2. LLM 判断融合可行性 + 分组
+2. LLM 判断融合可行性 + 分组（同一轮输出互不重叠 group）
 3. LLM 执行融合，生成 CompositeRecord
-4. 对新生成的 composite 再做一轮/多轮层级融合（composite -> composite）
-5. 写入 sqlite + vector
+4. 对新 record / 新 composite 与已有 root composite 再做多轮层级融合
+5. 持久化直接 child composite 关系，形成层级树
 """
 
 from __future__ import annotations
@@ -71,22 +71,39 @@ class RecordFusionEngine:
         if not new_records:
             return []
 
-        synthesized = self._synthesize_records_on_ingest(new_records, user_id=user_id)
-        if not synthesized or self._max_hierarchy_rounds <= 0:
+        existing_composites = self._sqlite.list_synthesized(user_id=user_id)
+        covered_record_ids, _ = self._build_existing_hierarchy_maps(existing_composites)
+
+        synthesized = self._synthesize_records_on_ingest(
+            new_records,
+            user_id=user_id,
+            covered_record_ids=covered_record_ids,
+        )
+        if self._max_hierarchy_rounds <= 0:
             return synthesized
 
         all_synthesized = list(synthesized)
-        frontier = list(synthesized)
+        covered_by_first_layer = {
+            source_id
+            for composite in synthesized
+            for source_id in composite.source_record_ids
+        }
+        frontier: list[MemoryRecord | CompositeRecord] = list(synthesized)
+        frontier.extend(
+            record
+            for record in new_records
+            if record.record_id not in covered_by_first_layer
+        )
         seen_ids = {item.composite_id for item in synthesized}
 
         for _ in range(self._max_hierarchy_rounds):
-            next_level = self._synthesize_composites_on_ingest(frontier, user_id=user_id)
+            next_level = self._synthesize_hierarchy_on_ingest(frontier, user_id=user_id)
             next_level = [item for item in next_level if item.composite_id not in seen_ids]
             if not next_level:
                 break
 
             all_synthesized.extend(next_level)
-            frontier = next_level
+            frontier = list(next_level)
             seen_ids.update(item.composite_id for item in next_level)
 
         return all_synthesized
@@ -96,10 +113,17 @@ class RecordFusionEngine:
         new_records: list[MemoryRecord],
         *,
         user_id: str = "",
+        covered_record_ids: set[str] | None = None,
     ) -> list[CompositeRecord]:
         """第一层融合：new/existing records -> composite。"""
         if not new_records:
             return []
+
+        covered_record_ids = {
+            str(record_id or "").strip()
+            for record_id in (covered_record_ids or set())
+            if str(record_id or "").strip()
+        }
 
         # 收集所有候选 records（新写入的 + 与其相关的旧 records）
         candidate_ids: set[str] = {r.record_id for r in new_records}
@@ -113,6 +137,8 @@ class RecordFusionEngine:
                 limit=5,
             )
             for r in fts_results:
+                if r.record_id in covered_record_ids:
+                    continue
                 if r.record_id not in candidate_ids:
                     candidate_ids.add(r.record_id)
                     candidate_map[r.record_id] = r
@@ -124,6 +150,7 @@ class RecordFusionEngine:
 
         # LLM 判断合成可行性
         groups = self._judge_synthesis(candidates)
+        groups = self._normalize_disjoint_groups(groups, allowed_ids=candidate_map.keys())
         if not groups:
             return []
 
@@ -164,6 +191,7 @@ class RecordFusionEngine:
                 semantic_text=synth_result.get("semantic_text", ""),
                 normalized_text=synth_result.get("normalized_text", ""),
                 source_record_ids=flattened_source_ids,
+                child_composite_ids=[],
                 synthesis_reason=reason,
                 entities=synth_result.get("entities", []),
                 temporal=synth_result.get("temporal", {}),
@@ -183,26 +211,42 @@ class RecordFusionEngine:
 
         return synthesized
 
-    def _synthesize_composites_on_ingest(
+    def _synthesize_hierarchy_on_ingest(
         self,
-        new_composites: list[CompositeRecord],
+        new_items: list[MemoryRecord | CompositeRecord],
         *,
         user_id: str = "",
     ) -> list[CompositeRecord]:
-        """第二层融合：new composite + related composites -> parent composite。"""
-        if len(new_composites) < self._min_records:
+        """层级融合：new record/composite + related root composites -> parent composite。"""
+        if not new_items:
             return []
 
-        candidate_map: dict[str, CompositeRecord] = {
-            item.composite_id: item for item in new_composites
-        }
+        existing_composites = self._sqlite.list_synthesized(user_id=user_id)
+        _, child_to_parent = self._build_existing_hierarchy_maps(existing_composites)
 
-        for composite in new_composites:
-            for related in self._find_related_composites(composite, user_id=user_id):
-                if related.composite_id == composite.composite_id:
+        candidate_map: dict[str, MemoryRecord | CompositeRecord] = {}
+        for item in new_items:
+            item_id = self._item_id(item)
+            if not item_id:
+                continue
+            if isinstance(item, CompositeRecord) and item_id in child_to_parent:
+                continue
+            candidate_map[item_id] = item
+
+        if len(candidate_map) < self._min_records:
+            return []
+
+        for item in list(candidate_map.values()):
+            for related in self._find_related_root_composites(
+                item,
+                user_id=user_id,
+                child_to_parent=child_to_parent,
+            ):
+                item_id = self._item_id(item)
+                if related.composite_id == item_id:
                     continue
                 if self._has_coverage_relation(
-                    composite.source_record_ids,
+                    self._flatten_source_record_ids([item]),
                     related.source_record_ids,
                 ):
                     continue
@@ -213,6 +257,7 @@ class RecordFusionEngine:
             return []
 
         groups = self._judge_synthesis(candidates)
+        groups = self._normalize_disjoint_groups(groups, allowed_ids=candidate_map.keys())
         if not groups:
             return []
 
@@ -225,14 +270,14 @@ class RecordFusionEngine:
                 for uid in group.get("source_record_ids", [])
                 if str(uid or "").strip()
             ]
-            source_composites = [candidate_map[uid] for uid in source_ids if uid in candidate_map]
+            source_items = [candidate_map[uid] for uid in source_ids if uid in candidate_map]
 
-            if len(source_composites) < self._min_records:
+            if len(source_items) < self._min_records:
                 continue
-            if len(source_composites) > self._max_records_per_group:
-                source_composites = source_composites[: self._max_records_per_group]
+            if len(source_items) > self._max_records_per_group:
+                source_items = source_items[: self._max_records_per_group]
 
-            flattened_source_ids = self._flatten_source_record_ids(source_composites)
+            flattened_source_ids = self._flatten_source_record_ids(source_items)
             if len(flattened_source_ids) < self._min_records:
                 continue
 
@@ -244,7 +289,7 @@ class RecordFusionEngine:
             if self._is_source_group_already_covered(flattened_source_ids):
                 continue
 
-            synth_result = self._execute_synthesis(source_composites, reason, suggested_type)
+            synth_result = self._execute_synthesis(source_items, reason, suggested_type)
             if not synth_result:
                 continue
 
@@ -255,12 +300,19 @@ class RecordFusionEngine:
             if composite_id in candidate_map:
                 continue
 
+            child_composite_ids = sorted(
+                self._item_id(item)
+                for item in source_items
+                if isinstance(item, CompositeRecord)
+            )
+
             composite = CompositeRecord(
                 composite_id=composite_id,
                 memory_type=suggested_type,
                 semantic_text=synth_result.get("semantic_text", ""),
                 normalized_text=synth_result.get("normalized_text", ""),
                 source_record_ids=flattened_source_ids,
+                child_composite_ids=child_composite_ids,
                 synthesis_reason=reason,
                 entities=synth_result.get("entities", []),
                 temporal=synth_result.get("temporal", {}),
@@ -319,20 +371,22 @@ class RecordFusionEngine:
 
         return False
 
-    def _find_related_composites(
+    def _find_related_root_composites(
         self,
-        composite: CompositeRecord,
+        item: MemoryRecord | CompositeRecord,
         *,
         user_id: str = "",
+        child_to_parent: dict[str, str] | None = None,
     ) -> list[CompositeRecord]:
         related: dict[str, CompositeRecord] = {}
+        child_to_parent = child_to_parent or {}
 
         queries: list[str] = []
         for text in [
-            composite.normalized_text,
-            composite.semantic_text,
-            " ".join(composite.entities),
-            " ".join([*composite.task_tags, *composite.tool_tags, *composite.constraint_tags]),
+            item.normalized_text,
+            item.semantic_text,
+            " ".join(item.entities),
+            " ".join([*item.task_tags, *item.tool_tags, *item.constraint_tags]),
         ]:
             cleaned = str(text or "").strip()
             if cleaned and cleaned not in queries:
@@ -346,7 +400,9 @@ class RecordFusionEngine:
             )
             for result in fts_results:
                 composite_id = str(result.get("composite_id", "")).strip()
-                if not composite_id or composite_id == composite.composite_id:
+                if not composite_id or composite_id == self._item_id(item):
+                    continue
+                if composite_id in child_to_parent:
                     continue
                 fetched = self._sqlite.get_synthesized(composite_id)
                 if fetched is not None:
@@ -361,13 +417,157 @@ class RecordFusionEngine:
                 )
                 for result in vector_results:
                     composite_id = str(result.get("composite_id", "")).strip()
-                    if not composite_id or composite_id == composite.composite_id:
+                    if not composite_id or composite_id == self._item_id(item):
+                        continue
+                    if composite_id in child_to_parent:
                         continue
                     fetched = self._sqlite.get_synthesized(composite_id)
                     if fetched is not None:
                         related[composite_id] = fetched
 
         return list(related.values())
+
+    def _build_existing_hierarchy_maps(
+        self,
+        composites: list[CompositeRecord],
+    ) -> tuple[set[str], dict[str, str]]:
+        covered_record_ids: set[str] = set()
+        source_sets: dict[str, set[str]] = {}
+        explicit_candidates: dict[str, set[str]] = {}
+
+        for composite in composites:
+            composite_id = self._item_id(composite)
+            if not composite_id:
+                continue
+            source_set = {
+                str(source_id or "").strip()
+                for source_id in composite.source_record_ids
+                if str(source_id or "").strip()
+            }
+            source_sets[composite_id] = source_set
+            covered_record_ids.update(source_set)
+
+        for composite in composites:
+            parent_id = self._item_id(composite)
+            parent_sources = source_sets.get(parent_id, set())
+            for child_id in composite.child_composite_ids:
+                normalized_child = str(child_id or "").strip()
+                child_sources = source_sets.get(normalized_child, set())
+                if (
+                    normalized_child
+                    and normalized_child != parent_id
+                    and child_sources
+                    and child_sources.issubset(parent_sources)
+                    and len(parent_sources) > len(child_sources)
+                ):
+                    explicit_candidates.setdefault(normalized_child, set()).add(parent_id)
+
+        inferred_candidates: dict[str, set[str]] = {}
+        composite_ids = list(source_sets.keys())
+        for parent_id in composite_ids:
+            if any(parent_id in parents for parents in explicit_candidates.values()):
+                continue
+            parent_sources = source_sets[parent_id]
+            if len(parent_sources) < self._min_records:
+                continue
+
+            eligible_children = [
+                child_id
+                for child_id in composite_ids
+                if child_id != parent_id
+                and source_sets[child_id]
+                and source_sets[child_id].issubset(parent_sources)
+                and len(parent_sources) > len(source_sets[child_id])
+            ]
+
+            for child_id in eligible_children:
+                child_sources = source_sets[child_id]
+                has_intermediate = any(
+                    mid_id not in {child_id, parent_id}
+                    and source_sets[mid_id]
+                    and child_sources.issubset(source_sets[mid_id])
+                    and source_sets[mid_id].issubset(parent_sources)
+                    and len(parent_sources) > len(source_sets[mid_id]) > len(child_sources)
+                    for mid_id in eligible_children
+                )
+                if not has_intermediate:
+                    inferred_candidates.setdefault(child_id, set()).add(parent_id)
+
+        parent_candidates = explicit_candidates or inferred_candidates
+        if explicit_candidates:
+            for child_id, parents in inferred_candidates.items():
+                if child_id not in parent_candidates:
+                    parent_candidates[child_id] = set(parents)
+
+        child_to_parent: dict[str, str] = {}
+        for child_id, parents in parent_candidates.items():
+            valid_parents = [parent_id for parent_id in parents if parent_id in source_sets]
+            if not valid_parents:
+                continue
+            best_parent = min(
+                valid_parents,
+                key=lambda parent_id: (len(source_sets.get(parent_id, set())) or 10**9, parent_id),
+            )
+            child_to_parent[child_id] = best_parent
+
+        return covered_record_ids, child_to_parent
+
+    def _normalize_disjoint_groups(
+        self,
+        groups: list[dict[str, Any]],
+        *,
+        allowed_ids: Any,
+    ) -> list[dict[str, Any]]:
+        allowed = {
+            str(item_id or "").strip()
+            for item_id in allowed_ids
+            if str(item_id or "").strip()
+        }
+        normalized_groups: list[dict[str, Any]] = []
+        for group in groups or []:
+            raw_ids = group.get("source_record_ids", []) or []
+            source_ids: list[str] = []
+            seen: set[str] = set()
+            for raw_id in raw_ids:
+                normalized = str(raw_id or "").strip()
+                if not normalized or normalized not in allowed or normalized in seen:
+                    continue
+                seen.add(normalized)
+                source_ids.append(normalized)
+
+            if len(source_ids) < self._min_records:
+                continue
+
+            normalized_groups.append({
+                "source_record_ids": source_ids,
+                "synthesis_reason": str(group.get("synthesis_reason", "") or "").strip(),
+                "suggested_type": str(group.get("suggested_type", "composite_pattern") or "composite_pattern").strip(),
+            })
+
+        normalized_groups.sort(
+            key=lambda group: (
+                -len(group["source_record_ids"]),
+                group.get("suggested_type", ""),
+                group.get("source_record_ids", []),
+            )
+        )
+
+        used_ids: set[str] = set()
+        disjoint_groups: list[dict[str, Any]] = []
+        for group in normalized_groups:
+            source_ids = group.get("source_record_ids", [])
+            if any(source_id in used_ids for source_id in source_ids):
+                continue
+            disjoint_groups.append(group)
+            used_ids.update(source_ids)
+
+        return disjoint_groups
+
+    @staticmethod
+    def _item_id(item: MemoryRecord | CompositeRecord) -> str:
+        if isinstance(item, CompositeRecord):
+            return str(item.composite_id or "").strip()
+        return str(item.record_id or "").strip()
 
     @staticmethod
     def _flatten_source_record_ids(
@@ -483,6 +683,7 @@ class RecordFusionEngine:
             "task_tags": item.task_tags,
             "tool_tags": item.tool_tags,
             "source_record_ids": source_record_ids,
+            "child_composite_ids": list(item.child_composite_ids) if isinstance(item, CompositeRecord) else [],
         }
 
     @staticmethod
@@ -513,6 +714,7 @@ class RecordFusionEngine:
             "affordance_tags": item.affordance_tags,
             "confidence": item.confidence,
             "source_record_ids": source_record_ids,
+            "child_composite_ids": list(item.child_composite_ids) if isinstance(item, CompositeRecord) else [],
         }
 
     @staticmethod

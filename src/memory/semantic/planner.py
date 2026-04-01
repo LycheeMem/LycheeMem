@@ -61,6 +61,9 @@ class ActionAwareSearchPlanner:
                 mode="answer",
                 semantic_queries=[user_query],
                 pragmatic_queries=[],
+                tree_retrieval_mode="root_only",
+                tree_expansion_depth=0,
+                include_leaf_records=False,
                 depth=5,
                 reasoning="plan_parse_failed, fallback to simple query",
             )
@@ -84,6 +87,9 @@ class ActionAwareSearchPlanner:
             required_constraints=d.get("required_constraints", []),
             required_affordances=d.get("required_affordances", []),
             missing_slots=d.get("missing_slots", []),
+            tree_retrieval_mode=str(d.get("tree_retrieval_mode", "balanced") or "balanced"),
+            tree_expansion_depth=int(d.get("tree_expansion_depth", 1) or 0),
+            include_leaf_records=bool(d.get("include_leaf_records", False)),
             depth=int(d.get("depth", 5)),
             reasoning=d.get("reasoning", ""),
         )
@@ -111,7 +117,48 @@ class ActionAwareSearchPlanner:
             if plan.mode in {"action", "mixed"}:
                 plan.pragmatic_queries = [action_state.tentative_action, *plan.pragmatic_queries]
 
+        self._normalize_tree_strategy(plan, action_state)
         return plan
+
+    def _normalize_tree_strategy(
+        self,
+        plan: SearchPlan,
+        action_state: ActionState,
+    ) -> None:
+        valid_modes = {"root_only", "balanced", "descend"}
+        if plan.tree_retrieval_mode not in valid_modes:
+            plan.tree_retrieval_mode = "balanced"
+
+        detail_signals = any([
+            plan.pragmatic_queries,
+            plan.required_constraints,
+            plan.required_affordances,
+            plan.missing_slots,
+            action_state.missing_slots,
+            action_state.known_constraints,
+            action_state.failure_signal,
+            action_state.tentative_action,
+        ])
+
+        if plan.mode == "answer" and not detail_signals:
+            plan.tree_retrieval_mode = "root_only"
+            plan.tree_expansion_depth = 0
+            plan.include_leaf_records = False
+            return
+
+        if plan.mode == "mixed":
+            if plan.tree_retrieval_mode == "root_only":
+                plan.tree_retrieval_mode = "balanced"
+            if detail_signals and plan.tree_retrieval_mode != "descend":
+                plan.tree_retrieval_mode = "balanced"
+            plan.tree_expansion_depth = max(1, min(int(plan.tree_expansion_depth or 1), 2))
+            plan.include_leaf_records = bool(plan.include_leaf_records or detail_signals)
+            return
+
+        # action 模式：优先显式下钻，让计划真正决定树遍历
+        plan.tree_retrieval_mode = "descend"
+        plan.tree_expansion_depth = max(2, min(int(plan.tree_expansion_depth or 2), 3))
+        plan.include_leaf_records = True
 
     @staticmethod
     def _merge_unique(primary: list[str], secondary: list[str]) -> list[str]:

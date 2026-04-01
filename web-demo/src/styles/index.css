@@ -701,6 +701,10 @@ html, body {
   overflow: hidden;
 }
 
+.graph-tree-container {
+  overflow: auto;
+}
+
 #graph-canvas {
   width: 100%;
   height: 100%;
@@ -735,6 +739,157 @@ html, body {
   font-size: 13px;
 }
 .empty-state .sub { font-size: 11px; opacity: 0.6; }
+
+.memory-tree-scroll {
+  min-height: 100%;
+  padding: 14px 16px 24px;
+}
+
+.memory-tree-list,
+.memory-tree-children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.memory-tree-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.memory-tree-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.memory-tree-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.memory-tree-toggle,
+.memory-tree-leaf-dot {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 4px;
+}
+
+.memory-tree-toggle {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.memory-tree-toggle:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(99, 102, 241, 0.06);
+}
+
+.memory-tree-leaf-dot::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--teal);
+  box-shadow: 0 0 0 4px rgba(20, 184, 166, 0.12);
+}
+
+.memory-tree-card {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.04);
+}
+
+.memory-tree-item.composite > .memory-tree-row .memory-tree-card {
+  border-color: rgba(99, 102, 241, 0.18);
+  background: linear-gradient(180deg, rgba(99, 102, 241, 0.04), rgba(99, 102, 241, 0.02));
+}
+
+.memory-tree-item.record > .memory-tree-row .memory-tree-card {
+  border-color: rgba(20, 184, 166, 0.18);
+}
+
+.memory-tree-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.memory-tree-kind,
+.memory-tree-type {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.memory-tree-kind.composite {
+  background: rgba(99, 102, 241, 0.12);
+  color: var(--accent);
+}
+
+.memory-tree-kind.record {
+  background: rgba(20, 184, 166, 0.12);
+  color: var(--teal);
+}
+
+.memory-tree-type {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+
+.memory-tree-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.memory-tree-summary {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.memory-tree-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.memory-tree-children {
+  margin-left: 10px;
+  padding-left: 18px;
+  border-left: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
 
 /* ═══ MEMORY PANEL ═══ */
 .memory-tabs {

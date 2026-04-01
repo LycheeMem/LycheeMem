@@ -1,17 +1,17 @@
 import { create } from "zustand";
 import { clearAuth, getStoredUser, storeAuth } from "./api";
 import type {
-  AgentName,
-  AgentStatusValue,
-  AuthUser,
-  GraphData,
-  GraphEdge,
-  Message,
-  PipelineStatus,
-  PipelineTrace,
-  SessionInfo,
-  SkillItem,
-  Turn,
+    AgentName,
+    AgentStatusValue,
+    AuthUser,
+    GraphData,
+    GraphEdge,
+    Message,
+    PipelineStatus,
+    PipelineTrace,
+    SessionInfo,
+    SkillItem,
+    Turn,
 } from "./types";
 import { AGENT_NAMES } from "./types";
 
@@ -120,7 +120,7 @@ export const useStore = create<AppState>((set) => ({
   messages: [],
   isStreaming: false,
   isTyping: false,
-  graphData: { nodes: [], edges: [] },
+  graphData: { nodes: [], edges: [], treeRoots: [] },
   agents: makeInitialAgents(),
   showTimeline: false,
   wmTokenUsage: 0,
@@ -203,7 +203,7 @@ export const useStore = create<AppState>((set) => ({
       sessions: [],
       messages: [],
       agents: makeInitialAgents(),
-      graphData: { nodes: [], edges: [] },
+      graphData: { nodes: [], edges: [], treeRoots: [] },
       graphEdges: [],
       skills: [],
       wmTurns: [],
