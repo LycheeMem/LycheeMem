@@ -276,7 +276,7 @@ Triggered immediately after `ReasoningAgent` completes, runs in a thread pool an
 ```bash
 git clone https://github.com/LycheeMem/LycheeMem.git
 cd LycheeMem
-pip install -e ".[dev]"
+pip install -e .
 ```
 
 ### Configuration
@@ -305,11 +305,15 @@ COMPACT_VECTOR_DB_PATH=data/compact_vector
 
 ```bash
 python main.py
-# with hot-reload:
-python main.py --reload
 ```
 
 The API is served at `http://localhost:8000`. Interactive docs at `/docs`.
+
+> `main.py` currently starts Uvicorn without enabling live reload. For development reload, run Uvicorn directly, for example:
+>
+> ```bash
+> uvicorn src.api.server:create_app --factory --reload
+> ```
 
 ---
 
@@ -366,9 +370,9 @@ See the full setup guide: [openclaw-plugin/INSTALL_OPENCLAW.md](openclaw-plugin/
 
 LycheeMem also exposes an HTTP MCP endpoint at `http://localhost:8000/mcp`.
 
-- Available tools: `lychee_memory_search`, `lychee_memory_synthesize`, `lychee_memory_consolidate`
+- Available tools: `lychee_memory_smart_search`, `lychee_memory_search`, `lychee_memory_append_turn`, `lychee_memory_synthesize`, `lychee_memory_consolidate`
 - Use `Authorization: Bearer <token>` if you want per-user memory isolation
-- `lychee_memory_consolidate` only works for sessions that were already written through `/chat` or `/memory/reason`
+- `lychee_memory_consolidate` works for sessions that already contain mirrored turns from `/chat`, `/memory/reason`, or `lychee_memory_append_turn`
 
 ### MCP Transport
 
@@ -450,10 +454,11 @@ curl -X POST http://localhost:8000/mcp \
     "id": 2,
     "method": "tools/call",
     "params": {
-      "name": "lychee_memory_search",
+      "name": "lychee_memory_smart_search",
       "arguments": {
         "query": "what tools do I use for database backups",
         "top_k": 5,
+        "mode": "compact",
         "include_graph": true,
         "include_skills": true
       }
@@ -463,9 +468,9 @@ curl -X POST http://localhost:8000/mcp \
 
 ### Recommended MCP Usage Pattern
 
-1. Use `/chat` or `/memory/reason` with a stable `session_id` to write conversation turns.
-2. Use `lychee_memory_search` to retrieve relevant long-term memory.
-3. Use `lychee_memory_synthesize` to compress retrieval results into `background_context`.
+1. Use `/chat` or `/memory/reason` with a stable `session_id` to write conversation turns, or mirror external host turns with `lychee_memory_append_turn`.
+2. Use `lychee_memory_smart_search` in `compact` mode for the default one-shot recall path.
+3. Use `lychee_memory_search` + `lychee_memory_synthesize` only when you explicitly want search and synthesis as separate stages.
 4. After the conversation ends, call `lychee_memory_consolidate` with the same `session_id`.
 
 ---
@@ -502,7 +507,43 @@ Query both the semantic memory channel and the skill store in a single call.
       "provenance": [ { "id": "...", "source": "semantic_memory", "relevance": 0.91, ... } ]
     }
   ],
+  "semantic_results": [
+    {
+      "anchor": { "node_id": "compact_context", "name": "CompactSemanticMemory", "label": "SemanticContext", "score": 1.0 },
+      "constructed_context": "...",
+      "provenance": [ { "record_id": "...", "source": "record", "score": 0.91, ... } ]
+    }
+  ],
   "skill_results": [ { "id": "...", "intent": "pg_dump backup to S3", "score": 0.87, ... } ],
+  "total": 6
+}
+```
+
+---
+
+### `POST /memory/smart-search` — One-Shot Recall
+
+Runs search and, optionally, synthesis in one API call. `mode=compact` is the default integration path when you want a concise `background_context` without handling intermediate payloads yourself.
+
+```json
+// Request
+{
+  "query": "what tools do I use for database backups",
+  "top_k": 5,
+  "synthesize": true,
+  "mode": "compact"
+}
+
+// Response
+{
+  "query": "...",
+  "mode": "compact",
+  "synthesized": true,
+  "background_context": "User regularly uses pg_dump with a cron job...",
+  "skill_reuse_plan": [ { "skill_id": "...", "intent": "...", "doc_markdown": "..." } ],
+  "provenance": [ { "record_id": "...", "source": "record", "score": 0.91, ... } ],
+  "kept_count": 4,
+  "dropped_count": 2,
   "total": 6
 }
 ```
@@ -549,7 +590,7 @@ Runs the ReasoningAgent given pre-synthesized context. Can be chained after `/me
 
 // Response
 {
-  "final_response": "You typically use pg_dump scheduled via cron...",
+  "response": "You typically use pg_dump scheduled via cron...",
   "session_id": "my-session",
   "wm_token_usage": 3412
 }
@@ -557,18 +598,59 @@ Runs the ReasoningAgent given pre-synthesized context. Can be chained after `/me
 
 ---
 
-### `POST /memory/consolidate/{session_id}` — Trigger Consolidation
+### `POST /memory/append-turn` — Mirror External Host Turns
 
-Manually trigger memory consolidation for a session (normally runs automatically in the background after each chat turn).
-
-```bash
-curl -X POST http://localhost:8000/memory/consolidate/my-session
-```
+Appends one user or assistant turn into LycheeMem's session store so it can be consolidated later.
 
 ```json
+// Request
+{
+  "session_id": "my-session",
+  "role": "user",
+  "content": "I usually back up PostgreSQL with pg_dump to S3."
+}
+
 // Response
-{ "message": "Consolidation done: 5 entities, 2 skills extracted." }
+{
+  "status": "appended",
+  "session_id": "my-session",
+  "turn_count": 3
+}
 ```
+
+---
+
+### `POST /memory/consolidate` — Trigger Consolidation
+
+Manually trigger memory consolidation for a session. This is the primary consolidation endpoint and supports both background and synchronous modes.
+
+```json
+// Request
+{
+  "session_id": "my-session",
+  "retrieved_context": "",
+  "background": true
+}
+
+// Response (background mode)
+{
+  "status": "started",
+  "entities_added": 0,
+  "skills_added": 0,
+  "facts_added": 0
+}
+```
+
+Legacy compatibility endpoint: `POST /memory/consolidate/{session_id}`.
+
+---
+
+### `GET /pipeline/status` and `GET /pipeline/last-consolidation`
+
+Use these endpoints for operational checks and background consolidation polling:
+
+- `GET /pipeline/status` returns aggregate counts for sessions, semantic memory, and skills.
+- `GET /pipeline/last-consolidation?session_id=<id>` returns the latest consolidation result for a session, or `pending` if the background task has not finished yet.
 
 ### Usage Examples
 

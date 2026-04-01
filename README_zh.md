@@ -276,7 +276,7 @@ $$\text{Score} = \alpha \cdot S_\text{sem} + \beta \cdot S_\text{action} + \kapp
 ```bash
 git clone https://github.com/LycheeMem/LycheeMem.git
 cd LycheeMem
-pip install -e ".[dev]"
+pip install -e .
 ```
 
 ### 配置
@@ -305,11 +305,15 @@ COMPACT_VECTOR_DB_PATH=data/compact_vector
 
 ```bash
 python main.py
-# 带热重载：
-python main.py --reload
 ```
 
 API 服务于 `http://localhost:8000`。交互式文档于 `/docs`。
+
+> 当前 `main.py` 启动 Uvicorn 时并不会开启热重载。开发时如果需要自动重载，请直接运行 Uvicorn，例如：
+>
+> ```bash
+> uvicorn src.api.server:create_app --factory --reload
+> ```
 
 ---
 
@@ -366,9 +370,9 @@ openclaw gateway restart
 
 LycheeMem 还通过 `http://localhost:8000/mcp` 暴露了 MCP 端点。
 
-- 可用工具：`lychee_memory_search`, `lychee_memory_synthesize`, `lychee_memory_consolidate`
+- 可用工具：`lychee_memory_smart_search`, `lychee_memory_search`, `lychee_memory_append_turn`, `lychee_memory_synthesize`, `lychee_memory_consolidate`
 - 如果需要每个用户的内存隔离，请使用 `Authorization: Bearer <token>`
-- `lychee_memory_consolidate` 仅适用于已经通过 `/chat` 或 `/memory/reason` 写入的会话
+- `lychee_memory_consolidate` 适用于已经通过 `/chat`、`/memory/reason` 或 `lychee_memory_append_turn` 写入/镜像过轮次的会话
 
 ### MCP 传输
 
@@ -450,10 +454,11 @@ curl -X POST http://localhost:8000/mcp \
     "id": 2,
     "method": "tools/call",
     "params": {
-      "name": "lychee_memory_search",
+      "name": "lychee_memory_smart_search",
       "arguments": {
         "query": "what tools do I use for database backups",
         "top_k": 5,
+        "mode": "compact",
         "include_graph": true,
         "include_skills": true
       }
@@ -463,9 +468,9 @@ curl -X POST http://localhost:8000/mcp \
 
 ### 推荐的 MCP 使用模式
 
-1. 使用 `/chat` 或 `/memory/reason` 配合稳定的 `session_id` 来写入对话轮次。
-2. 使用 `lychee_memory_search` 检索相关的长期记忆。
-3. 使用 `lychee_memory_synthesize` 将检索结果合成为 `background_context`。
+1. 使用 `/chat` 或 `/memory/reason` 配合稳定的 `session_id` 写入对话轮次；如果是外部宿主，也可以用 `lychee_memory_append_turn` 镜像轮次。
+2. 默认推荐使用 `lychee_memory_smart_search` 的 `compact` 模式完成一体化检索。
+3. 只有在你明确需要把检索和合成拆开控制时，再使用 `lychee_memory_search` + `lychee_memory_synthesize`。
 4. 对话结束后，使用相同的 `session_id` 调用 `lychee_memory_consolidate`。
 
 ---
@@ -502,7 +507,43 @@ curl -X POST http://localhost:8000/mcp \
       "provenance": [ { "id": "...", "source": "semantic_memory", "relevance": 0.91, ... } ]
     }
   ],
+  "semantic_results": [
+    {
+      "anchor": { "node_id": "compact_context", "name": "CompactSemanticMemory", "label": "SemanticContext", "score": 1.0 },
+      "constructed_context": "...",
+      "provenance": [ { "record_id": "...", "source": "record", "score": 0.91, ... } ]
+    }
+  ],
   "skill_results": [ { "id": "...", "intent": "pg_dump 备份到 S3", "score": 0.87, ... } ],
+  "total": 6
+}
+```
+
+---
+
+### `POST /memory/smart-search` —— 一体化检索
+
+在一个 API 调用中完成 search，并可按需自动执行 synthesize。`mode=compact` 是默认推荐集成方式，适合直接拿到简洁的 `background_context`。
+
+```json
+// 请求
+{
+  "query": "我用什么工具做数据库备份",
+  "top_k": 5,
+  "synthesize": true,
+  "mode": "compact"
+}
+
+// 响应
+{
+  "query": "...",
+  "mode": "compact",
+  "synthesized": true,
+  "background_context": "用户通常使用 pg_dump 配合 cron 任务...",
+  "skill_reuse_plan": [ { "skill_id": "...", "intent": "...", "doc_markdown": "..." } ],
+  "provenance": [ { "record_id": "...", "source": "record", "score": 0.91, ... } ],
+  "kept_count": 4,
+  "dropped_count": 2,
   "total": 6
 }
 ```
@@ -549,7 +590,7 @@ curl -X POST http://localhost:8000/mcp \
 
 // 响应
 {
-  "final_response": "你通常使用 pg_dump 通过 cron 调度...",
+  "response": "你通常使用 pg_dump 通过 cron 调度...",
   "session_id": "my-session",
   "wm_token_usage": 3412
 }
@@ -557,18 +598,59 @@ curl -X POST http://localhost:8000/mcp \
 
 ---
 
-### `POST /memory/consolidate/{session_id}` —— 触发固化
+### `POST /memory/append-turn` —— 镜像外部宿主轮次
 
-手动为会话触发记忆固化（通常在每次对话后自动在后台运行）。
-
-```bash
-curl -X POST http://localhost:8000/memory/consolidate/my-session
-```
+向 LycheeMem 的 session store 追加一条用户或助手轮次，供后续 consolidate 使用。
 
 ```json
+// 请求
+{
+  "session_id": "my-session",
+  "role": "user",
+  "content": "我通常使用 pg_dump 把 PostgreSQL 备份到 S3。"
+}
+
 // 响应
-{ "message": "Consolidation done: 5 entities, 2 skills extracted." }
+{
+  "status": "appended",
+  "session_id": "my-session",
+  "turn_count": 3
+}
 ```
+
+---
+
+### `POST /memory/consolidate` —— 触发固化
+
+手动为会话触发记忆固化。这是当前的主固化接口，支持后台异步和同步等待两种模式。
+
+```json
+// 请求
+{
+  "session_id": "my-session",
+  "retrieved_context": "",
+  "background": true
+}
+
+// 响应（后台模式）
+{
+  "status": "started",
+  "entities_added": 0,
+  "skills_added": 0,
+  "facts_added": 0
+}
+```
+
+兼容旧路径：`POST /memory/consolidate/{session_id}`。
+
+---
+
+### `GET /pipeline/status` 和 `GET /pipeline/last-consolidation`
+
+这两个接口适合做运行态检查和后台固化轮询：
+
+- `GET /pipeline/status` 返回 session、语义记忆和技能库的聚合计数。
+- `GET /pipeline/last-consolidation?session_id=<id>` 返回指定会话最近一次固化结果；如果后台任务尚未完成，则返回 `pending`。
 
 ### 使用示例
 

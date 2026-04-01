@@ -1,8 +1,8 @@
 import {
-    ApartmentOutlined,
-    CompressOutlined,
-    ExpandOutlined,
-    ReloadOutlined,
+  ApartmentOutlined,
+  CompressOutlined,
+  ExpandOutlined,
+  ReloadOutlined,
 } from "@ant-design/icons";
 import { hierarchy, tree } from "d3-hierarchy";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -16,31 +16,10 @@ const NODE_W = 200;
 const NODE_H = 90;
 const H_GAP = 240;   // horizontal slot width per node (passed to d3 nodeSize)
 const V_GAP = 140;   // vertical gap between levels (passed to d3 nodeSize)
-const VIRTUAL_ID = "__vroot__";
+const TREE_V_GAP = 16; // vertical gap between independently stacked root trees
 
 interface HierarchyDatum extends GraphTreeNode {
   _virtual?: boolean;
-}
-
-// ── D3 hierarchy builder ───────────────────────────────────────────────────
-
-function buildD3Root(roots: GraphTreeNode[], collapsedIds: Set<string>) {
-  const virtual: HierarchyDatum = {
-    id: VIRTUAL_ID,
-    label: "",
-    typeLabel: "",
-    nodeKind: "virtual",
-    properties: {},
-    children: roots as HierarchyDatum[],
-    _virtual: true,
-  };
-
-  return hierarchy<HierarchyDatum>(virtual, (d) => {
-    if (d._virtual) return d.children as HierarchyDatum[];
-    if (d.nodeKind !== "composite") return null;
-    if (collapsedIds.has(d.id)) return null;
-    return (d.children || []) as HierarchyDatum[];
-  });
 }
 
 // ── Collect all composite ids (even deep) ─────────────────────────────────
@@ -151,91 +130,102 @@ function MemoryTreeSvg({
   collapsedIds: Set<string>;
   onToggle: (id: string) => void;
 }) {
-  const root = useMemo(
-    () => buildD3Root(roots, collapsedIds),
-    [roots, collapsedIds]
+  // Build one independent D3 tree layout per root.
+  // This ensures expanding root A only grows that tree downward,
+  // and does NOT push sibling roots to the right.
+  const trees = useMemo(() => {
+    return roots.map((rootNode) => {
+      const h = hierarchy<HierarchyDatum>(rootNode as HierarchyDatum, (d) => {
+        if (d.nodeKind !== "composite") return null;
+        if (collapsedIds.has(d.id)) return null;
+        return (d.children || []) as HierarchyDatum[];
+      });
+      tree<HierarchyDatum>().nodeSize([H_GAP, V_GAP])(h);
+      const nodes = h.descendants();
+      const links = h.links();
+      const xs = nodes.map((n) => n.x ?? 0);
+      const ys = nodes.map((n) => n.y ?? 0);
+      return {
+        id: rootNode.id,
+        nodes,
+        links,
+        minX: Math.min(...xs) - NODE_W / 2 - 20,
+        maxX: Math.max(...xs) + NODE_W / 2 + 20,
+        minY: Math.min(...ys) - 4,
+        maxY: Math.max(...ys) + NODE_H + 4,
+      };
+    });
+  }, [roots, collapsedIds]);
+
+  // SVG total width = max width across all trees (enables horizontal scroll only when needed)
+  const svgW = useMemo(
+    () => Math.max(400, ...trees.map((t) => t.maxX - t.minX)),
+    [trees]
   );
 
-  const laidOut = useMemo(() => {
-    const layout = tree<HierarchyDatum>().nodeSize([H_GAP, V_GAP]);
-    layout(root);
-    return root;
-  }, [root]);
-
-  const allNodes = useMemo(
-    () => laidOut.descendants().filter((n) => !n.data._virtual),
-    [laidOut]
-  );
-
-  const allLinks = useMemo(
-    () => laidOut.links().filter((l) => !l.source.data._virtual),
-    [laidOut]
-  );
-
-  const { minX, maxX, minY, maxY } = useMemo(() => {
-    if (allNodes.length === 0) return { minX: 0, maxX: 400, minY: 0, maxY: 200 };
-    const xs = allNodes.map((n) => n.x ?? 0);
-    const ys = allNodes.map((n) => n.y ?? 0);
-    return {
-      minX: Math.min(...xs) - NODE_W / 2 - 24,
-      maxX: Math.max(...xs) + NODE_W / 2 + 24,
-      minY: Math.min(...ys) - 24,
-      maxY: Math.max(...ys) + NODE_H + 24,
-    };
-  }, [allNodes]);
-
-  const svgW = maxX - minX;
-  const svgH = maxY - minY;
+  // Stack each tree's group vertically; center each horizontally within svgW
+  const { positioned, svgH } = useMemo(() => {
+    let y = 0;
+    const positioned = trees.map((t) => {
+      const treeW = t.maxX - t.minX;
+      const treeH = t.maxY - t.minY;
+      const xOffset = (svgW - treeW) / 2 - t.minX;
+      const yOffset = y - t.minY;
+      y += treeH + TREE_V_GAP;
+      return { ...t, xOffset, yOffset };
+    });
+    const svgH = Math.max(200, y - TREE_V_GAP + 24);
+    return { positioned, svgH };
+  }, [trees, svgW]);
 
   return (
-    <svg
-      width={svgW}
-      height={svgH}
-      viewBox={`${minX} ${minY} ${svgW} ${svgH}`}
-      style={{ display: "block" }}
-    >
-      {/* Links */}
-      <g>
-        {allLinks.map((link, i) => {
-          const isCompositeTarget = link.target.data.nodeKind === "composite";
-          return (
-            <path
-              key={i}
-              d={cubicLink(
-                link.source.x ?? 0, (link.source.y ?? 0) + NODE_H,
-                link.target.x ?? 0, link.target.y ?? 0
-              )}
-              fill="none"
-              stroke={isCompositeTarget ? "rgba(99,102,241,0.4)" : "rgba(20,184,166,0.4)"}
-              strokeWidth={1.5}
-              strokeDasharray={isCompositeTarget ? "none" : "4 3"}
-            />
-          );
-        })}
-      </g>
-      {/* Connector dots */}
-      <g>
-        {allLinks.map((link, i) => (
-          <circle
-            key={i}
-            cx={link.target.x ?? 0}
-            cy={link.target.y ?? 0}
-            r={3}
-            fill={link.target.data.nodeKind === "composite" ? "rgba(99,102,241,0.6)" : "rgba(20,184,166,0.6)"}
-          />
-        ))}
-      </g>
-      {/* Nodes */}
-      <g>
-        {allNodes.map((node) => (
-          <TreeSvgNode
-            key={node.data.id}
-            node={node as { x: number; y: number; data: HierarchyDatum; children?: unknown[] }}
-            collapsed={node.data.nodeKind === "composite" && collapsedIds.has(node.data.id)}
-            onToggle={onToggle}
-          />
-        ))}
-      </g>
+    <svg width={svgW} height={svgH} style={{ display: "block" }}>
+      {positioned.map(({ id, nodes, links, xOffset, yOffset }) => (
+        <g key={id} transform={`translate(${xOffset}, ${yOffset})`}>
+          {/* Links */}
+          <g>
+            {links.map((link, i) => {
+              const isCompositeTarget = link.target.data.nodeKind === "composite";
+              return (
+                <path
+                  key={i}
+                  d={cubicLink(
+                    link.source.x ?? 0, (link.source.y ?? 0) + NODE_H,
+                    link.target.x ?? 0, link.target.y ?? 0
+                  )}
+                  fill="none"
+                  stroke={isCompositeTarget ? "rgba(99,102,241,0.4)" : "rgba(20,184,166,0.4)"}
+                  strokeWidth={1.5}
+                  strokeDasharray={isCompositeTarget ? "none" : "4 3"}
+                />
+              );
+            })}
+          </g>
+          {/* Connector dots */}
+          <g>
+            {links.map((link, i) => (
+              <circle
+                key={i}
+                cx={link.target.x ?? 0}
+                cy={link.target.y ?? 0}
+                r={3}
+                fill={link.target.data.nodeKind === "composite" ? "rgba(99,102,241,0.6)" : "rgba(20,184,166,0.6)"}
+              />
+            ))}
+          </g>
+          {/* Nodes */}
+          <g>
+            {nodes.map((node) => (
+              <TreeSvgNode
+                key={node.data.id}
+                node={node as { x: number; y: number; data: HierarchyDatum; children?: unknown[] }}
+                collapsed={node.data.nodeKind === "composite" && collapsedIds.has(node.data.id)}
+                onToggle={onToggle}
+              />
+            ))}
+          </g>
+        </g>
+      ))}
     </svg>
   );
 }
