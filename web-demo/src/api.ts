@@ -336,18 +336,23 @@ export async function fetchPipelineStatus(): Promise<PipelineStatus> {
   };
 }
 
-export async function fetchConsolidationResult(): Promise<ConsolidatorTrace> {
-  const r = await fetch(`${API}/pipeline/last-consolidation`, { headers: authHeaders() });
+export async function fetchConsolidationResult(sessionId: string): Promise<ConsolidatorTrace> {
+  const r = await fetch(
+    `${API}/pipeline/last-consolidation?session_id=${encodeURIComponent(sessionId)}`,
+    { headers: authHeaders() }
+  );
   const data = await r.json();
   const status =
     data.status === "done" ? "done" : data.status === "skipped" ? "skipped" : "pending";
   return {
+    session_id: data.session_id || sessionId,
     status,
     entities_added: data.entities_added || 0,
     skills_added: data.skills_added || 0,
     facts_added: data.facts_added || 0,
     has_novelty: data.has_novelty,
     skipped_reason: data.skipped_reason,
+    error: data.error,
     steps: Array.isArray(data.steps) ? data.steps : [],
   };
 }

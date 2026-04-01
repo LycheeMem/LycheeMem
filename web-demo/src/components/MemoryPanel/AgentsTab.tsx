@@ -237,8 +237,16 @@ function ConsolidatorContent({
           <span>
             {consolidator.skipped_reason === "no_novelty"
               ? "未检测到新信息"
+              : consolidator.skipped_reason === "no_new_turns"
+              ? "无新增对话轮次"
               : (consolidator.skipped_reason ?? "未知")}
           </span>
+        </div>
+      )}
+      {consolidator.error && (
+        <div className="trace-kv">
+          <span>错误</span>
+          <span>{consolidator.error}</span>
         </div>
       )}
       {consolidator.status === "done" && (
@@ -370,6 +378,7 @@ const RUNNING_STEPS = [
 ];
 
 export default function AgentsTab() {
+  const sessionId = useStore((s) => s.sessionId);
   const currentTrace = useStore((s) => s.currentTrace);
   const isStreaming = useStore((s) => s.isStreaming);
   const completedSteps = useStore((s) => s.completedSteps);
@@ -377,9 +386,13 @@ export default function AgentsTab() {
   const setCurrentTrace = useStore((s) => s.setCurrentTrace);
 
   const currentTraceRef = useRef(currentTrace);
+  const sessionIdRef = useRef(sessionId);
   useEffect(() => {
     currentTraceRef.current = currentTrace;
   }, [currentTrace]);
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
 
   const [consolidatorPoll, setConsolidatorPoll] = useState(0);
 
@@ -402,10 +415,16 @@ export default function AgentsTab() {
     if (!trace || trace.consolidator.status !== "pending") return;
     const delay = consolidatorPoll < 8 ? Math.min(3000 + consolidatorPoll * 1000, 10000) : 10000;
     const timer = setTimeout(async () => {
+      const pollSessionId = sessionIdRef.current;
       try {
-        const result = await fetchConsolidationResult();
+        const result = await fetchConsolidationResult(pollSessionId);
         const latestTrace = currentTraceRef.current;
         if (!latestTrace) return;
+        if (sessionIdRef.current !== pollSessionId) return;
+        if (result.session_id && result.session_id !== pollSessionId) {
+          setConsolidatorPoll((p) => p + 1);
+          return;
+        }
         if (result.status !== "pending") {
           setCurrentTrace({ ...latestTrace, consolidator: result });
         } else {
@@ -416,7 +435,7 @@ export default function AgentsTab() {
       }
     }, delay);
     return () => clearTimeout(timer);
-  }, [consolidatorPoll, setCurrentTrace]);
+  }, [consolidatorPoll, sessionId, setCurrentTrace]);
 
   if (!currentTrace) {
     if (!isStreaming) {

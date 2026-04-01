@@ -207,12 +207,14 @@ export interface ConsolidatorStepTrace {
 }
 
 export interface ConsolidatorTrace {
+  session_id?: string;
   status: "pending" | "done" | "skipped";
   entities_added: number;
   skills_added: number;
   facts_added: number;
   has_novelty?: boolean;
   skipped_reason?: string;
+  error?: string;
   steps: ConsolidatorStepTrace[];
 }
 
