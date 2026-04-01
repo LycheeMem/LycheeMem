@@ -1,123 +1,253 @@
 import {
     ApartmentOutlined,
-    DownOutlined,
+    CompressOutlined,
+    ExpandOutlined,
     ReloadOutlined,
-    RightOutlined,
 } from "@ant-design/icons";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { hierarchy, tree } from "d3-hierarchy";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchGraphData, fetchPipelineStatus } from "../api";
 import { useStore } from "../state";
 import type { GraphTreeNode } from "../types";
 
+// ── Tree layout constants ──────────────────────────────────────────────────
+
+const NODE_W = 200;
+const NODE_H = 90;
+const H_GAP = 240;   // horizontal slot width per node (passed to d3 nodeSize)
+const V_GAP = 140;   // vertical gap between levels (passed to d3 nodeSize)
+const VIRTUAL_ID = "__vroot__";
+
+interface HierarchyDatum extends GraphTreeNode {
+  _virtual?: boolean;
+}
+
+// ── D3 hierarchy builder ───────────────────────────────────────────────────
+
+function buildD3Root(roots: GraphTreeNode[], collapsedIds: Set<string>) {
+  const virtual: HierarchyDatum = {
+    id: VIRTUAL_ID,
+    label: "",
+    typeLabel: "",
+    nodeKind: "virtual",
+    properties: {},
+    children: roots as HierarchyDatum[],
+    _virtual: true,
+  };
+
+  return hierarchy<HierarchyDatum>(virtual, (d) => {
+    if (d._virtual) return d.children as HierarchyDatum[];
+    if (d.nodeKind !== "composite") return null;
+    if (collapsedIds.has(d.id)) return null;
+    return (d.children || []) as HierarchyDatum[];
+  });
+}
+
+// ── Collect all composite ids (even deep) ─────────────────────────────────
+
 function collectCompositeIds(nodes: GraphTreeNode[]): string[] {
   const ids: string[] = [];
-  const visit = (node: GraphTreeNode) => {
-    if (node.nodeKind === "composite") {
-      ids.push(node.id);
-    }
-    for (const child of node.children) {
-      visit(child);
-    }
+  const visit = (n: GraphTreeNode) => {
+    if (n.nodeKind === "composite") ids.push(n.id);
+    for (const c of n.children) visit(c);
   };
-  for (const node of nodes) {
-    visit(node);
-  }
+  for (const n of nodes) visit(n);
   return ids;
 }
 
-function fallbackTreeRoots(nodes: ReturnType<typeof useStore.getState>["graphData"]["nodes"]): GraphTreeNode[] {
-  return nodes.map((node) => ({
-    id: node.id,
-    label: node.label,
-    typeLabel: node.typeLabel,
-    nodeKind: node.nodeKind || "record",
-    properties: node.properties,
+// ── Fallback when treeRoots not yet received ───────────────────────────────
+
+function fallbackTreeRoots(
+  nodes: ReturnType<typeof useStore.getState>["graphData"]["nodes"]
+): GraphTreeNode[] {
+  return nodes.map((n) => ({
+    id: n.id,
+    label: n.label,
+    typeLabel: n.typeLabel,
+    nodeKind: n.nodeKind || "record",
+    properties: n.properties,
     children: [],
   }));
 }
 
-function TreeNodeCard({
+// ── Cubic bezier link (top-down: parent-bottom → child-top) ───────────────
+
+function cubicLink(
+  sx: number, sy: number,
+  tx: number, ty: number,
+): string {
+  const mx = (sx + tx) / 2;
+  const my = (sy + ty) / 2;
+  // Use four-point cubic bezier for a graceful S-curve
+  return `M ${sx} ${sy} C ${sx} ${my}, ${tx} ${my}, ${tx} ${ty}`;
+}
+
+// ── SVG node card (rendered via foreignObject) ─────────────────────────────
+
+function TreeSvgNode({
   node,
+  collapsed,
+  onToggle,
+}: {
+  node: { x: number; y: number; data: HierarchyDatum; children?: unknown[] };
+  collapsed: boolean;
+  onToggle: (id: string) => void;
+}) {
+  const d = node.data;
+  const isComposite = d.nodeKind === "composite";
+  const hasChildren = (d.children || []).length > 0;
+
+  const title = d.label || "";
+  const sourceCount = isComposite
+    ? Number(d.properties.source_record_count || 0)
+    : null;
+  const confidence = !isComposite && d.properties.confidence != null
+    ? `${(Number(d.properties.confidence) * 100).toFixed(0)}%`
+    : null;
+  const typeTag = d.typeLabel || null;
+
+  return (
+    <foreignObject
+      x={node.x - NODE_W / 2}
+      y={node.y}
+      width={NODE_W}
+      height={NODE_H}
+      style={{ overflow: "visible" }}
+    >
+      <div
+        className={`tsv-card ${isComposite ? "composite" : "record"}${collapsed ? " collapsed" : ""}`}
+        onClick={hasChildren ? () => onToggle(d.id) : undefined}
+        style={{ cursor: hasChildren ? "pointer" : "default", width: NODE_W, height: NODE_H }}
+      >
+        <div className="tsv-header">
+          <span className={`tsv-badge ${isComposite ? "composite" : "record"}`}>
+            {isComposite ? "融合记忆" : "原子记录"}
+          </span>
+          {typeTag && <span className="tsv-type">{typeTag}</span>}
+          {hasChildren && (
+            <span className="tsv-chevron">{collapsed ? "▸" : "▾"}</span>
+          )}
+        </div>
+        <div className="tsv-title" title={title}>{title}</div>
+        <div className="tsv-meta">
+          {isComposite && sourceCount !== null && sourceCount > 0 && (
+            <span>{sourceCount} 条底层记录</span>
+          )}
+          {confidence && <span>置信度 {confidence}</span>}
+        </div>
+      </div>
+    </foreignObject>
+  );
+}
+
+// ── SVG tree canvas ────────────────────────────────────────────────────────
+
+function MemoryTreeSvg({
+  roots,
   collapsedIds,
   onToggle,
 }: {
-  node: GraphTreeNode;
+  roots: GraphTreeNode[];
   collapsedIds: Set<string>;
-  onToggle: (nodeId: string) => void;
+  onToggle: (id: string) => void;
 }) {
-  const isComposite = node.nodeKind === "composite";
-  const hasChildren = node.children.length > 0;
-  const collapsed = isComposite && collapsedIds.has(node.id);
-  const semanticText = String(node.properties.semantic_text || "").trim();
-  const sourceRecordCount = Number(node.properties.source_record_count || (isComposite ? 0 : 1));
-  const childCompositeCount = Number(node.properties.child_composite_count || 0);
-  const directRecordCount = Number(node.properties.direct_record_count || 0);
+  const root = useMemo(
+    () => buildD3Root(roots, collapsedIds),
+    [roots, collapsedIds]
+  );
+
+  const laidOut = useMemo(() => {
+    const layout = tree<HierarchyDatum>().nodeSize([H_GAP, V_GAP]);
+    layout(root);
+    return root;
+  }, [root]);
+
+  const allNodes = useMemo(
+    () => laidOut.descendants().filter((n) => !n.data._virtual),
+    [laidOut]
+  );
+
+  const allLinks = useMemo(
+    () => laidOut.links().filter((l) => !l.source.data._virtual),
+    [laidOut]
+  );
+
+  const { minX, maxX, minY, maxY } = useMemo(() => {
+    if (allNodes.length === 0) return { minX: 0, maxX: 400, minY: 0, maxY: 200 };
+    const xs = allNodes.map((n) => n.x ?? 0);
+    const ys = allNodes.map((n) => n.y ?? 0);
+    return {
+      minX: Math.min(...xs) - NODE_W / 2 - 24,
+      maxX: Math.max(...xs) + NODE_W / 2 + 24,
+      minY: Math.min(...ys) - 24,
+      maxY: Math.max(...ys) + NODE_H + 24,
+    };
+  }, [allNodes]);
+
+  const svgW = maxX - minX;
+  const svgH = maxY - minY;
 
   return (
-    <li className={`memory-tree-item ${isComposite ? "composite" : "record"}`}>
-      <div className="memory-tree-row">
-        {isComposite ? (
-          <button
-            type="button"
-            className="memory-tree-toggle"
-            onClick={() => onToggle(node.id)}
-            title={collapsed ? "展开子节点" : "收起子节点"}
-          >
-            {collapsed ? <RightOutlined /> : <DownOutlined />}
-          </button>
-        ) : (
-          <span className="memory-tree-leaf-dot" />
-        )}
-
-        <div className="memory-tree-card">
-          <div className="memory-tree-card-header">
-            <span className={`memory-tree-kind ${isComposite ? "composite" : "record"}`}>
-              {isComposite ? "融合记忆" : "原子记录"}
-            </span>
-            {node.typeLabel && <span className="memory-tree-type">{node.typeLabel}</span>}
-          </div>
-          <div className="memory-tree-title">{node.label}</div>
-          {semanticText && <div className="memory-tree-summary">{semanticText}</div>}
-          <div className="memory-tree-meta">
-            {isComposite ? (
-              <>
-                <span>{sourceRecordCount} 条底层记录</span>
-                <span>{childCompositeCount} 个子记忆</span>
-                <span>{directRecordCount} 个直接叶子</span>
-              </>
-            ) : (
-              <>
-                {node.properties.created_at && <span>{String(node.properties.created_at)}</span>}
-                {node.properties.confidence != null && (
-                  <span>置信度 {(Number(node.properties.confidence) * 100).toFixed(0)}%</span>
-                )}
-              </>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {hasChildren && !collapsed && (
-        <ul className="memory-tree-children">
-          {node.children.map((child) => (
-            <TreeNodeCard
-              key={child.id}
-              node={child}
-              collapsedIds={collapsedIds}
-              onToggle={onToggle}
+    <svg
+      width={svgW}
+      height={svgH}
+      viewBox={`${minX} ${minY} ${svgW} ${svgH}`}
+      style={{ display: "block" }}
+    >
+      {/* Links */}
+      <g>
+        {allLinks.map((link, i) => {
+          const isCompositeTarget = link.target.data.nodeKind === "composite";
+          return (
+            <path
+              key={i}
+              d={cubicLink(
+                link.source.x ?? 0, (link.source.y ?? 0) + NODE_H,
+                link.target.x ?? 0, link.target.y ?? 0
+              )}
+              fill="none"
+              stroke={isCompositeTarget ? "rgba(99,102,241,0.4)" : "rgba(20,184,166,0.4)"}
+              strokeWidth={1.5}
+              strokeDasharray={isCompositeTarget ? "none" : "4 3"}
             />
-          ))}
-        </ul>
-      )}
-    </li>
+          );
+        })}
+      </g>
+      {/* Connector dots */}
+      <g>
+        {allLinks.map((link, i) => (
+          <circle
+            key={i}
+            cx={link.target.x ?? 0}
+            cy={link.target.y ?? 0}
+            r={3}
+            fill={link.target.data.nodeKind === "composite" ? "rgba(99,102,241,0.6)" : "rgba(20,184,166,0.6)"}
+          />
+        ))}
+      </g>
+      {/* Nodes */}
+      <g>
+        {allNodes.map((node) => (
+          <TreeSvgNode
+            key={node.data.id}
+            node={node as { x: number; y: number; data: HierarchyDatum; children?: unknown[] }}
+            collapsed={node.data.nodeKind === "composite" && collapsedIds.has(node.data.id)}
+            onToggle={onToggle}
+          />
+        ))}
+      </g>
+    </svg>
   );
 }
+
+// ── Main panel ─────────────────────────────────────────────────────────────
 
 export default function GraphPanel() {
   const graphData = useStore((s) => s.graphData);
   const setGraphData = useStore((s) => s.setGraphData);
 
-  // 定时检测图谱更新：保存上次检测的统计数据
+  const scrollRef = useRef<HTMLDivElement>(null);
+
   const [lastStatus, setLastStatus] = useState<{
     node_count: number;
     edge_count: number;
@@ -125,11 +255,16 @@ export default function GraphPanel() {
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
 
   const treeRoots = useMemo(
-    () => (graphData.treeRoots.length > 0 ? graphData.treeRoots : fallbackTreeRoots(graphData.nodes)),
+    () =>
+      graphData.treeRoots.length > 0
+        ? graphData.treeRoots
+        : fallbackTreeRoots(graphData.nodes),
     [graphData.treeRoots, graphData.nodes]
   );
+
   const compositeIds = useMemo(() => collectCompositeIds(treeRoots), [treeRoots]);
 
+  // Reset collapse state when tree changes
   useEffect(() => {
     setCollapsedIds(new Set());
   }, [treeRoots]);
@@ -137,63 +272,48 @@ export default function GraphPanel() {
   const handleRefresh = useCallback(async () => {
     try {
       setGraphData(await fetchGraphData());
-    } catch {
-      /* ignore */
-    }
+    } catch { /* ignore */ }
   }, [setGraphData]);
 
   useEffect(() => {
     handleRefresh();
   }, [handleRefresh]);
 
-  // 定时检测图谱更新（默认 3 秒轮询一次）
+  // Poll for tree updates
   useEffect(() => {
-    const POLL_INTERVAL = 3000; // 3 秒
-
-    const pollGraphStatus = async () => {
+    const POLL = 3000;
+    const poll = async () => {
       try {
         const status = await fetchPipelineStatus();
-        const currentStatus = {
+        const cur = {
           node_count: status.graph_node_count,
           edge_count: status.graph_edge_count,
         };
-
-        // 对比：如果节点数或边数发生变化，刷新图谱
         if (
           lastStatus === null ||
-          lastStatus.node_count !== currentStatus.node_count ||
-          lastStatus.edge_count !== currentStatus.edge_count
+          lastStatus.node_count !== cur.node_count ||
+          lastStatus.edge_count !== cur.edge_count
         ) {
-          setLastStatus(currentStatus);
-          // 有更新：重新获取完整图谱数据
+          setLastStatus(cur);
           if (lastStatus !== null) {
-            // 排除第一次初始化，避免重复刷新
             setGraphData(await fetchGraphData());
           }
         }
-      } catch {
-        /* 轮询失败忽略，继续等待下次轮询 */
-      }
+      } catch { /* ignore */ }
     };
-
-    // 启动定时轮询
-    const pollTimer = setInterval(pollGraphStatus, POLL_INTERVAL);
-
-    // 清理定时器
-    return () => clearInterval(pollTimer);
+    const t = setInterval(poll, POLL);
+    return () => clearInterval(t);
   }, [lastStatus, setGraphData]);
 
   const hasNodes = treeRoots.length > 0;
-  const allCollapsed = compositeIds.length > 0 && collapsedIds.size >= compositeIds.length;
+  const allCollapsed =
+    compositeIds.length > 0 && collapsedIds.size >= compositeIds.length;
 
   const toggleNode = useCallback((nodeId: string) => {
     setCollapsedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(nodeId)) {
-        next.delete(nodeId);
-      } else {
-        next.add(nodeId);
-      }
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
       return next;
     });
   }, []);
@@ -206,21 +326,24 @@ export default function GraphPanel() {
   return (
     <section id="panel-graph" className="panel">
       <div className="panel-header">
-        <h2><ApartmentOutlined /> 记忆树</h2>
+        <h2>
+          <ApartmentOutlined /> 记忆树
+        </h2>
         <div className="panel-actions">
-          <button
-            className="icon-btn"
-            title="刷新记忆树"
-            onClick={handleRefresh}
-          >
+          <button className="icon-btn" title="刷新记忆树" onClick={handleRefresh}>
             <ReloadOutlined />
           </button>
-          <button className="icon-btn" title={allCollapsed ? "展开全部" : "折叠全部"} onClick={toggleAll}>
-            {allCollapsed ? <DownOutlined /> : <RightOutlined />}
+          <button
+            className="icon-btn"
+            title={allCollapsed ? "展开全部" : "折叠全部"}
+            onClick={toggleAll}
+          >
+            {allCollapsed ? <ExpandOutlined /> : <CompressOutlined />}
           </button>
         </div>
       </div>
-      <div className="graph-container graph-tree-container">
+
+      <div className="graph-container graph-tree-container" ref={scrollRef}>
         {!hasNodes && (
           <div className="empty-state">
             <span>暂无树状记忆</span>
@@ -228,17 +351,12 @@ export default function GraphPanel() {
           </div>
         )}
         {hasNodes && (
-          <div className="memory-tree-scroll">
-            <ul className="memory-tree-list">
-              {treeRoots.map((node) => (
-                <TreeNodeCard
-                  key={node.id}
-                  node={node}
-                  collapsedIds={collapsedIds}
-                  onToggle={toggleNode}
-                />
-              ))}
-            </ul>
+          <div className="memory-tree-svg-wrap">
+            <MemoryTreeSvg
+              roots={treeRoots}
+              collapsedIds={collapsedIds}
+              onToggle={toggleNode}
+            />
           </div>
         )}
       </div>

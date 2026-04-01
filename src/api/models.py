@@ -132,6 +132,7 @@ class ConsolidatorTrace(BaseModel):
     entities_added: int = 0
     skills_added: int = 0
     facts_added: int = 0
+    records_expired: int = 0
     has_novelty: bool | None = None
     skipped_reason: str | None = None
     steps: list[ConsolidatorStepTrace] = []

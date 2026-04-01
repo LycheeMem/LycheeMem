@@ -740,6 +740,14 @@ html, body {
 }
 .empty-state .sub { font-size: 11px; opacity: 0.6; }
 
+.memory-tree-svg-wrap {
+  padding: 24px 20px 32px;
+  min-width: 100%;
+  overflow: auto;
+  display: inline-block; /* shrink-wraps the SVG so outer container scrolls */
+}
+
+/* ── Legacy tree list styles kept for reference but no longer rendered ── */
 .memory-tree-scroll {
   min-height: 100%;
   padding: 14px 16px 24px;
@@ -752,143 +760,116 @@ html, body {
   padding: 0;
 }
 
-.memory-tree-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
+/* ── SVG tree node cards (rendered via foreignObject) ─────────────────── */
 
-.memory-tree-item {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.memory-tree-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.memory-tree-toggle,
-.memory-tree-leaf-dot {
-  width: 20px;
-  height: 20px;
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin-top: 4px;
-}
-
-.memory-tree-toggle {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-surface);
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all var(--transition);
-}
-
-.memory-tree-toggle:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: rgba(99, 102, 241, 0.06);
-}
-
-.memory-tree-leaf-dot::before {
-  content: "";
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: var(--teal);
-  box-shadow: 0 0 0 4px rgba(20, 184, 166, 0.12);
-}
-
-.memory-tree-card {
-  flex: 1;
-  min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+.tsv-card {
+  box-sizing: border-box;
+  border-radius: 8px;
+  border: 1.5px solid var(--border);
   background: var(--bg-card);
-  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.04);
+  padding: 9px 11px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-shadow: 0 2px 12px rgba(15, 23, 42, 0.07);
+  transition: box-shadow 0.15s, border-color 0.15s;
+  overflow: hidden;
+  user-select: none;
 }
 
-.memory-tree-item.composite > .memory-tree-row .memory-tree-card {
-  border-color: rgba(99, 102, 241, 0.18);
-  background: linear-gradient(180deg, rgba(99, 102, 241, 0.04), rgba(99, 102, 241, 0.02));
+.tsv-card.composite {
+  border-color: rgba(99, 102, 241, 0.35);
+  background: linear-gradient(160deg, rgba(99, 102, 241, 0.07) 0%, rgba(99, 102, 241, 0.02) 100%);
 }
 
-.memory-tree-item.record > .memory-tree-row .memory-tree-card {
-  border-color: rgba(20, 184, 166, 0.18);
+.tsv-card.record {
+  border-color: rgba(20, 184, 166, 0.3);
+  background: linear-gradient(160deg, rgba(20, 184, 166, 0.05) 0%, rgba(20, 184, 166, 0.01) 100%);
 }
 
-.memory-tree-card-header {
+.tsv-card:hover {
+  box-shadow: 0 4px 20px rgba(15, 23, 42, 0.14);
+}
+
+.tsv-card.composite:hover {
+  border-color: rgba(99, 102, 241, 0.6);
+}
+
+.tsv-card.record:hover {
+  border-color: rgba(20, 184, 166, 0.55);
+}
+
+.tsv-card.collapsed {
+  opacity: 0.82;
+}
+
+.tsv-header {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin-bottom: 6px;
+  gap: 5px;
+  flex-wrap: nowrap;
+  min-width: 0;
 }
 
-.memory-tree-kind,
-.memory-tree-type {
+.tsv-badge {
   display: inline-flex;
   align-items: center;
-  padding: 2px 8px;
+  padding: 1px 7px;
   border-radius: 999px;
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
 }
 
-.memory-tree-kind.composite {
-  background: rgba(99, 102, 241, 0.12);
+.tsv-badge.composite {
+  background: rgba(99, 102, 241, 0.14);
   color: var(--accent);
 }
 
-.memory-tree-kind.record {
-  background: rgba(20, 184, 166, 0.12);
+.tsv-badge.record {
+  background: rgba(20, 184, 166, 0.13);
   color: var(--teal);
 }
 
-.memory-tree-type {
+.tsv-type {
+  font-size: 9px;
+  color: var(--text-muted);
   background: var(--bg-hover);
-  color: var(--text-secondary);
+  padding: 1px 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 80px;
 }
 
-.memory-tree-title {
-  font-size: 12px;
+.tsv-chevron {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.tsv-title {
+  font-size: 11.5px;
   font-weight: 600;
   color: var(--text-primary);
-  line-height: 1.5;
-}
-
-.memory-tree-summary {
-  margin-top: 6px;
-  font-size: 11px;
-  line-height: 1.6;
-  color: var(--text-secondary);
-  white-space: pre-wrap;
+  line-height: 1.45;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   word-break: break-word;
 }
 
-.memory-tree-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
-  font-size: 10px;
+.tsv-meta {
+  font-size: 9.5px;
   color: var(--text-muted);
-}
-
-.memory-tree-children {
-  margin-left: 10px;
-  padding-left: 18px;
-  border-left: 1px dashed var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
 }
 
 /* ═══ MEMORY PANEL ═══ */

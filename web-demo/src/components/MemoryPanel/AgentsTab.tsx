@@ -1,14 +1,14 @@
 import {
-  ApiOutlined,
-  BulbOutlined,
-  CheckCircleOutlined,
-  ClockCircleOutlined,
-  DownOutlined,
-  ExperimentOutlined,
-  InboxOutlined,
-  RightOutlined,
-  SearchOutlined,
-  SyncOutlined,
+    ApiOutlined,
+    BulbOutlined,
+    CheckCircleOutlined,
+    ClockCircleOutlined,
+    DownOutlined,
+    ExperimentOutlined,
+    InboxOutlined,
+    RightOutlined,
+    SearchOutlined,
+    SyncOutlined,
 } from "@ant-design/icons";
 import { useEffect, useRef, useState } from "react";
 import { fetchConsolidationResult } from "../../api";
@@ -259,6 +259,12 @@ function ConsolidatorContent({
             <div className="trace-kv">
               <span>写入事实</span>
               <span>{consolidator.facts_added}</span>
+            </div>
+          )}
+          {(consolidator.records_expired ?? 0) > 0 && (
+            <div className="trace-kv">
+              <span>冲突过期</span>
+              <span>{consolidator.records_expired}</span>
             </div>
           )}
           <div className="trace-kv">

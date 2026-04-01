@@ -294,7 +294,8 @@ class ConsolidatorAgent(BaseAgent):
             "entities_added": ingest_result.records_added,
             "skills_added": skills_added,
             "facts_added": ingest_result.records_merged,
-            "has_novelty": ingest_result.records_added > 0 or ingest_result.records_merged > 0,
+            "records_expired": ingest_result.records_expired,
+            "has_novelty": ingest_result.records_added > 0 or ingest_result.records_merged > 0 or ingest_result.records_expired > 0,
             "steps": steps,
         }
 
