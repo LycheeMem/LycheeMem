@@ -33,7 +33,7 @@ export default function AuthPage() {
       <div className="auth-card">
         <div className="auth-logo">
           <img className="logo-img" src="/logo.png" alt="Logo" />
-          <h2>立知大模型记忆系统</h2>
+          <h2>LycheeMem 立知大模型记忆系统</h2>
         </div>
 
         <div className="auth-tabs">
