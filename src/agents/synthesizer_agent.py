@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from src.agents.base_agent import BaseAgent
@@ -43,6 +44,8 @@ SYNTHESIS_SYSTEM_PROMPT = """\
 - 如果全部片段都不相关，background_context 必须是空字符串；
 - background_context 应是高密度的融合文本，不要简单拼接原文，要进行信息压缩和改写；
 - 保持事实准确，不虚构检索结果中不存在的信息；
+- 如果片段带有“时间”标注，必须显式利用这些时间信息，区分“记忆写入时间(created_at)”与“事件/事实时间(temporal)”；
+- 整合时不得把不同时间段的事实错误混合成同一时态结论；涉及约束、状态、故障、任务进度时，优先保留与当前问题最相关的时间条件；
 - scored_fragments 按 relevance 降序排列，summary 用简短中文概括该片段的核心信息。
 
 ## 示例（仅供参考，不要原样抄写）
@@ -196,6 +199,9 @@ class SynthesizerAgent(BaseAgent):
                 lines.append(
                     f"  片段{idx}: 来源={semantic_source_type}, memory_type={memory_type}, 检索分数={retrieval_score:.3f}"
                 )
+                time_info = SynthesizerAgent._format_fragment_time_info(frag)
+                if time_info:
+                    lines.append(f"    时间: {time_info}")
                 lines.append(f"    内容: {text}")
 
                 entities = frag.get("entities") or []
@@ -246,6 +252,9 @@ class SynthesizerAgent(BaseAgent):
                             "memory_type": str(item.get("memory_type") or ""),
                             "semantic_text": semantic_text,
                             "display_text": display_text,
+                            "created_at": str(item.get("created_at") or ""),
+                            "temporal": item.get("temporal") or {},
+                            "episode_refs": list(item.get("episode_refs") or []),
                             "entities": list(item.get("entities") or []),
                             "retrieval_score": float(item.get("score") or 0.0),
                             "score_breakdown": item.get("score_breakdown") or {},
@@ -406,7 +415,67 @@ class SynthesizerAgent(BaseAgent):
                 "score": float(fragment.get("retrieval_score") or 0.0),
                 "score_breakdown": fragment.get("score_breakdown") or {},
                 "semantic_text": str(fragment.get("semantic_text") or ""),
+                "display_text": str(fragment.get("display_text") or fragment.get("semantic_text") or ""),
+                "created_at": str(fragment.get("created_at") or ""),
+                "temporal": fragment.get("temporal") or {},
+                "episode_refs": list(fragment.get("episode_refs") or []),
                 "entities": list(fragment.get("entities") or []),
             }
         )
         return base
+
+    @staticmethod
+    def _format_fragment_time_info(fragment: dict[str, Any]) -> str:
+        parts: list[str] = []
+
+        created_at = SynthesizerAgent._compact_timestamp(fragment.get("created_at"))
+        if created_at:
+            parts.append(f"记忆写入={created_at}")
+
+        temporal = fragment.get("temporal") or {}
+        temporal_text = SynthesizerAgent._format_temporal_dict(temporal)
+        if temporal_text:
+            parts.append(f"事件时间={temporal_text}")
+
+        episode_refs = fragment.get("episode_refs") or []
+        episode_time_text = SynthesizerAgent._format_episode_time_refs(episode_refs)
+        if episode_time_text:
+            parts.append(f"原始对话时间={episode_time_text}")
+
+        return "；".join(parts)
+
+    @staticmethod
+    def _format_temporal_dict(temporal: Any) -> str:
+        if not isinstance(temporal, dict):
+            return ""
+        parts: list[str] = []
+        for key in sorted(temporal.keys()):
+            value = str(temporal.get(key) or "").strip()
+            if not value:
+                continue
+            parts.append(f"{key}={SynthesizerAgent._compact_timestamp(value)}")
+        return ", ".join(parts)
+
+    @staticmethod
+    def _format_episode_time_refs(episode_refs: Any) -> str:
+        if not isinstance(episode_refs, list):
+            return ""
+        values: list[str] = []
+        seen: set[str] = set()
+        for ref in episode_refs[:4]:
+            if not isinstance(ref, dict):
+                continue
+            created_at = SynthesizerAgent._compact_timestamp(ref.get("created_at"))
+            if not created_at or created_at in seen:
+                continue
+            seen.add(created_at)
+            values.append(created_at)
+        return ", ".join(values)
+
+    @staticmethod
+    def _compact_timestamp(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        text = text.replace(" ", "T")
+        return re.sub(r"\.\d+(?=(?:Z|[+-]\d{2}:?\d{2})?$)", "", text)

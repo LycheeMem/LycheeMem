@@ -701,10 +701,6 @@ html, body {
   overflow: hidden;
 }
 
-.graph-tree-container {
-  overflow: auto;
-}
-
 #graph-canvas {
   width: 100%;
   height: 100%;
@@ -741,10 +737,158 @@ html, body {
 .empty-state .sub { font-size: 11px; opacity: 0.6; }
 
 .memory-tree-svg-wrap {
-  padding: 24px 20px 32px;
+  padding: 18px 20px 32px;
   min-width: 100%;
   overflow: auto;
   display: inline-block; /* shrink-wraps the SVG so outer container scrolls */
+}
+
+.memory-graph-toolbar {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  right: 14px;
+  z-index: 2;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.memory-graph-legend,
+.memory-graph-hint {
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+}
+
+.memory-graph-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.memory-graph-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.memory-graph-legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  display: inline-block;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.95);
+}
+
+.memory-graph-legend i.kind-composite { background: #4f46e5; }
+.memory-graph-legend i.kind-record { background: #14b8a6; }
+.memory-graph-legend i.kind-episode { background: #f59e0b; }
+
+.memory-graph-hint {
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.memory-tree-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 20px 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.memory-tree-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.memory-tree-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.memory-tree-legend i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.92);
+}
+
+.memory-tree-hint {
+  white-space: nowrap;
+}
+
+.memory-tree-svg {
+  display: block;
+  overflow: visible;
+}
+
+.memory-tree-links path {
+  transition: stroke-opacity 150ms ease;
+}
+
+.memory-tree-nodes circle {
+  transition: r 140ms ease, fill-opacity 140ms ease, stroke-width 140ms ease, stroke-opacity 140ms ease;
+}
+
+.memory-tree-tooltip {
+  min-width: 220px;
+  max-width: 300px;
+}
+
+.memory-tree-tooltip-title {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+  word-break: break-word;
+}
+
+.memory-tree-tooltip-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.memory-tree-tooltip-row span {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.memory-tree-tooltip-row strong {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-align: right;
+  word-break: break-word;
+}
+
+.memory-tree-tooltip-note {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-light);
+  color: var(--accent);
+  font-size: 10px;
 }
 
 /* ── Legacy tree list styles kept for reference but no longer rendered ── */
@@ -758,132 +902,6 @@ html, body {
   list-style: none;
   margin: 0;
   padding: 0;
-}
-
-/* ── SVG tree node cards (rendered via foreignObject) ─────────────────── */
-
-.tsv-card {
-  box-sizing: border-box;
-  border-radius: 8px;
-  border: 1.5px solid var(--border);
-  background: var(--bg-card);
-  padding: 9px 11px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  box-shadow: 0 2px 12px rgba(15, 23, 42, 0.07);
-  transition: box-shadow 0.15s, border-color 0.15s;
-  overflow: hidden;
-  user-select: none;
-}
-
-.tsv-card.composite {
-  border-color: rgba(99, 102, 241, 0.35);
-  background: linear-gradient(160deg, rgba(99, 102, 241, 0.07) 0%, rgba(99, 102, 241, 0.02) 100%);
-}
-
-.tsv-card.record {
-  border-color: rgba(20, 184, 166, 0.3);
-  background: linear-gradient(160deg, rgba(20, 184, 166, 0.05) 0%, rgba(20, 184, 166, 0.01) 100%);
-}
-
-.tsv-card.episode {
-  border-color: rgba(245, 158, 11, 0.34);
-  background: linear-gradient(160deg, rgba(245, 158, 11, 0.08) 0%, rgba(245, 158, 11, 0.015) 100%);
-}
-
-.tsv-card:hover {
-  box-shadow: 0 4px 20px rgba(15, 23, 42, 0.14);
-}
-
-.tsv-card.composite:hover {
-  border-color: rgba(99, 102, 241, 0.6);
-}
-
-.tsv-card.record:hover {
-  border-color: rgba(20, 184, 166, 0.55);
-}
-
-.tsv-card.episode:hover {
-  border-color: rgba(245, 158, 11, 0.6);
-}
-
-.tsv-card.collapsed {
-  opacity: 0.82;
-}
-
-.tsv-header {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex-wrap: nowrap;
-  min-width: 0;
-}
-
-.tsv-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 1px 7px;
-  border-radius: 999px;
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  flex-shrink: 0;
-}
-
-.tsv-badge.composite {
-  background: rgba(99, 102, 241, 0.14);
-  color: var(--accent);
-}
-
-.tsv-badge.record {
-  background: rgba(20, 184, 166, 0.13);
-  color: var(--teal);
-}
-
-.tsv-badge.episode {
-  background: rgba(245, 158, 11, 0.14);
-  color: #b45309;
-}
-
-.tsv-type {
-  font-size: 9px;
-  color: var(--text-muted);
-  background: var(--bg-hover);
-  padding: 1px 6px;
-  border-radius: 999px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 80px;
-}
-
-.tsv-chevron {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--text-muted);
-  flex-shrink: 0;
-}
-
-.tsv-title {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--text-primary);
-  line-height: 1.45;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  word-break: break-word;
-}
-
-.tsv-meta {
-  font-size: 9.5px;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-top: 1px;
 }
 
 /* ═══ MEMORY PANEL ═══ */
@@ -1315,6 +1333,15 @@ html, body {
   #session-sidebar { display: none; }
   #app-main { grid-template-columns: 1fr; grid-template-rows: auto 300px auto; }
   .panel { border-right: none; border-bottom: 1px solid var(--border); }
+  .memory-graph-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    right: auto;
+    max-width: calc(100% - 28px);
+  }
+  .memory-graph-hint {
+    white-space: normal;
+  }
 }
 
 /* ═══ LOADING SPINNER ═══ */

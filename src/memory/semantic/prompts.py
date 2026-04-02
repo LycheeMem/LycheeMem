@@ -416,9 +416,11 @@ NOVELTY_CHECK_SYSTEM = """\
 
 输出格式（严格 JSON，无代码块）：
 {
-    "has_novelty": true,
-    "reason": "简要说明判断理由"
+    "reason": "简要说明判断理由",
+    "has_novelty": true
 }
+
+注意：如果需要同时给出判断理由和判断结果，先输出 `reason`，再输出 `has_novelty`。
 
 ---
 
@@ -434,7 +436,7 @@ assistant: 恭喜！Go 在高并发推荐系统里确实很有优势。
 </CONVERSATION>
 
 期望输出：
-{"has_novelty": true, "reason": "用户换工作（ByteEdge 公司）、新职责（推荐系统）、主要语言切换为 Go，三条均为已有记忆未覆盖的新信息。"}
+{"reason": "用户换工作（ByteEdge 公司）、新职责（推荐系统）、主要语言切换为 Go，三条均为已有记忆未覆盖的新信息。", "has_novelty": true}
 
 ## 示例 2：无新信息（纯查询已有记忆，AI 复述事实）
 
@@ -449,7 +451,7 @@ user: 好的，谢谢。
 </CONVERSATION>
 
 期望输出：
-{"has_novelty": false, "reason": "对话仅是用户查询已记录的 DataFlow 上线日期，AI 复述了已有记忆内容，未引入任何新事实或更新。"}
+{"reason": "对话仅是用户查询已记录的 DataFlow 上线日期，AI 复述了已有记忆内容，未引入任何新事实或更新。", "has_novelty": false}
 
 ## 示例 3：有新信息（更新/纠正已有记忆）
 
@@ -462,7 +464,7 @@ assistant: 明白，我记录一下，PyCon China 已推迟至 2026-04-15。
 </CONVERSATION>
 
 期望输出：
-{"has_novelty": true, "reason": "PyCon China 的日期由 2026-03-01 更新为 2026-04-15，纠正了已有记忆，属于有效新信息。"}
+{"reason": "PyCon China 的日期由 2026-03-01 更新为 2026-04-15，纠正了已有记忆，属于有效新信息。", "has_novelty": true}
 """
 
 
@@ -829,6 +831,7 @@ RETRIEVAL_PLANNING_SYSTEM = """\
 
 输出格式（严格 JSON，无代码块）：
 {
+    "reasoning": "规划理由",
     "mode": "answer|action|mixed",
     "semantic_queries": ["语义检索词1", "语义检索词2"],
     "pragmatic_queries": ["实用检索词1"],
@@ -842,8 +845,7 @@ RETRIEVAL_PLANNING_SYSTEM = """\
     "include_leaf_records": false,
     "include_episodic_context": false,
     "episodic_turn_window": 0,
-    "depth": 5,
-    "reasoning": "规划理由"
+    "depth": 5
 }
 
 注意：
@@ -851,6 +853,7 @@ RETRIEVAL_PLANNING_SYSTEM = """\
 - 所有列表字段如果为空，设为空数组 []。
 - semantic_queries 至少包含 1 个查询。
 - **关键：如果用户消息涉及多个不同主题，必须为每个主题生成独立的 semantic_query。**
+- 如果需要同时给出规划理由和规划结果，先输出 `reasoning`，再输出各项规划决定。
 
 ---
 
@@ -862,6 +865,7 @@ RETRIEVAL_PLANNING_SYSTEM = """\
 
 期望输出：
 {
+    "reasoning": "用户查询特定项目的技术事实，属于纯信息检索，无需行动支撑记忆，depth 取小值即可。",
     "mode": "answer",
     "semantic_queries": ["DataFlow 项目技术栈", "DataFlow 使用的框架和语言"],
     "pragmatic_queries": [],
@@ -875,8 +879,7 @@ RETRIEVAL_PLANNING_SYSTEM = """\
     "include_leaf_records": false,
     "include_episodic_context": false,
     "episodic_turn_window": 0,
-    "depth": 5,
-    "reasoning": "用户查询特定项目的技术事实，属于纯信息检索，无需行动支撑记忆，depth 取小值即可。"
+    "depth": 5
 }
 
 ## 示例 2：action 模式（执行操作）
@@ -890,6 +893,7 @@ assistant: 好的，我来协助您准备部署。
 
 期望输出：
 {
+    "reasoning": "用户要求直接执行部署操作，需要检索完整部署流程、工具约束和历史失败经验，提高 depth 确保覆盖所有约束条目。",
     "mode": "action",
     "semantic_queries": ["DataFlow 部署流程", "Kubernetes 生产部署步骤", "部署前检查事项"],
     "pragmatic_queries": ["数据库迁移预检查", "Helm upgrade", "K8s Pod健康检查"],
@@ -903,8 +907,7 @@ assistant: 好的，我来协助您准备部署。
     "include_leaf_records": true,
     "include_episodic_context": true,
     "episodic_turn_window": 1,
-    "depth": 10,
-    "reasoning": "用户要求直接执行部署操作，需要检索完整部署流程、工具约束和历史失败经验，提高 depth 确保覆盖所有约束条目。"
+    "depth": 10
 }
 
 ## 示例 3：mixed 模式（事实查询 + 行动指导混合）
@@ -915,6 +918,7 @@ assistant: 好的，我来协助您准备部署。
 
 期望输出：
 {
+    "reasoning": "用户既查询历史失败事实（UserService 教训）又需要行动指导（DataFlow 如何规避），属于 mixed 模式；depth 调高以同时覆盖失败模式记忆与操作流程记忆。",
     "mode": "mixed",
     "semantic_queries": ["UserService 部署失败经验", "DataFlow 部署注意事项", "生产发布历史教训"],
     "pragmatic_queries": ["数据库迁移问题", "服务启动失败", "部署回滚流程"],
@@ -928,8 +932,7 @@ assistant: 好的，我来协助您准备部署。
     "include_leaf_records": true,
     "include_episodic_context": true,
     "episodic_turn_window": 1,
-    "depth": 12,
-    "reasoning": "用户既查询历史失败事实（UserService 教训）又需要行动指导（DataFlow 如何规避），属于 mixed 模式；depth 调高以同时覆盖失败模式记忆与操作流程记忆。"
+    "depth": 12
 }
 """
 
@@ -963,14 +966,16 @@ RETRIEVAL_ADEQUACY_CHECK_SYSTEM = """\
 
 输出格式（严格 JSON，无代码块）：
 {
+    "missing_info": "如果不充分，简要描述缺失的具体信息；如果充分则留空字符串",
     "is_sufficient": true,
-        "missing_info": "如果不充分，简要描述缺失的具体信息；如果充分则留空字符串",
-        "missing_constraints": ["缺失约束1"],
-        "missing_slots": ["缺失参数1"],
-        "missing_affordances": ["缺失能力依据1"],
-        "needs_failure_avoidance": false,
-        "needs_tool_selection_basis": false
+    "missing_constraints": ["缺失约束1"],
+    "missing_slots": ["缺失参数1"],
+    "missing_affordances": ["缺失能力依据1"],
+    "needs_failure_avoidance": false,
+    "needs_tool_selection_basis": false
 }
+
+注意：如果需要同时给出判断理由和充分性结论，先输出 `missing_info`，再输出 `is_sufficient`。
 
 ---
 
@@ -985,7 +990,7 @@ RETRIEVAL_ADEQUACY_CHECK_SYSTEM = """\
 </RETRIEVED_MEMORY>
 
 期望输出：
-{"is_sufficient": true, "missing_info": "", "missing_constraints": [], "missing_slots": [], "missing_affordances": [], "needs_failure_avoidance": false, "needs_tool_selection_basis": false}
+{"missing_info": "", "is_sufficient": true, "missing_constraints": [], "missing_slots": [], "missing_affordances": [], "needs_failure_avoidance": false, "needs_tool_selection_basis": false}
 
 ## 示例 2：不充分（仅有事件记录，缺少具体流程约束）
 
@@ -998,7 +1003,7 @@ RETRIEVAL_ADEQUACY_CHECK_SYSTEM = """\
 </RETRIEVED_MEMORY>
 
 期望输出：
-{"is_sufficient": false, "missing_info": "缺少具体部署步骤、数据库迁移约束、版本回滚依据、镜像版本号和目标命名空间等执行关键信息。", "missing_constraints": ["必须先执行DB迁移dry-run"], "missing_slots": ["目标命名空间", "镜像版本号"], "missing_affordances": ["支持版本回滚"], "needs_failure_avoidance": true, "needs_tool_selection_basis": true}
+{"missing_info": "缺少具体部署步骤、数据库迁移约束、版本回滚依据、镜像版本号和目标命名空间等执行关键信息。", "is_sufficient": false, "missing_constraints": ["必须先执行DB迁移dry-run"], "missing_slots": ["目标命名空间", "镜像版本号"], "missing_affordances": ["支持版本回滚"], "needs_failure_avoidance": true, "needs_tool_selection_basis": true}
 
 ## 示例 3：不充分（结果为空）
 
@@ -1010,7 +1015,7 @@ RETRIEVAL_ADEQUACY_CHECK_SYSTEM = """\
 </RETRIEVED_MEMORY>
 
 期望输出：
-{"is_sufficient": false, "missing_info": "未找到任何关于 Redis 集群配置的历史记录、失败模式或排查依据。", "missing_constraints": [], "missing_slots": [], "missing_affordances": [], "needs_failure_avoidance": true, "needs_tool_selection_basis": false}
+{"missing_info": "未找到任何关于 Redis 集群配置的历史记录、失败模式或排查依据。", "is_sufficient": false, "missing_constraints": [], "missing_slots": [], "missing_affordances": [], "needs_failure_avoidance": true, "needs_tool_selection_basis": false}
 """
 
 

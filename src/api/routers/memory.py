@@ -150,7 +150,22 @@ def _build_semantic_tree_payload(
     covered_record_ids = set().union(*source_sets.values()) if source_sets else set()
 
     node_cache: dict[str, dict[str, Any]] = {}
-    episode_cache: dict[tuple[str, str, tuple[int, ...]], list[dict[str, Any]]] = {}
+    record_rank = {
+        _normalize_graph_id(record.get("record_id")): index
+        for index, record in enumerate(
+            sorted(
+                records,
+                key=lambda item: (
+                    str(item.get("created_at") or ""),
+                    _normalize_graph_id(item.get("record_id")),
+                ),
+            )
+        )
+        if _normalize_graph_id(record.get("record_id"))
+    }
+    episode_cache: dict[tuple[str, tuple[int, ...]], list[str]] = {}
+    record_episode_ids: dict[str, list[str]] = {}
+    episode_to_record_ids: dict[str, set[str]] = {}
 
     def _normalize_turn_indices(raw_value: Any) -> list[int]:
         if not isinstance(raw_value, list):
@@ -175,6 +190,32 @@ def _build_semantic_tree_payload(
             return cleaned
         return cleaned[: max_chars - 1].rstrip() + "…"
 
+    def _episode_node_id(session_id: str, turn_index: int) -> str:
+        return f"episode:{session_id}:{turn_index}"
+
+    def _canonical_record_id_for_episode(episode_id: str) -> str:
+        grounded_record_ids = episode_to_record_ids.get(episode_id, set())
+        if not grounded_record_ids:
+            return ""
+        return min(
+            grounded_record_ids,
+            key=lambda record_id: (record_rank.get(record_id, 10**9), record_id),
+        )
+
+    def _refresh_episode_grounding(episode_ids: list[str]) -> None:
+        for episode_id in episode_ids:
+            node = node_cache.get(episode_id)
+            if not node:
+                continue
+            grounded_record_ids = sorted(
+                episode_to_record_ids.get(episode_id, set()),
+                key=lambda record_id: (record_rank.get(record_id, 10**9), record_id),
+            )
+            node_props = node.setdefault("properties", {})
+            node_props["grounded_record_ids"] = grounded_record_ids
+            node_props["grounded_record_count"] = len(grounded_record_ids)
+            node_props["canonical_record_id"] = _canonical_record_id_for_episode(episode_id)
+
     def _build_episode_nodes(record: dict[str, Any]) -> list[dict[str, Any]]:
         if session_store is None:
             return []
@@ -182,12 +223,24 @@ def _build_semantic_tree_payload(
         session_id = _normalize_graph_id(record.get("source_session"))
         evidence_turns = _normalize_turn_indices(record.get("evidence_turn_range"))
         record_id = _normalize_graph_id(record.get("record_id"))
-        if not session_id or not evidence_turns:
+        if not session_id or not evidence_turns or not record_id:
             return []
 
-        cache_key = (record_id, session_id, tuple(evidence_turns))
+        if record_id in record_episode_ids:
+            return [
+                node_cache[episode_id]
+                for episode_id in record_episode_ids[record_id]
+                if episode_id in node_cache
+            ]
+
+        cache_key = (session_id, tuple(evidence_turns))
         if cache_key in episode_cache:
-            return episode_cache[cache_key]
+            episode_ids = list(episode_cache[cache_key])
+            record_episode_ids[record_id] = episode_ids
+            for episode_id in episode_ids:
+                episode_to_record_ids.setdefault(episode_id, set()).add(record_id)
+            _refresh_episode_grounding(episode_ids)
+            return [node_cache[episode_id] for episode_id in episode_ids if episode_id in node_cache]
 
         try:
             turns = session_store.get_turn_window(
@@ -200,41 +253,54 @@ def _build_semantic_tree_payload(
         except Exception:
             logger.exception("build episode nodes failed for session %s", session_id)
             episode_cache[cache_key] = []
+            record_episode_ids[record_id] = []
             return []
 
-        episode_nodes: list[dict[str, Any]] = []
+        episode_ids: list[str] = []
         for turn in turns:
             try:
                 turn_index = int(turn.get("turn_index"))
             except (TypeError, ValueError):
                 continue
-            episode_id = f"episode:{record_id}:{session_id}:{turn_index}"
+            episode_id = _episode_node_id(session_id, turn_index)
             content = str(turn.get("content") or "")
-            episode_nodes.append({
-                "id": episode_id,
-                "name": _truncate_text(f"{turn.get('role', 'unknown')}: {content}", max_chars=120),
-                "label": str(turn.get("role") or "dialogue") or "dialogue",
-                "node_kind": "episode",
-                "properties": {
-                    "content": content,
-                    "role": str(turn.get("role") or "unknown"),
-                    "session_id": session_id,
-                    "turn_index": turn_index,
-                    "created_at": str(turn.get("created_at") or ""),
-                    "deleted": bool(turn.get("deleted", False)),
-                    "grounded_record_id": record_id,
-                },
-                "children": [],
-            })
+            if episode_id not in node_cache:
+                node_cache[episode_id] = {
+                    "id": episode_id,
+                    "name": _truncate_text(f"{turn.get('role', 'unknown')}: {content}", max_chars=120),
+                    "label": str(turn.get("role") or "dialogue") or "dialogue",
+                    "node_kind": "episode",
+                    "properties": {
+                        "content": content,
+                        "role": str(turn.get("role") or "unknown"),
+                        "session_id": session_id,
+                        "turn_index": turn_index,
+                        "created_at": str(turn.get("created_at") or ""),
+                        "deleted": bool(turn.get("deleted", False)),
+                        "grounded_record_ids": [],
+                        "grounded_record_count": 0,
+                        "canonical_record_id": "",
+                    },
+                    "children": [],
+                }
+            episode_ids.append(episode_id)
+            episode_to_record_ids.setdefault(episode_id, set()).add(record_id)
 
-        episode_cache[cache_key] = episode_nodes
-        return episode_nodes
+        episode_cache[cache_key] = episode_ids
+        record_episode_ids[record_id] = episode_ids
+        _refresh_episode_grounding(episode_ids)
+        return [node_cache[episode_id] for episode_id in episode_ids if episode_id in node_cache]
 
     def _build_record_node(record_id: str) -> dict[str, Any]:
         record = record_by_id[record_id]
         if record_id in node_cache:
             return node_cache[record_id]
         episode_nodes = _build_episode_nodes(record)
+        attached_episode_nodes = [
+            episode_node
+            for episode_node in episode_nodes
+            if str((episode_node.get("properties") or {}).get("canonical_record_id") or "") == record_id
+        ]
         node = {
             "id": record_id,
             "name": str(record.get("normalized_text") or record.get("semantic_text") or record_id)[:120],
@@ -252,11 +318,12 @@ def _build_semantic_tree_payload(
                 "source_role": record.get("source_role", ""),
                 "evidence_turn_range": record.get("evidence_turn_range", []),
                 "episodic_turn_count": len(episode_nodes),
+                "attached_episode_count": len(attached_episode_nodes),
             },
-            "children": episode_nodes,
+            "children": attached_episode_nodes,
         }
         node_cache[record_id] = node
-        for episode_node in episode_nodes:
+        for episode_node in attached_episode_nodes:
             node_cache[episode_node["id"]] = episode_node
         return node
 
@@ -310,7 +377,6 @@ def _build_semantic_tree_payload(
     tree_roots = [_build_composite_node(composite_id) for composite_id in root_composite_ids]
     tree_roots.extend(_build_record_node(record_id) for record_id in root_record_ids)
 
-    tree_nodes = list(node_cache.values())
     tree_edges: list[dict[str, Any]] = []
     for parent_id, child_ids in parent_to_children.items():
         for child_id in child_ids:
@@ -344,6 +410,7 @@ def _build_semantic_tree_payload(
                 "relation": "grounded_in_turn",
             })
 
+    tree_nodes = list(node_cache.values())
     return tree_nodes, tree_edges, tree_roots
 
 

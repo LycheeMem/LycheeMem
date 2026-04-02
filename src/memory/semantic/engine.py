@@ -2164,11 +2164,21 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         if not scored or not plan.include_episodic_context or self._session_store is None:
             return
 
+        seen_episode_ids: set[str] = set()
+        for candidate in scored:
+            for ref in candidate.data.get("episode_refs") or []:
+                if not isinstance(ref, dict):
+                    continue
+                episode_id = str(ref.get("episode_id") or "").strip()
+                if episode_id:
+                    seen_episode_ids.add(episode_id)
+
         for candidate in scored:
             self._attach_episodic_context(
                 candidate.data,
                 plan=plan,
                 focus_terms=focus_terms,
+                seen_episode_ids=seen_episode_ids,
             )
 
     def _attach_episodic_context(
@@ -2177,6 +2187,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         *,
         plan: SearchPlan,
         focus_terms: list[str] | None = None,
+        seen_episode_ids: set[str] | None = None,
     ) -> None:
         if candidate_data.get("_episodic_attached"):
             return
@@ -2190,6 +2201,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             candidate_data,
             plan=plan,
             focus_terms=focus_terms,
+            seen_episode_ids=seen_episode_ids,
         )
         episodic_context = self._render_episode_refs(episode_refs)
 
@@ -2209,6 +2221,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         *,
         plan: SearchPlan,
         focus_terms: list[str] | None = None,
+        seen_episode_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         if self._session_store is None:
             return []
@@ -2218,6 +2231,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             return self._episode_refs_for_record_data(
                 candidate_data,
                 window=plan.episodic_turn_window,
+                seen_episode_ids=seen_episode_ids,
             )
 
         if source != "composite":
@@ -2264,6 +2278,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 record_data,
                 window=plan.episodic_turn_window,
                 seen_turn_keys=seen_turn_keys,
+                seen_episode_ids=seen_episode_ids,
             )
             episode_refs.extend(refs)
             if len(episode_refs) >= 6:
@@ -2277,6 +2292,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         *,
         window: int = 0,
         seen_turn_keys: set[tuple[str, int]] | None = None,
+        seen_episode_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         session_id = str(record_data.get("source_session") or "").strip()
         evidence_turns = self._normalize_turn_indices(record_data.get("evidence_turn_range"))
@@ -2301,11 +2317,17 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 turn_index = int(turn.get("turn_index"))
             except (TypeError, ValueError):
                 continue
+            episode_id = self._make_episode_id(session_id, turn_index)
+            if seen_episode_ids is not None and episode_id in seen_episode_ids:
+                continue
             turn_key = (session_id, turn_index)
             if turn_key in seen_turn_keys:
                 continue
             seen_turn_keys.add(turn_key)
+            if seen_episode_ids is not None:
+                seen_episode_ids.add(episode_id)
             refs.append({
+                "episode_id": episode_id,
                 "session_id": session_id,
                 "turn_index": turn_index,
                 "role": str(turn.get("role") or "unknown"),
@@ -2355,6 +2377,10 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         result.sort()
         return result
 
+    @staticmethod
+    def _make_episode_id(session_id: str, turn_index: int) -> str:
+        return f"episode:{session_id}:{int(turn_index)}"
+
     def _render_episode_refs(self, refs: list[dict[str, Any]]) -> str:
         if not refs:
             return ""
@@ -2365,9 +2391,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             session_prefix = f"[{session_id[:8]}]" if multi_session and session_id else ""
             turn_index = ref.get("turn_index")
             role = str(ref.get("role") or "unknown")
+            created_at = self._format_time_label(str(ref.get("created_at") or ""))
             content = self._truncate_text(str(ref.get("content") or ""), max_chars=220)
             turn_prefix = f"t{turn_index}" if turn_index is not None else "t?"
-            lines.append(f"{session_prefix}[{turn_prefix}][{role}] {content}")
+            time_prefix = f"[{created_at}]" if created_at else ""
+            lines.append(f"{session_prefix}{time_prefix}[{turn_prefix}][{role}] {content}")
         return "\n".join(lines)
 
     @staticmethod
@@ -2376,6 +2404,13 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         if len(cleaned) <= max_chars:
             return cleaned
         return cleaned[: max_chars - 1].rstrip() + "…"
+
+    @staticmethod
+    def _format_time_label(value: str) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        return re.sub(r"\.\d+(?=(?:Z|[+-]\d{2}:?\d{2})?$)", "", raw)
 
     def _format_context(self, scored: list[ScoredCandidate]) -> str:
         """将 top-k 候选格式化为 LLM 可注入的文本。"""
@@ -2413,6 +2448,8 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 "score_breakdown": sc.score_breakdown,
                 "semantic_text": d.get("semantic_text", ""),
                 "display_text": d.get("display_text") or d.get("semantic_text", ""),
+                "created_at": d.get("created_at", ""),
+                "temporal": d.get("temporal", {}),
                 "episodic_context": d.get("episodic_context", ""),
                 "episode_refs": d.get("episode_refs", []),
                 "entities": d.get("entities", []),
