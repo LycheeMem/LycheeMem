@@ -90,6 +90,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         llm: BaseLLM,
         embedder: BaseEmbedder,
         *,
+        session_store: Any | None = None,
         sqlite_db_path: str = "data/compact_memory.db",
         vector_db_path: str = "data/compact_vector",
         dedup_threshold: float = 0.85,
@@ -101,6 +102,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
     ):
         self._llm = llm
         self._embedder = embedder
+        self._session_store = session_store
 
         # 存储层
         self._sqlite = SQLiteSemanticStore(db_path=sqlite_db_path)
@@ -225,6 +227,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         # Step 4: 反思循环（最多 max_reflection_rounds 轮）
         for _ in range(self._max_reflection_rounds):
             current_top = scored[:top_k]
+            self._enrich_candidates_with_episodic_context(
+                current_top,
+                plan=plan,
+                focus_terms=focus_terms,
+            )
             context_preview = self._format_context(current_top) or "（无检索结果）"
 
             adequacy = self._check_adequacy(
@@ -274,6 +281,8 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 tree_retrieval_mode=plan.tree_retrieval_mode,
                 tree_expansion_depth=plan.tree_expansion_depth,
                 include_leaf_records=plan.include_leaf_records,
+                include_episodic_context=plan.include_episodic_context,
+                episodic_turn_window=plan.episodic_turn_window,
                 depth=top_k,
             )
             supplement_plan = self._normalize_tree_retrieval_plan(
@@ -313,6 +322,8 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 tree_retrieval_mode=supplement_plan.tree_retrieval_mode,
                 tree_expansion_depth=supplement_plan.tree_expansion_depth,
                 include_leaf_records=supplement_plan.include_leaf_records,
+                include_episodic_context=supplement_plan.include_episodic_context,
+                episodic_turn_window=supplement_plan.episodic_turn_window,
                 depth=max(plan.depth, top_k),
                 reasoning=plan.reasoning,
             )
@@ -358,6 +369,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             focus_terms=focus_terms,
             tree_retrieval_mode=plan.tree_retrieval_mode,
             include_leaf_records=plan.include_leaf_records,
+        )
+        self._enrich_candidates_with_episodic_context(
+            top,
+            plan=plan,
+            focus_terms=focus_terms,
         )
 
         # Step 6: 记录使用日志
@@ -1406,6 +1422,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         session_id: str,
         user_id: str = "",
         retrieved_context: str = "",
+        turn_index_offset: int = 0,
         reference_timestamp: str | None = None,
     ) -> ConsolidationResult:
         """完整固化流程：新颖性检查 → 编码 → 去重写入 → 合成。"""
@@ -1442,6 +1459,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             previous_turns=previous,
             session_id=session_id,
             user_id=user_id,
+            turn_index_offset=turn_index_offset + max(0, len(turns) - len(current)),
         )
 
         steps.append({
@@ -1830,6 +1848,8 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             tree_retrieval_mode=str(d.get("tree_retrieval_mode", "balanced") or "balanced"),
             tree_expansion_depth=int(d.get("tree_expansion_depth", 1) or 0),
             include_leaf_records=bool(d.get("include_leaf_records", False)),
+            include_episodic_context=bool(d.get("include_episodic_context", False)),
+            episodic_turn_window=max(0, int(d.get("episodic_turn_window", 0) or 0)),
             depth=int(d.get("depth", 5)),
             reasoning=d.get("reasoning", ""),
         )
@@ -1880,6 +1900,8 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             "tree_retrieval_mode": plan.tree_retrieval_mode,
             "tree_expansion_depth": plan.tree_expansion_depth,
             "include_leaf_records": plan.include_leaf_records,
+            "include_episodic_context": plan.include_episodic_context,
+            "episodic_turn_window": plan.episodic_turn_window,
             "depth": plan.depth,
             "reasoning": plan.reasoning,
         }
@@ -1917,6 +1939,8 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             plan.tree_retrieval_mode = "root_only"
             plan.tree_expansion_depth = 0
             plan.include_leaf_records = False
+            plan.include_episodic_context = False
+            plan.episodic_turn_window = 0
             return plan
 
         if plan.mode == "mixed":
@@ -1932,11 +1956,20 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 ),
             )
             plan.include_leaf_records = bool(plan.include_leaf_records or detail_signals)
+            plan.include_episodic_context = bool(
+                plan.include_episodic_context
+                or plan.include_leaf_records
+                or detail_signals
+                or adequacy.get("missing_info")
+            )
+            plan.episodic_turn_window = max(0, min(int(plan.episodic_turn_window or 1), 2))
             return plan
 
         plan.tree_retrieval_mode = "descend"
         plan.tree_expansion_depth = max(2, min(int(plan.tree_expansion_depth or 2), 3))
         plan.include_leaf_records = True
+        plan.include_episodic_context = True
+        plan.episodic_turn_window = max(1, min(int(plan.episodic_turn_window or 1), 2))
         return plan
 
     @staticmethod
@@ -2077,6 +2110,9 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             "action_success_count": record.action_success_count,
             "action_fail_count": record.action_fail_count,
             "evidence_turn_range": record.evidence_turn_range,
+            "source_session": record.source_session,
+            "source_role": record.source_role,
+            "user_id": record.user_id,
             "temporal": record.temporal,
             "entities": record.entities,
         }
@@ -2118,6 +2154,229 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             return 0.0
         return dot / (norm_a * norm_b)
 
+    def _enrich_candidates_with_episodic_context(
+        self,
+        scored: list[ScoredCandidate],
+        *,
+        plan: SearchPlan,
+        focus_terms: list[str] | None = None,
+    ) -> None:
+        if not scored or not plan.include_episodic_context or self._session_store is None:
+            return
+
+        for candidate in scored:
+            self._attach_episodic_context(
+                candidate.data,
+                plan=plan,
+                focus_terms=focus_terms,
+            )
+
+    def _attach_episodic_context(
+        self,
+        candidate_data: dict[str, Any],
+        *,
+        plan: SearchPlan,
+        focus_terms: list[str] | None = None,
+    ) -> None:
+        if candidate_data.get("_episodic_attached"):
+            return
+
+        base_text = str(
+            candidate_data.get("semantic_text")
+            or candidate_data.get("normalized_text")
+            or ""
+        ).strip()
+        episode_refs = self._collect_episode_refs_for_candidate(
+            candidate_data,
+            plan=plan,
+            focus_terms=focus_terms,
+        )
+        episodic_context = self._render_episode_refs(episode_refs)
+
+        candidate_data["episode_refs"] = episode_refs
+        candidate_data["episodic_context"] = episodic_context
+        candidate_data["display_text"] = base_text
+        if episodic_context:
+            candidate_data["display_text"] = (
+                f"{base_text}\n\n[原始对话上下文]\n{episodic_context}"
+                if base_text else episodic_context
+            )
+        candidate_data["_episodic_attached"] = True
+
+    def _collect_episode_refs_for_candidate(
+        self,
+        candidate_data: dict[str, Any],
+        *,
+        plan: SearchPlan,
+        focus_terms: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        if self._session_store is None:
+            return []
+
+        source = str(candidate_data.get("source") or "").strip().lower()
+        if source == "record":
+            return self._episode_refs_for_record_data(
+                candidate_data,
+                window=plan.episodic_turn_window,
+            )
+
+        if source != "composite":
+            return []
+
+        record_ids = [
+            str(record_id or "").strip()
+            for record_id in (candidate_data.get("source_record_ids") or [])
+            if str(record_id or "").strip()
+        ]
+        if not record_ids:
+            return []
+
+        ranked_records: list[tuple[int, dict[str, Any]]] = []
+        for record_id in record_ids[:12]:
+            record = self._sqlite.get_record(record_id)
+            if record is None or record.expired:
+                continue
+            record_data = self._record_to_candidate(record)
+            if not record_data.get("source_session") or not record_data.get("evidence_turn_range"):
+                continue
+            focus_score = self._episode_focus_score(record_data, focus_terms)
+            ranked_records.append((focus_score, record_data))
+
+        ranked_records = sorted(
+            ranked_records,
+            key=lambda item: (
+                str(item[1].get("created_at") or ""),
+                str(item[1].get("id") or ""),
+            ),
+            reverse=True,
+        )
+        ranked_records = sorted(
+            ranked_records,
+            key=lambda item: item[0],
+            reverse=True,
+        )
+
+        max_records = 3 if plan.mode in {"action", "mixed"} else 1
+        episode_refs: list[dict[str, Any]] = []
+        seen_turn_keys: set[tuple[str, int]] = set()
+        for _, record_data in ranked_records[:max_records]:
+            refs = self._episode_refs_for_record_data(
+                record_data,
+                window=plan.episodic_turn_window,
+                seen_turn_keys=seen_turn_keys,
+            )
+            episode_refs.extend(refs)
+            if len(episode_refs) >= 6:
+                break
+
+        return episode_refs[:6]
+
+    def _episode_refs_for_record_data(
+        self,
+        record_data: dict[str, Any],
+        *,
+        window: int = 0,
+        seen_turn_keys: set[tuple[str, int]] | None = None,
+    ) -> list[dict[str, Any]]:
+        session_id = str(record_data.get("source_session") or "").strip()
+        evidence_turns = self._normalize_turn_indices(record_data.get("evidence_turn_range"))
+        if not session_id or not evidence_turns or self._session_store is None:
+            return []
+
+        seen_turn_keys = seen_turn_keys if seen_turn_keys is not None else set()
+        try:
+            turns = self._session_store.get_turn_window(
+                session_id,
+                min(evidence_turns),
+                max(evidence_turns),
+                window=max(0, int(window or 0)),
+                user_id=str(record_data.get("user_id") or ""),
+            )
+        except Exception:
+            return []
+
+        refs: list[dict[str, Any]] = []
+        for turn in turns:
+            try:
+                turn_index = int(turn.get("turn_index"))
+            except (TypeError, ValueError):
+                continue
+            turn_key = (session_id, turn_index)
+            if turn_key in seen_turn_keys:
+                continue
+            seen_turn_keys.add(turn_key)
+            refs.append({
+                "session_id": session_id,
+                "turn_index": turn_index,
+                "role": str(turn.get("role") or "unknown"),
+                "content": str(turn.get("content") or ""),
+                "created_at": str(turn.get("created_at") or ""),
+                "deleted": bool(turn.get("deleted", False)),
+                "source_record_id": str(record_data.get("id") or ""),
+            })
+        return refs
+
+    def _episode_focus_score(
+        self,
+        record_data: dict[str, Any],
+        focus_terms: list[str] | None,
+    ) -> int:
+        if not focus_terms:
+            return 0
+        blob = self._candidate_text_blob(record_data).lower()
+        score = 0
+        for term in focus_terms:
+            normalized = str(term or "").strip().lower()
+            if not normalized:
+                continue
+            if normalized in blob:
+                score += 2
+                continue
+            tokens = [tok for tok in re.split(r"[\s/,_:：\-]+", normalized) if tok]
+            if tokens and any(tok in blob for tok in tokens):
+                score += 1
+        return score
+
+    @staticmethod
+    def _normalize_turn_indices(raw_value: Any) -> list[int]:
+        if not isinstance(raw_value, list):
+            return []
+        result: list[int] = []
+        seen: set[int] = set()
+        for raw in raw_value:
+            try:
+                index = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if index < 0 or index in seen:
+                continue
+            seen.add(index)
+            result.append(index)
+        result.sort()
+        return result
+
+    def _render_episode_refs(self, refs: list[dict[str, Any]]) -> str:
+        if not refs:
+            return ""
+        lines: list[str] = []
+        multi_session = len({str(ref.get("session_id") or "") for ref in refs}) > 1
+        for ref in refs:
+            session_id = str(ref.get("session_id") or "")
+            session_prefix = f"[{session_id[:8]}]" if multi_session and session_id else ""
+            turn_index = ref.get("turn_index")
+            role = str(ref.get("role") or "unknown")
+            content = self._truncate_text(str(ref.get("content") or ""), max_chars=220)
+            turn_prefix = f"t{turn_index}" if turn_index is not None else "t?"
+            lines.append(f"{session_prefix}[{turn_prefix}][{role}] {content}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _truncate_text(text: str, *, max_chars: int = 220) -> str:
+        cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+        if len(cleaned) <= max_chars:
+            return cleaned
+        return cleaned[: max_chars - 1].rstrip() + "…"
+
     def _format_context(self, scored: list[ScoredCandidate]) -> str:
         """将 top-k 候选格式化为 LLM 可注入的文本。"""
         if not scored:
@@ -2127,7 +2386,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         for i, sc in enumerate(scored, 1):
             d = sc.data
             mt = d.get("memory_type", "unknown")
-            text = d.get("semantic_text", d.get("normalized_text", ""))
+            text = d.get("display_text") or d.get("semantic_text", d.get("normalized_text", ""))
             entities = d.get("entities", [])
             score = f"{sc.final_score:.3f}"
 
@@ -2153,8 +2412,14 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 "score": sc.final_score,
                 "score_breakdown": sc.score_breakdown,
                 "semantic_text": d.get("semantic_text", ""),
+                "display_text": d.get("display_text") or d.get("semantic_text", ""),
+                "episodic_context": d.get("episodic_context", ""),
+                "episode_refs": d.get("episode_refs", []),
                 "entities": d.get("entities", []),
                 "source_record_ids": d.get("source_record_ids", []),
+                "source_session": d.get("source_session", ""),
+                "source_role": d.get("source_role", ""),
+                "evidence_turn_range": d.get("evidence_turn_range", []),
                 "tree_parent_id": d.get("tree_parent_id", ""),
                 "tree_depth": d.get("tree_depth", 0),
                 "tree_expanded": bool(d.get("tree_expanded", False)),
@@ -2190,6 +2455,8 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 "tree_retrieval_mode": plan.tree_retrieval_mode,
                 "tree_expansion_depth": plan.tree_expansion_depth,
                 "include_leaf_records": plan.include_leaf_records,
+                "include_episodic_context": plan.include_episodic_context,
+                "episodic_turn_window": plan.episodic_turn_window,
                 "depth": plan.depth,
             },
             action_state=self._action_state_to_dict(action_state),

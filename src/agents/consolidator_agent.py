@@ -149,6 +149,7 @@ class ConsolidatorAgent(BaseAgent):
         session_id: str | None = None,
         retrieved_context: str = "",
         user_id: str = "",
+        turn_index_offset: int = 0,
         **kwargs,
     ) -> dict[str, Any]:
         """分析对话并固化到长期记忆。
@@ -174,6 +175,7 @@ class ConsolidatorAgent(BaseAgent):
             session_id=session_id,
             retrieved_context=retrieved_context,
             user_id=user_id,
+            turn_index_offset=turn_index_offset,
         )
 
     def _run_compact(
@@ -183,6 +185,7 @@ class ConsolidatorAgent(BaseAgent):
         session_id: str,
         retrieved_context: str = "",
         user_id: str = "",
+        turn_index_offset: int = 0,
     ) -> dict[str, Any]:
         """Compact 后端路径：LLM 分析 → 条件语义固化 + 技能抽取。
 
@@ -228,6 +231,7 @@ class ConsolidatorAgent(BaseAgent):
                 session_id=session_id,
                 user_id=user_id,
                 retrieved_context=retrieved_context,
+                turn_index_offset=turn_index_offset,
             )
 
         def _write_skills() -> int:

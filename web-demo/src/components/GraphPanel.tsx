@@ -74,16 +74,23 @@ function TreeSvgNode({
 }) {
   const d = node.data;
   const isComposite = d.nodeKind === "composite";
+  const isEpisode = d.nodeKind === "episode";
+  const cardKind = isComposite ? "composite" : isEpisode ? "episode" : "record";
   const hasChildren = (d.children || []).length > 0;
 
-  const title = d.label || "";
+  const title = isEpisode
+    ? String(d.properties.content || d.label || "")
+    : d.label || "";
   const sourceCount = isComposite
     ? Number(d.properties.source_record_count || 0)
     : null;
-  const confidence = !isComposite && d.properties.confidence != null
+  const confidence = !isComposite && !isEpisode && d.properties.confidence != null
     ? `${(Number(d.properties.confidence) * 100).toFixed(0)}%`
     : null;
-  const typeTag = d.typeLabel || null;
+  const typeTag = !isEpisode ? d.typeLabel || null : null;
+  const episodeRole = isEpisode ? String(d.properties.role || d.label || "对话") : "";
+  const episodeTurn = isEpisode ? Number(d.properties.turn_index ?? -1) : -1;
+  const episodeSession = isEpisode ? String(d.properties.session_id || "") : "";
 
   return (
     <foreignObject
@@ -94,13 +101,13 @@ function TreeSvgNode({
       style={{ overflow: "visible" }}
     >
       <div
-        className={`tsv-card ${isComposite ? "composite" : "record"}${collapsed ? " collapsed" : ""}`}
+        className={`tsv-card ${cardKind}${collapsed ? " collapsed" : ""}`}
         onClick={hasChildren ? () => onToggle(d.id) : undefined}
         style={{ cursor: hasChildren ? "pointer" : "default", width: NODE_W, height: NODE_H }}
       >
         <div className="tsv-header">
-          <span className={`tsv-badge ${isComposite ? "composite" : "record"}`}>
-            {isComposite ? "融合记忆" : "原子记录"}
+          <span className={`tsv-badge ${cardKind}`}>
+            {isComposite ? "融合记忆" : isEpisode ? "原始对话" : "原子记录"}
           </span>
           {typeTag && <span className="tsv-type">{typeTag}</span>}
           {hasChildren && (
@@ -113,6 +120,13 @@ function TreeSvgNode({
             <span>{sourceCount} 条底层记录</span>
           )}
           {confidence && <span>置信度 {confidence}</span>}
+          {isEpisode && (
+            <span>
+              {episodeRole}
+              {episodeTurn >= 0 ? ` · t${episodeTurn}` : ""}
+              {episodeSession ? ` · ${episodeSession.slice(0, 8)}` : ""}
+            </span>
+          )}
         </div>
       </div>
     </foreignObject>
@@ -136,8 +150,8 @@ function MemoryTreeSvg({
   const trees = useMemo(() => {
     return roots.map((rootNode) => {
       const h = hierarchy<HierarchyDatum>(rootNode as HierarchyDatum, (d) => {
-        if (d.nodeKind !== "composite") return null;
         if (collapsedIds.has(d.id)) return null;
+        if (!d.children || d.children.length === 0) return null;
         return (d.children || []) as HierarchyDatum[];
       });
       tree<HierarchyDatum>().nodeSize([H_GAP, V_GAP])(h);
@@ -186,6 +200,7 @@ function MemoryTreeSvg({
           <g>
             {links.map((link, i) => {
               const isCompositeTarget = link.target.data.nodeKind === "composite";
+              const isEpisodeTarget = link.target.data.nodeKind === "episode";
               return (
                 <path
                   key={i}
@@ -194,9 +209,13 @@ function MemoryTreeSvg({
                     link.target.x ?? 0, link.target.y ?? 0
                   )}
                   fill="none"
-                  stroke={isCompositeTarget ? "rgba(99,102,241,0.4)" : "rgba(20,184,166,0.4)"}
+                  stroke={isCompositeTarget
+                    ? "rgba(99,102,241,0.4)"
+                    : isEpisodeTarget
+                      ? "rgba(245,158,11,0.45)"
+                      : "rgba(20,184,166,0.4)"}
                   strokeWidth={1.5}
-                  strokeDasharray={isCompositeTarget ? "none" : "4 3"}
+                  strokeDasharray={isCompositeTarget ? "none" : isEpisodeTarget ? "2 3" : "4 3"}
                 />
               );
             })}
@@ -209,7 +228,11 @@ function MemoryTreeSvg({
                 cx={link.target.x ?? 0}
                 cy={link.target.y ?? 0}
                 r={3}
-                fill={link.target.data.nodeKind === "composite" ? "rgba(99,102,241,0.6)" : "rgba(20,184,166,0.6)"}
+                fill={link.target.data.nodeKind === "composite"
+                  ? "rgba(99,102,241,0.6)"
+                  : link.target.data.nodeKind === "episode"
+                    ? "rgba(245,158,11,0.65)"
+                    : "rgba(20,184,166,0.6)"}
               />
             ))}
           </g>
@@ -219,7 +242,7 @@ function MemoryTreeSvg({
               <TreeSvgNode
                 key={node.data.id}
                 node={node as { x: number; y: number; data: HierarchyDatum; children?: unknown[] }}
-                collapsed={node.data.nodeKind === "composite" && collapsedIds.has(node.data.id)}
+                collapsed={collapsedIds.has(node.data.id)}
                 onToggle={onToggle}
               />
             ))}

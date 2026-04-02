@@ -64,6 +64,8 @@ class ActionAwareSearchPlanner:
                 tree_retrieval_mode="root_only",
                 tree_expansion_depth=0,
                 include_leaf_records=False,
+                include_episodic_context=False,
+                episodic_turn_window=0,
                 depth=5,
                 reasoning="plan_parse_failed, fallback to simple query",
             )
@@ -90,6 +92,8 @@ class ActionAwareSearchPlanner:
             tree_retrieval_mode=str(d.get("tree_retrieval_mode", "balanced") or "balanced"),
             tree_expansion_depth=int(d.get("tree_expansion_depth", 1) or 0),
             include_leaf_records=bool(d.get("include_leaf_records", False)),
+            include_episodic_context=bool(d.get("include_episodic_context", False)),
+            episodic_turn_window=max(0, int(d.get("episodic_turn_window", 0) or 0)),
             depth=int(d.get("depth", 5)),
             reasoning=d.get("reasoning", ""),
         )
@@ -144,6 +148,8 @@ class ActionAwareSearchPlanner:
             plan.tree_retrieval_mode = "root_only"
             plan.tree_expansion_depth = 0
             plan.include_leaf_records = False
+            plan.include_episodic_context = False
+            plan.episodic_turn_window = 0
             return
 
         if plan.mode == "mixed":
@@ -153,12 +159,18 @@ class ActionAwareSearchPlanner:
                 plan.tree_retrieval_mode = "balanced"
             plan.tree_expansion_depth = max(1, min(int(plan.tree_expansion_depth or 1), 2))
             plan.include_leaf_records = bool(plan.include_leaf_records or detail_signals)
+            plan.include_episodic_context = bool(
+                plan.include_episodic_context or plan.include_leaf_records or detail_signals
+            )
+            plan.episodic_turn_window = max(0, min(int(plan.episodic_turn_window or 1), 2))
             return
 
         # action 模式：优先显式下钻，让计划真正决定树遍历
         plan.tree_retrieval_mode = "descend"
         plan.tree_expansion_depth = max(2, min(int(plan.tree_expansion_depth or 2), 3))
         plan.include_leaf_records = True
+        plan.include_episodic_context = True
+        plan.episodic_turn_window = max(1, min(int(plan.episodic_turn_window or 1), 2))
 
     @staticmethod
     def _merge_unique(primary: list[str], secondary: list[str]) -> list[str]:

@@ -176,6 +176,8 @@ class SearchPlan:
     tree_retrieval_mode: str = "balanced"  # "root_only" | "balanced" | "descend"
     tree_expansion_depth: int = 1  # 树下钻深度；0=不下钻
     include_leaf_records: bool = False  # 是否将叶子 record 纳入最终候选池
+    include_episodic_context: bool = False  # 是否补充原始对话上下文
+    episodic_turn_window: int = 0  # 原始对话窗口大小（按 evidence turn 向两侧扩展）
     depth: int = 5  # 建议检索深度 (top_k)
     reasoning: str = ""  # 规划理由
 

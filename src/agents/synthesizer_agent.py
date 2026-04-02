@@ -235,6 +235,7 @@ class SynthesizerAgent(BaseAgent):
                     if not isinstance(item, dict):
                         continue
                     semantic_text = str(item.get("semantic_text") or "").strip()
+                    display_text = str(item.get("display_text") or semantic_text).strip()
                     if not semantic_text:
                         continue
                     fragments.append(
@@ -244,7 +245,7 @@ class SynthesizerAgent(BaseAgent):
                             "record_id": str(item.get("record_id") or ""),
                             "memory_type": str(item.get("memory_type") or ""),
                             "semantic_text": semantic_text,
-                            "display_text": semantic_text,
+                            "display_text": display_text,
                             "entities": list(item.get("entities") or []),
                             "retrieval_score": float(item.get("score") or 0.0),
                             "score_breakdown": item.get("score_breakdown") or {},

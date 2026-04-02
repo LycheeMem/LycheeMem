@@ -510,6 +510,7 @@ class LycheePipeline:
             return {"entities_added": 0, "skills_added": 0, "skipped_reason": "no_new_turns"}
         result = self.consolidator.run(
             turns=new_turns, session_id=session_id, retrieved_context=retrieved_context,
+            turn_index_offset=watermark,
             user_id=user_id,
         )
         # 固化成功后推进水位线
@@ -598,6 +599,7 @@ class LycheePipeline:
                     turns=new_turns,
                     session_id=session_id,
                     retrieved_context=retrieved_context,
+                    turn_index_offset=watermark,
                     user_id=user_id,
                 ),
             )

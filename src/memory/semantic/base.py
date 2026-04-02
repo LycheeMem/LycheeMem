@@ -78,6 +78,7 @@ class BaseSemanticMemoryEngine(ABC):
         session_id: str,
         user_id: str = "",
         retrieved_context: str = "",
+        turn_index_offset: int = 0,
         reference_timestamp: str | None = None,
     ) -> ConsolidationResult:
         """将对话固化为长期记忆。
@@ -87,6 +88,7 @@ class BaseSemanticMemoryEngine(ABC):
             session_id: 会话 ID。
             user_id: 用户 ID。
             retrieved_context: 检索阶段已有的记忆上下文（用于新颖性检查）。
+            turn_index_offset: 当前 turns 在完整 session 中的绝对起始索引。
             reference_timestamp: 参考时间戳（ISO 格式）。
 
         Returns:

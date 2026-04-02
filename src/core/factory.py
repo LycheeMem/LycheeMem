@@ -71,6 +71,7 @@ def create_pipeline(
     semantic_engine = CompactSemanticEngine(
         llm=llm,
         embedder=embedder,
+        session_store=session_store,
         sqlite_db_path=getattr(settings, "compact_memory_db_path", "data/compact_memory.db"),
         vector_db_path=getattr(settings, "compact_vector_db_path", "data/compact_vector"),
         dedup_threshold=getattr(settings, "compact_dedup_threshold", 0.85),

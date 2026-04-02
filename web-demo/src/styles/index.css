@@ -787,6 +787,11 @@ html, body {
   background: linear-gradient(160deg, rgba(20, 184, 166, 0.05) 0%, rgba(20, 184, 166, 0.01) 100%);
 }
 
+.tsv-card.episode {
+  border-color: rgba(245, 158, 11, 0.34);
+  background: linear-gradient(160deg, rgba(245, 158, 11, 0.08) 0%, rgba(245, 158, 11, 0.015) 100%);
+}
+
 .tsv-card:hover {
   box-shadow: 0 4px 20px rgba(15, 23, 42, 0.14);
 }
@@ -797,6 +802,10 @@ html, body {
 
 .tsv-card.record:hover {
   border-color: rgba(20, 184, 166, 0.55);
+}
+
+.tsv-card.episode:hover {
+  border-color: rgba(245, 158, 11, 0.6);
 }
 
 .tsv-card.collapsed {
@@ -830,6 +839,11 @@ html, body {
 .tsv-badge.record {
   background: rgba(20, 184, 166, 0.13);
   color: var(--teal);
+}
+
+.tsv-badge.episode {
+  background: rgba(245, 158, 11, 0.14);
+  color: #b45309;
 }
 
 .tsv-type {

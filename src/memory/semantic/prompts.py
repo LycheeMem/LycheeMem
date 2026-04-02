@@ -808,7 +808,14 @@ RETRIEVAL_PLANNING_SYSTEM = """\
    对于 mixed 查询，通常应选 balanced；
    对于 action 查询，尤其当存在 missing_slots / required_constraints / required_affordances / failure_signal 时，应优先选 descend。
 
-10. **检索深度（depth）**：建议的 top_k 值。简单查询 3-5，复杂查询 8-15。
+10. **情景补全策略（include_episodic_context / episodic_turn_window）**：
+    当叶子 record 可能过于压缩、缺少原始语气/前后条件/参数细节时，应补充对应的原始对话片段。
+    - include_episodic_context=true：在最终上下文中附上 record 对应的原始对话
+    - episodic_turn_window：围绕 evidence turn 向前后扩展的窗口大小；0 表示只取命中的原始轮次，1 表示补一轮上下文
+    对于纯事实查询，通常设为 false；
+    对于 mixed / action 查询，尤其当需要细节参数、失败上下文、原始措辞时，应优先设为 true。
+
+11. **检索深度（depth）**：建议的 top_k 值。简单查询 3-5，复杂查询 8-15。
 
 输入：
 - <USER_QUERY>：用户的查询
@@ -833,6 +840,8 @@ RETRIEVAL_PLANNING_SYSTEM = """\
     "tree_retrieval_mode": "root_only|balanced|descend",
     "tree_expansion_depth": 0,
     "include_leaf_records": false,
+    "include_episodic_context": false,
+    "episodic_turn_window": 0,
     "depth": 5,
     "reasoning": "规划理由"
 }
@@ -864,6 +873,8 @@ RETRIEVAL_PLANNING_SYSTEM = """\
     "tree_retrieval_mode": "root_only",
     "tree_expansion_depth": 0,
     "include_leaf_records": false,
+    "include_episodic_context": false,
+    "episodic_turn_window": 0,
     "depth": 5,
     "reasoning": "用户查询特定项目的技术事实，属于纯信息检索，无需行动支撑记忆，depth 取小值即可。"
 }
@@ -890,6 +901,8 @@ assistant: 好的，我来协助您准备部署。
     "tree_retrieval_mode": "descend",
     "tree_expansion_depth": 2,
     "include_leaf_records": true,
+    "include_episodic_context": true,
+    "episodic_turn_window": 1,
     "depth": 10,
     "reasoning": "用户要求直接执行部署操作，需要检索完整部署流程、工具约束和历史失败经验，提高 depth 确保覆盖所有约束条目。"
 }
@@ -913,6 +926,8 @@ assistant: 好的，我来协助您准备部署。
     "tree_retrieval_mode": "balanced",
     "tree_expansion_depth": 1,
     "include_leaf_records": true,
+    "include_episodic_context": true,
+    "episodic_turn_window": 1,
     "depth": 12,
     "reasoning": "用户既查询历史失败事实（UserService 教训）又需要行动指导（DataFlow 如何规避），属于 mixed 模式；depth 调高以同时覆盖失败模式记忆与操作流程记忆。"
 }

@@ -28,6 +28,7 @@ class CompactSemanticEncoder:
         previous_turns: list[dict[str, Any]] | None = None,
         session_id: str = "",
         user_id: str = "",
+        turn_index_offset: int = 0,
     ) -> list[MemoryRecord]:
         """单次 LLM 调用完成抽取 + 指代消解 + action metadata 标注。
 
@@ -36,6 +37,7 @@ class CompactSemanticEncoder:
             previous_turns: 最近的上文轮次（供指代消解参考，可选）
             session_id: 会话 ID
             user_id: 用户 ID
+            turn_index_offset: current_turns 在完整 session 中的起始 turn 索引
 
         Returns:
             编码完成的 MemoryRecord 列表
@@ -77,7 +79,10 @@ class CompactSemanticEncoder:
                 failure_tags=raw.get("failure_tags", []),
                 affordance_tags=raw.get("affordance_tags", []),
                 confidence=1.0,
-                evidence_turn_range=raw.get("evidence_turns", []),
+                evidence_turn_range=self._normalize_evidence_turns(
+                    raw.get("evidence_turns", []),
+                    turn_index_offset=turn_index_offset,
+                ),
                 source_session=session_id,
                 source_role=source_role,
                 user_id=user_id,
@@ -144,3 +149,27 @@ class CompactSemanticEncoder:
             lines = [l for l in lines if not l.strip().startswith("```")]
             text = "\n".join(lines)
         return json.loads(text)
+
+    @staticmethod
+    def _normalize_evidence_turns(
+        evidence_turns: Any,
+        *,
+        turn_index_offset: int = 0,
+    ) -> list[int]:
+        if not isinstance(evidence_turns, list):
+            return []
+
+        normalized: list[int] = []
+        seen: set[int] = set()
+        base_offset = max(0, int(turn_index_offset or 0))
+        for raw in evidence_turns:
+            try:
+                absolute_index = base_offset + int(raw)
+            except (TypeError, ValueError):
+                continue
+            if absolute_index < 0 or absolute_index in seen:
+                continue
+            seen.add(absolute_index)
+            normalized.append(absolute_index)
+        normalized.sort()
+        return normalized

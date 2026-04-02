@@ -124,6 +124,9 @@ def _build_tree_relationships(
 
 def _build_semantic_tree_payload(
     data: dict[str, Any],
+    *,
+    session_store: Any | None = None,
+    user_id: str = "",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     records = [
         record
@@ -147,11 +150,91 @@ def _build_semantic_tree_payload(
     covered_record_ids = set().union(*source_sets.values()) if source_sets else set()
 
     node_cache: dict[str, dict[str, Any]] = {}
+    episode_cache: dict[tuple[str, str, tuple[int, ...]], list[dict[str, Any]]] = {}
+
+    def _normalize_turn_indices(raw_value: Any) -> list[int]:
+        if not isinstance(raw_value, list):
+            return []
+        result: list[int] = []
+        seen: set[int] = set()
+        for raw in raw_value:
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if value < 0 or value in seen:
+                continue
+            seen.add(value)
+            result.append(value)
+        result.sort()
+        return result
+
+    def _truncate_text(text: str, max_chars: int = 80) -> str:
+        cleaned = " ".join(str(text or "").split())
+        if len(cleaned) <= max_chars:
+            return cleaned
+        return cleaned[: max_chars - 1].rstrip() + "…"
+
+    def _build_episode_nodes(record: dict[str, Any]) -> list[dict[str, Any]]:
+        if session_store is None:
+            return []
+
+        session_id = _normalize_graph_id(record.get("source_session"))
+        evidence_turns = _normalize_turn_indices(record.get("evidence_turn_range"))
+        record_id = _normalize_graph_id(record.get("record_id"))
+        if not session_id or not evidence_turns:
+            return []
+
+        cache_key = (record_id, session_id, tuple(evidence_turns))
+        if cache_key in episode_cache:
+            return episode_cache[cache_key]
+
+        try:
+            turns = session_store.get_turn_window(
+                session_id,
+                min(evidence_turns),
+                max(evidence_turns),
+                window=0,
+                user_id=user_id,
+            )
+        except Exception:
+            logger.exception("build episode nodes failed for session %s", session_id)
+            episode_cache[cache_key] = []
+            return []
+
+        episode_nodes: list[dict[str, Any]] = []
+        for turn in turns:
+            try:
+                turn_index = int(turn.get("turn_index"))
+            except (TypeError, ValueError):
+                continue
+            episode_id = f"episode:{record_id}:{session_id}:{turn_index}"
+            content = str(turn.get("content") or "")
+            episode_nodes.append({
+                "id": episode_id,
+                "name": _truncate_text(f"{turn.get('role', 'unknown')}: {content}", max_chars=120),
+                "label": str(turn.get("role") or "dialogue") or "dialogue",
+                "node_kind": "episode",
+                "properties": {
+                    "content": content,
+                    "role": str(turn.get("role") or "unknown"),
+                    "session_id": session_id,
+                    "turn_index": turn_index,
+                    "created_at": str(turn.get("created_at") or ""),
+                    "deleted": bool(turn.get("deleted", False)),
+                    "grounded_record_id": record_id,
+                },
+                "children": [],
+            })
+
+        episode_cache[cache_key] = episode_nodes
+        return episode_nodes
 
     def _build_record_node(record_id: str) -> dict[str, Any]:
         record = record_by_id[record_id]
         if record_id in node_cache:
             return node_cache[record_id]
+        episode_nodes = _build_episode_nodes(record)
         node = {
             "id": record_id,
             "name": str(record.get("normalized_text") or record.get("semantic_text") or record_id)[:120],
@@ -165,10 +248,16 @@ def _build_semantic_tree_payload(
                 "source_record_count": 1,
                 "child_composite_count": 0,
                 "direct_record_count": 0,
+                "source_session": record.get("source_session", ""),
+                "source_role": record.get("source_role", ""),
+                "evidence_turn_range": record.get("evidence_turn_range", []),
+                "episodic_turn_count": len(episode_nodes),
             },
-            "children": [],
+            "children": episode_nodes,
         }
         node_cache[record_id] = node
+        for episode_node in episode_nodes:
+            node_cache[episode_node["id"]] = episode_node
         return node
 
     def _build_composite_node(composite_id: str) -> dict[str, Any]:
@@ -245,6 +334,14 @@ def _build_semantic_tree_payload(
                 "source": composite_id,
                 "target": record_id,
                 "relation": "composed_from_record",
+            })
+
+    for record_id, record in record_by_id.items():
+        for episode_node in _build_episode_nodes(record):
+            tree_edges.append({
+                "source": record_id,
+                "target": episode_node["id"],
+                "relation": "grounded_in_turn",
             })
 
     return tree_nodes, tree_edges, tree_roots
@@ -502,6 +599,7 @@ def run_memory_consolidate(
                     turns=turns,
                     session_id=req.session_id,
                     retrieved_context=req.retrieved_context,
+                    turn_index_offset=watermark,
                     user_id=user_id,
                 )
                 # 后台线程固化成功后推进水位线
@@ -521,6 +619,7 @@ def run_memory_consolidate(
         turns=turns,
         session_id=req.session_id,
         retrieved_context=req.retrieved_context,
+        turn_index_offset=watermark,
         user_id=user_id,
     )
     # 同步固化成功后推进水位线
@@ -689,7 +788,11 @@ async def get_graph(
     try:
         data = sc.semantic_engine.export_debug(user_id=user_id)
         if mode == "cleaned":
-            nodes, edges, tree_roots = _build_semantic_tree_payload(data)
+            nodes, edges, tree_roots = _build_semantic_tree_payload(
+                data,
+                session_store=pipeline.wm_manager.session_store,
+                user_id=user_id,
+            )
             return GraphResponse(nodes=nodes, edges=edges, tree_roots=tree_roots)
 
         nodes = []
@@ -727,7 +830,11 @@ async def get_graph(
                     "target": src_id,
                     "relation": "composed_from",
                 })
-        _, _, tree_roots = _build_semantic_tree_payload(data)
+        _, _, tree_roots = _build_semantic_tree_payload(
+            data,
+            session_store=pipeline.wm_manager.session_store,
+            user_id=user_id,
+        )
         return GraphResponse(nodes=nodes, edges=edges, tree_roots=tree_roots)
     except Exception as exc:
         logger.exception("export_debug failed")

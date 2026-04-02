@@ -54,6 +54,32 @@ class InMemorySessionStore:
     def get_turns(self, session_id: str) -> list[dict[str, Any]]:
         return self.get_or_create(session_id).turns
 
+    def get_turn_window(
+        self,
+        session_id: str,
+        start_index: int,
+        end_index: int,
+        *,
+        window: int = 0,
+        user_id: str = "",
+    ) -> list[dict[str, Any]]:
+        """按绝对 turn 索引回溯原始对话窗口。"""
+        log = self.get_or_create(session_id, user_id=user_id)
+        if not log.turns:
+            return []
+
+        left = max(0, min(int(start_index), int(end_index)) - max(0, int(window or 0)))
+        right = min(
+            len(log.turns) - 1,
+            max(int(start_index), int(end_index)) + max(0, int(window or 0)),
+        )
+        result: list[dict[str, Any]] = []
+        for turn_index in range(left, right + 1):
+            turn = dict(log.turns[turn_index])
+            turn["turn_index"] = turn_index
+            result.append(turn)
+        return result
+
     def add_summary(self, session_id: str, boundary_index: int, summary_text: str, token_count: int = 0) -> None:
         log = self.get_or_create(session_id)
         log.summaries.append({"boundary_index": boundary_index, "content": summary_text, "token_count": token_count})
