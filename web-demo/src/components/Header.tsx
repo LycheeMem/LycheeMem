@@ -27,7 +27,7 @@ export default function Header() {
         <div className="logo">
           <img className="logo-img" src="/logo.png" alt="Logo" />
           <span className="logo-text">
-            立知大模型<span className="logo-text">记忆系统</span>
+            LycheeMem 立知大模型记忆系统
           </span>
         </div>
       </div>
