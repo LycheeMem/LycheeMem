@@ -274,10 +274,24 @@ $$\text{Score} = \alpha \cdot S_\text{sem} + \beta \cdot S_\text{action} + \kapp
 
 ### 前置要求
 
-- Python 3.11+
+- Python 3.9+
 - LLM API 密钥（OpenAI、Gemini 或任何兼容 litellm 的供应商）
 
 ### 安装
+
+你可以直接通过 pip 安装 LycheeMem：
+
+```bash
+pip install lycheemem
+```
+
+安装完成后，你可以随时随地通过命令行直接启动后端服务：
+
+```bash
+lycheemem-cli
+```
+
+如果想体验最新源码或者做二次开发：
 
 ```bash
 git clone https://github.com/LycheeMem/LycheeMem.git
@@ -287,7 +301,7 @@ pip install -e .
 
 ### 配置
 
-将 `.env.example` 复制为 `.env` 并填入您的值：
+在你的工作目录下，创建一个 `.env` 文件并填入您的值：
 
 ```dotenv
 # LLM —— litellm 格式：供应商/模型
@@ -307,7 +321,13 @@ EMBEDDING_API_BASE=               # 可选
 
 ### 启动服务器
 
+如果你是通过 pip 安装的包，直接在终端任意位置执行以下命令即可启动 LycheeMem 后台服务：
+
 ```bash
+lycheemem-cli
+```
+
+*(如果你是使用拉取源码方式安装的，也可以执行 `python main.py` 启动)*
 python main.py
 ```
 
@@ -683,3 +703,4 @@ python examples/api_pipeline_demo.py --username alice --password secret123 \
 # 使用固定 session_id（方便多次运行复现会话历史累积效果）
 python examples/api_pipeline_demo.py --session-id my-test-session
 ```
+
