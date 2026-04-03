@@ -274,10 +274,24 @@ Triggered immediately after `ReasoningAgent` completes, runs in a thread pool an
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.9+
 - An LLM API key (OpenAI, Gemini, or any litellm-compatible provider)
 
 ### Installation
+
+You can install LycheeMem directly via pip:
+
+```bash
+pip install lycheemem
+```
+
+Once installed, you can start the backend server instantly using the CLI:
+
+```bash
+lycheemem-cli
+```
+
+For development or if you prefer to run from source:
 
 ```bash
 git clone https://github.com/LycheeMem/LycheeMem.git
@@ -287,7 +301,7 @@ pip install -e .
 
 ### Configuration
 
-Copy `.env.example` to `.env` and fill in your values. The full template in `.env.example` also includes session/user DB paths, JWT settings, and working-memory thresholds; the snippet below shows the most important ones:
+Create a `.env` file in your working directory and fill in your values. The full template in `.env.example` also includes session/user DB paths, JWT settings, and working-memory thresholds; the snippet below shows the most important ones:
 
 ```dotenv
 # LLM — litellm format: provider/model
@@ -308,9 +322,13 @@ EMBEDDING_API_BASE=               # optional
 
 ### Start the Server
 
+If you installed via pip, you can start the LycheeMem background service from anywhere using:
+
 ```bash
-python main.py
+lycheemem-cli
 ```
+
+*(If running from source, you can also use `python main.py` to start the server.)*
 
 The API is served at `http://localhost:8000`. Interactive docs at `/docs`.
 
@@ -684,3 +702,4 @@ python examples/api_pipeline_demo.py --username alice --password secret123 \
 # Use a fixed session_id (useful for accumulating history across multiple runs)
 python examples/api_pipeline_demo.py --session-id my-test-session
 ```
+
