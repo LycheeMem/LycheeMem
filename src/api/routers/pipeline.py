@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 
-from src.api.dependencies import get_optional_user, get_pipeline
+from src.api.dependencies import get_pipeline
 from src.api.models import DeleteResponse, PipelineStatusResponse
 
 router = APIRouter()
@@ -31,7 +31,7 @@ async def pipeline_status(pipeline=Depends(get_pipeline)):
             node_count = 0
         # composite records 作为"边"的近似
         try:
-            debug = sc.semantic_engine.export_debug(user_id="")
+            debug = sc.semantic_engine.export_debug()
             edge_count = len(debug.get("composites", []))
         except Exception:
             edge_count = 0
@@ -69,11 +69,9 @@ async def pipeline_status(pipeline=Depends(get_pipeline)):
 async def last_consolidation(
     session_id: str | None = Query(default=None, min_length=1, max_length=128),
     pipeline=Depends(get_pipeline),
-    user=Depends(get_optional_user),
 ):
     """返回最近一次固化的结果（支持按会话轮询）。"""
-    user_id = user.user_id if user else ""
-    result = pipeline.get_last_consolidation(session_id=session_id, user_id=user_id)
+    result = pipeline.get_last_consolidation(session_id=session_id)
     if result is None:
         return {"status": "pending", "session_id": session_id}
     return result

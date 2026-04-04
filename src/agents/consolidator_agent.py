@@ -148,7 +148,6 @@ class ConsolidatorAgent(BaseAgent):
         turns: list[dict[str, Any]],
         session_id: str | None = None,
         retrieved_context: str = "",
-        user_id: str = "",
         turn_index_offset: int = 0,
         **kwargs,
     ) -> dict[str, Any]:
@@ -174,7 +173,6 @@ class ConsolidatorAgent(BaseAgent):
             turns=turns,
             session_id=session_id,
             retrieved_context=retrieved_context,
-            user_id=user_id,
             turn_index_offset=turn_index_offset,
         )
 
@@ -184,7 +182,6 @@ class ConsolidatorAgent(BaseAgent):
         turns: list[dict[str, Any]],
         session_id: str,
         retrieved_context: str = "",
-        user_id: str = "",
         turn_index_offset: int = 0,
     ) -> dict[str, Any]:
         """Compact 后端路径：LLM 分析 → 条件语义固化 + 技能抽取。
@@ -201,7 +198,7 @@ class ConsolidatorAgent(BaseAgent):
         # Step 0: 已有技能列表注入（LLM 层去重防线）
         # 拉取当前用户所有技能 intent，以 numbered list 形式前置于对话文本，
         # 让 LLM 感知"哪些技能已经存在"，从而不再重复抽取"使用已有技能"的对话。
-        existing_skills = self.skill_store.get_all(user_id=user_id)
+        existing_skills = self.skill_store.get_all()
         if existing_skills:
             existing_block_lines = ["## 已存在技能列表（仅供参考，避免重复抽取）"]
             for idx, s in enumerate(existing_skills[:30], 1):
@@ -229,7 +226,6 @@ class ConsolidatorAgent(BaseAgent):
             return self.semantic_engine.ingest_conversation(
                 turns=turns,
                 session_id=session_id,
-                user_id=user_id,
                 retrieved_context=retrieved_context,
                 turn_index_offset=turn_index_offset,
             )
@@ -255,19 +251,16 @@ class ConsolidatorAgent(BaseAgent):
                     query=intent,
                     top_k=1,
                     query_embedding=embedding,
-                    user_id=user_id,
                 )
                 if top_existing and top_existing[0].get("score", 0.0) >= DEDUP_THRESHOLD:
                     # 相似技能已存在：upsert 到已有条目（更新内容而非新建）
                     existing_id = top_existing[0]["id"]
                     self.skill_store.add(
                         [{"id": existing_id, "intent": intent, "embedding": embedding, "doc_markdown": doc_markdown}],
-                        user_id=user_id,
                     )
                 else:
                     self.skill_store.add(
                         [{"intent": intent, "embedding": embedding, "doc_markdown": doc_markdown}],
-                        user_id=user_id,
                     )
                 count += 1
             return count

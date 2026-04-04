@@ -1,11 +1,9 @@
-import { FileTextOutlined, LogoutOutlined, ThunderboltOutlined, UserOutlined } from "@ant-design/icons";
+import { FileTextOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { useCallback, useEffect } from "react";
 import { fetchPipelineStatus } from "../api";
 import { useStore } from "../state";
 
 export default function Header() {
-  const user = useStore((s) => s.user);
-  const logout = useStore((s) => s.logout);
   const pipelineStatus = useStore((s) => s.pipelineStatus);
   const setPipelineStatus = useStore((s) => s.setPipelineStatus);
 
@@ -43,16 +41,6 @@ export default function Header() {
             <ThunderboltOutlined /> {pipelineStatus.skill_count}
           </span>
         </div>
-        {user && (
-          <div className="user-info">
-            <span className="user-chip" title={user.username}>
-              <UserOutlined /> {user.display_name || user.username}
-            </span>
-            <button className="icon-btn logout-btn" title="退出登录" onClick={logout}>
-              <LogoutOutlined />
-            </button>
-          </div>
-        )}
       </div>
     </header>
   );

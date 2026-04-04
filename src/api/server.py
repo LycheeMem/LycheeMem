@@ -32,7 +32,6 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.api.models import HealthResponse
-from src.api.routers.auth import router as auth_router
 from src.api.routers.chat import router as chat_router
 from src.api.routers.memory import router as memory_router
 from src.api.routers.pipeline import router as pipeline_router
@@ -46,12 +45,11 @@ logger = logging.getLogger("src.api")
 # ──────────────────────────────────────
 
 
-def create_app(pipeline=None, *, user_store=None) -> FastAPI:
+def create_app(pipeline=None) -> FastAPI:
     """创建 FastAPI 应用。
 
     Args:
         pipeline: LycheePipeline 实例。传 None 时可用于测试（需后续赋值 app.state.pipeline）。
-        user_store: UserStore 实例。传 None 时 auth 端点不可用。
     """
     app = FastAPI(
         title="LycheeMemAPI",
@@ -60,9 +58,6 @@ def create_app(pipeline=None, *, user_store=None) -> FastAPI:
 
     if pipeline is not None:
         app.state.pipeline = pipeline
-
-    if user_store is not None:
-        app.state.user_store = user_store
 
     # ── CORS ──
     app.add_middleware(
@@ -107,7 +102,6 @@ def create_app(pipeline=None, *, user_store=None) -> FastAPI:
         return HealthResponse(status="ok", version="0.1.0")
 
     # ── Routers ──
-    app.include_router(auth_router)
     app.include_router(chat_router)
     app.include_router(session_router)
     app.include_router(memory_router)

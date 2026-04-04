@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from src.api.dependencies import get_optional_user, get_pipeline
+from src.api.dependencies import get_pipeline
 from src.api.models import (
     DeleteResponse,
     MemoryAppendTurnRequest,
@@ -126,7 +126,6 @@ def _build_semantic_tree_payload(
     data: dict[str, Any],
     *,
     session_store: Any | None = None,
-    user_id: str = "",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     records = [
         record
@@ -248,7 +247,6 @@ def _build_semantic_tree_payload(
                 min(evidence_turns),
                 max(evidence_turns),
                 window=0,
-                user_id=user_id,
             )
         except Exception:
             logger.exception("build episode nodes failed for session %s", session_id)
@@ -418,14 +416,13 @@ def _build_memory_search_context(
     pipeline,
     *,
     session_id: str | None,
-    user_id: str,
 ) -> dict[str, Any]:
     """为显式 memory/search 请求补充可选的会话上下文。"""
     if not session_id:
         return {}
 
     wm = pipeline.wm_manager
-    log = wm.session_store.get_or_create(session_id, user_id=user_id)
+    log = wm.session_store.get_or_create(session_id)
     compressed_history = wm.compressor.render_context(log.turns, log.summaries)
     active_turns = [t for t in log.turns if not t.get("deleted", False)]
     return {
@@ -438,8 +435,6 @@ def _build_memory_search_context(
 def run_memory_search(
     pipeline,
     req: MemorySearchRequest,
-    *,
-    user_id: str = "",
 ) -> MemorySearchResponse:
     """执行统一记忆检索，返回可直接供 Synthesizer 消费的 richer 结构。"""
     sc = pipeline.search_coordinator
@@ -447,12 +442,10 @@ def run_memory_search(
     search_runtime = _build_memory_search_context(
         pipeline,
         session_id=req.session_id,
-        user_id=user_id,
     )
     search_result = sc.run(
         req.query,
         session_id=req.session_id,
-        user_id=user_id,
         top_k=req.top_k,
         include_skills=req.include_skills,
         **search_runtime,
@@ -527,8 +520,6 @@ def run_memory_synthesize(
 def run_memory_smart_search(
     pipeline,
     req: MemorySmartSearchRequest,
-    *,
-    user_id: str = "",
 ) -> MemorySmartSearchResponse:
     """执行 one-shot 检索；可选自动 synthesize，便于宿主快速试验效果。"""
     search_result = run_memory_search(
@@ -540,7 +531,6 @@ def run_memory_smart_search(
             include_graph=req.include_graph,
             include_skills=req.include_skills,
         ),
-        user_id=user_id,
     )
 
     if not req.synthesize:
@@ -613,8 +603,6 @@ def run_memory_smart_search(
 def run_memory_append_turn(
     pipeline,
     req: MemoryAppendTurnRequest,
-    *,
-    user_id: str = "",
 ) -> MemoryAppendTurnResponse:
     """向 session store 追加单条宿主对话轮次，供后续 consolidate 使用。"""
     pipeline.wm_manager.session_store.append_turn(
@@ -622,9 +610,8 @@ def run_memory_append_turn(
         req.role,
         req.content,
         token_count=req.token_count,
-        user_id=user_id,
     )
-    log = pipeline.wm_manager.session_store.get_or_create(req.session_id, user_id=user_id)
+    log = pipeline.wm_manager.session_store.get_or_create(req.session_id)
     return MemoryAppendTurnResponse(
         status="appended",
         session_id=req.session_id,
@@ -635,8 +622,6 @@ def run_memory_append_turn(
 def run_memory_consolidate(
     pipeline,
     req: MemoryConsolidateRequest,
-    *,
-    user_id: str = "",
 ) -> MemoryConsolidateResponse:
     """执行长期记忆固化，供 HTTP Router 与 MCP 共享。
 
@@ -646,7 +631,7 @@ def run_memory_consolidate(
     import threading
 
     store = pipeline.wm_manager.session_store
-    log = store.get_or_create(req.session_id, user_id=user_id)
+    log = store.get_or_create(req.session_id)
     watermark = log.last_consolidated_turn_index
     raw_total = len(log.turns)
     turns = [t for t in log.turns[watermark:] if not t.get("deleted", False)]
@@ -667,7 +652,6 @@ def run_memory_consolidate(
                     session_id=req.session_id,
                     retrieved_context=req.retrieved_context,
                     turn_index_offset=watermark,
-                    user_id=user_id,
                 )
                 # 后台线程固化成功后推进水位线
                 store.set_last_consolidated_turn_index(req.session_id, raw_total)
@@ -687,7 +671,6 @@ def run_memory_consolidate(
         session_id=req.session_id,
         retrieved_context=req.retrieved_context,
         turn_index_offset=watermark,
-        user_id=user_id,
     )
     # 同步固化成功后推进水位线
     store.set_last_consolidated_turn_index(req.session_id, raw_total)
@@ -706,21 +689,18 @@ def run_memory_consolidate(
 
 
 @router.post("/memory/search", response_model=MemorySearchResponse)
-async def memory_search(req: MemorySearchRequest, pipeline=Depends(get_pipeline), user=Depends(get_optional_user)):
+async def memory_search(req: MemorySearchRequest, pipeline=Depends(get_pipeline)):
     """统一记忆检索：同时查询图谱和技能库。"""
-    user_id = user.user_id if user else ""
-    return run_memory_search(pipeline, req, user_id=user_id)
+    return run_memory_search(pipeline, req)
 
 
 @router.post("/memory/smart-search", response_model=MemorySmartSearchResponse)
 async def memory_smart_search(
     req: MemorySmartSearchRequest,
     pipeline=Depends(get_pipeline),
-    user=Depends(get_optional_user),
 ):
     """实验性 one-shot 检索包装器：search，可选自动 synthesize。"""
-    user_id = user.user_id if user else ""
-    return run_memory_smart_search(pipeline, req, user_id=user_id)
+    return run_memory_smart_search(pipeline, req)
 
 
 # ── Memory: Synthesize ──
@@ -730,7 +710,6 @@ async def memory_smart_search(
 async def memory_synthesize(
     req: MemorySynthesizeRequest,
     pipeline=Depends(get_pipeline),
-    user=Depends(get_optional_user),
 ):
     """对多源检索结果进行 LLM-as-Judge 评分与融合，生成 background_context。
 
@@ -747,11 +726,9 @@ async def memory_synthesize(
 async def memory_append_turn(
     req: MemoryAppendTurnRequest,
     pipeline=Depends(get_pipeline),
-    user=Depends(get_optional_user),
 ):
     """追加单条外部宿主对话轮次，为后续 consolidate 提供 transcript bridge。"""
-    user_id = user.user_id if user else ""
-    return run_memory_append_turn(pipeline, req, user_id=user_id)
+    return run_memory_append_turn(pipeline, req)
 
 
 # ── Memory: Reason ──
@@ -761,7 +738,6 @@ async def memory_append_turn(
 async def memory_reason(
     req: MemoryReasonRequest,
     pipeline=Depends(get_pipeline),
-    user=Depends(get_optional_user),
 ):
     """基于合成上下文对用户查询进行最终推理，生成 assistant 回答。
 
@@ -771,7 +747,6 @@ async def memory_reason(
 
     当 append_to_session=False 时：仅读取历史，不写入会话。
     """
-    user_id = user.user_id if user else ""
     wm = pipeline.wm_manager
 
     if req.append_to_session:
@@ -779,13 +754,12 @@ async def memory_reason(
         wm_result = wm.run(
             session_id=req.session_id,
             user_query=req.user_query,
-            user_id=user_id,
         )
         compressed_history = wm_result["compressed_history"]
         wm_token_usage = wm_result["wm_token_usage"]
     else:
         # 只读历史，不写入会话
-        log = wm.session_store.get_or_create(req.session_id, user_id=user_id)
+        log = wm.session_store.get_or_create(req.session_id)
         compressed_history = wm.compressor.render_context(log.turns, log.summaries)
         wm_token_usage = wm.compressor.count_tokens(compressed_history)
 
@@ -801,7 +775,6 @@ async def memory_reason(
         wm.append_assistant_turn(
             req.session_id,
             result["final_response"],
-            user_id=user_id,
         )
 
     return MemoryReasonResponse(
@@ -818,7 +791,6 @@ async def memory_reason(
 async def memory_consolidate(
     req: MemoryConsolidateRequest,
     pipeline=Depends(get_pipeline),
-    user=Depends(get_optional_user),
 ):
     """对当前会话进行记忆萃取固化，提取实体/事实写入图谱，提取技能写入技能库。
 
@@ -830,8 +802,7 @@ async def memory_consolidate(
         与 Pipeline 内部行为一致，适合生产调用（固化耗时通常超过 60 秒）。
     background=False：同步等待完成后返回详细结果，适合调试/验证。
     """
-    user_id = user.user_id if user else ""
-    return run_memory_consolidate(pipeline, req, user_id=user_id)
+    return run_memory_consolidate(pipeline, req)
 
 
 # ── Memory: Graph ──
@@ -840,7 +811,6 @@ async def memory_consolidate(
 @router.get("/memory/graph", response_model=GraphResponse)
 async def get_graph(
     pipeline=Depends(get_pipeline),
-    user=Depends(get_optional_user),
     mode: str = Query(
         default="cleaned",
         description=(
@@ -850,15 +820,13 @@ async def get_graph(
         ),
     ),
 ):
-    user_id = user.user_id if user else ""
     sc = pipeline.search_coordinator
     try:
-        data = sc.semantic_engine.export_debug(user_id=user_id)
+        data = sc.semantic_engine.export_debug()
         if mode == "cleaned":
             nodes, edges, tree_roots = _build_semantic_tree_payload(
                 data,
                 session_store=pipeline.wm_manager.session_store,
-                user_id=user_id,
             )
             return GraphResponse(nodes=nodes, edges=edges, tree_roots=tree_roots)
 
@@ -900,7 +868,6 @@ async def get_graph(
         _, _, tree_roots = _build_semantic_tree_payload(
             data,
             session_store=pipeline.wm_manager.session_store,
-            user_id=user_id,
         )
         return GraphResponse(nodes=nodes, edges=edges, tree_roots=tree_roots)
     except Exception as exc:
@@ -913,13 +880,11 @@ async def search_graph(
     q: str = Query(..., min_length=1, description="搜索关键词"),
     top_k: int = Query(default=10, ge=1, le=100),
     pipeline=Depends(get_pipeline),
-    user=Depends(get_optional_user),
 ):
     """按关键词搜索记忆条目，返回匹配结果。"""
-    user_id = user.user_id if user else ""
     sc = pipeline.search_coordinator
     try:
-        results = sc.semantic_engine._sqlite.fulltext_search(q, user_id=user_id, limit=top_k)
+        results = sc.semantic_engine._sqlite.fulltext_search(q, limit=top_k)
         nodes = []
         for r in results:
             nodes.append({
@@ -941,13 +906,11 @@ async def search_graph(
 @router.delete("/memory/graph/clear", response_model=DeleteResponse)
 async def clear_all_graph(
     pipeline=Depends(get_pipeline),
-    user=Depends(get_optional_user),
 ):
-    """清空当前用户的所有语义记忆。"""
-    user_id = user.user_id if user else ""
+    """清空所有语义记忆。"""
     sc = pipeline.search_coordinator
     try:
-        result = sc.semantic_engine.delete_all_for_user(user_id=user_id)
+        result = sc.semantic_engine.delete_all()
         return DeleteResponse(
             message=(
                 f"Compact memory cleared "
@@ -964,10 +927,9 @@ async def clear_all_graph(
 
 
 @router.get("/memory/skills", response_model=SkillsResponse)
-async def get_skills(pipeline=Depends(get_pipeline), user=Depends(get_optional_user)):
+async def get_skills(pipeline=Depends(get_pipeline)):
     skill_store = pipeline.search_coordinator.skill_store
-    user_id = user.user_id if user else ""
-    skills = skill_store.get_all(user_id=user_id)
+    skills = skill_store.get_all()
     return SkillsResponse(skills=skills, total=len(skills))
 
 
@@ -976,29 +938,25 @@ async def get_skills(pipeline=Depends(get_pipeline), user=Depends(get_optional_u
 @router.delete("/memory/skills/clear", response_model=DeleteResponse)
 async def clear_all_skills(
     pipeline=Depends(get_pipeline),
-    user=Depends(get_optional_user),
 ):
-    """清空当前用户的所有技能记忆。"""
+    """清空所有技能记忆。"""
     skill_store = pipeline.search_coordinator.skill_store
-    user_id = user.user_id if user else ""
     if hasattr(skill_store, "delete_all"):
-        skill_store.delete_all(user_id=user_id)
+        skill_store.delete_all()
     else:
-        # 降级：逐一删除
-        all_skills = skill_store.get_all(user_id=user_id)
+        all_skills = skill_store.get_all()
         ids = [s.get("id") or s.get("skill_id") or "" for s in all_skills]
         ids = [i for i in ids if i]
         if ids:
-            skill_store.delete(ids, user_id=user_id)
+            skill_store.delete(ids)
     return DeleteResponse(message="All skills cleared.")
 
 
 @router.delete("/memory/skills/{skill_id}", response_model=DeleteResponse)
-async def delete_skill(skill_id: str, pipeline=Depends(get_pipeline), user=Depends(get_optional_user)):
+async def delete_skill(skill_id: str, pipeline=Depends(get_pipeline)):
     """删除指定技能条目。"""
     skill_store = pipeline.search_coordinator.skill_store
-    user_id = user.user_id if user else ""
-    skill_store.delete([skill_id], user_id=user_id)
+    skill_store.delete([skill_id])
     return DeleteResponse(message=f"Skill '{skill_id}' deleted.")
 
 

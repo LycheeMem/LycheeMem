@@ -76,7 +76,6 @@ class MemoryRecord:
     evidence_turn_range: list[int] = field(default_factory=list)  # [start_turn, end_turn]
     source_session: str = ""
     source_role: str = ""  # "user" | "assistant" | "both" | ""：该 record 主要出自哪一方
-    user_id: str = ""
     created_at: str = ""  # ISO timestamp
     updated_at: str = ""
 
@@ -124,7 +123,6 @@ class CompositeRecord:
     affordance_tags: list[str] = field(default_factory=list)
 
     confidence: float = 1.0
-    user_id: str = ""
     created_at: str = ""
     updated_at: str = ""
 
@@ -192,7 +190,6 @@ class UsageLog:
 
     log_id: str
     session_id: str
-    user_id: str
     timestamp: str  # ISO
     query: str
     retrieval_plan: dict[str, Any] = field(default_factory=dict)

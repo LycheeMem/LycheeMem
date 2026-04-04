@@ -49,7 +49,6 @@ class BaseSemanticMemoryEngine(ABC):
         session_id: str | None = None,
         top_k: int = 0,
         query_embedding: list[float] | None = None,
-        user_id: str = "",
         recent_context: str = "",
         action_state: dict[str, Any] | None = None,
         retrieval_plan: dict[str, Any] | None = None,
@@ -61,7 +60,6 @@ class BaseSemanticMemoryEngine(ABC):
             session_id: 当前会话 ID（可选，用于 session-aware 检索）。
             top_k: 检索返回上限；0 表示由 planner 的 depth 决定。
             query_embedding: 预计算的 query 向量。
-            user_id: 用户 ID（多用户隔离）。
             recent_context: 最近几轮对话上下文（用于 state-conditioned retrieval）。
             action_state: 当前决策状态（可选）。
             retrieval_plan: Action-Aware Retrieval Plan 的 dict 表示（可选）。
@@ -76,7 +74,6 @@ class BaseSemanticMemoryEngine(ABC):
         *,
         turns: list[dict[str, Any]],
         session_id: str,
-        user_id: str = "",
         retrieved_context: str = "",
         turn_index_offset: int = 0,
         reference_timestamp: str | None = None,
@@ -86,7 +83,6 @@ class BaseSemanticMemoryEngine(ABC):
         Args:
             turns: 完整的对话轮次列表。
             session_id: 会话 ID。
-            user_id: 用户 ID。
             retrieved_context: 检索阶段已有的记忆上下文（用于新颖性检查）。
             turn_index_offset: 当前 turns 在完整 session 中的绝对起始索引。
             reference_timestamp: 参考时间戳（ISO 格式）。
@@ -96,15 +92,15 @@ class BaseSemanticMemoryEngine(ABC):
         """
 
     @abstractmethod
-    def delete_all_for_user(self, user_id: str) -> dict[str, int]:
-        """清空指定用户的所有语义记忆。
+    def delete_all(self) -> dict[str, int]:
+        """清空所有语义记忆。
 
         Returns:
             dict 包含删除计数，如 {"records_deleted": N, "composites_deleted": M}。
         """
 
     @abstractmethod
-    def export_debug(self, *, user_id: str = "") -> dict[str, Any]:
+    def export_debug(self) -> dict[str, Any]:
         """导出全量数据用于调试 / 前端展示。
 
         Returns:
@@ -130,7 +126,6 @@ class BaseSemanticMemoryEngine(ABC):
         *,
         session_id: str,
         user_turn: str,
-        user_id: str = "",
     ) -> dict[str, Any]:
         """利用下一轮用户输入，对最近一次 action/mixed 检索做 outcome 回写。
 

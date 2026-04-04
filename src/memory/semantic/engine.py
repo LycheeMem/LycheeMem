@@ -151,7 +151,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         session_id: str | None = None,
         top_k: int = 0,
         query_embedding: list[float] | None = None,
-        user_id: str = "",
         recent_context: str = "",
         action_state: dict[str, Any] | None = None,
         retrieval_plan: dict[str, Any] | None = None,
@@ -198,7 +197,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         raw_candidates = self._multi_channel_recall(
             plan=plan,
             query=query,
-            user_id=user_id,
             query_embedding=query_embedding,
             top_k=top_k,
             record_type_bias=self._derive_record_type_bias(
@@ -294,7 +292,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             extra_candidates = self._multi_channel_recall(
                 plan=supplement_plan,
                 query=query,
-                user_id=user_id,
                 query_embedding=None,
                 top_k=top_k,
                 record_type_bias=self._derive_record_type_bias(
@@ -380,7 +377,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         log_id = self._log_usage(
             query=query,
             session_id=session_id or "",
-            user_id=user_id,
             plan=plan,
             action_state=resolved_action_state,
             retrieved_ids=[s.id for s in scored],
@@ -411,7 +407,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         *,
         plan: SearchPlan,
         query: str,
-        user_id: str,
         query_embedding: list[float] | None,
         top_k: int,
         record_type_bias: list[str] | None = None,
@@ -432,7 +427,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         # ── 通道 1: FTS 全文检索 ──
         for sq in semantic_queries:
             fts_results = self._sqlite.fulltext_search(
-                sq, user_id=user_id, limit=recall_limit,
+                sq, limit=recall_limit,
             )
             for r in fts_results:
                 uid = r.get("record_id", "")
@@ -445,7 +440,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
             # FTS on synthesized
             synth_fts = self._sqlite.fulltext_search_synthesized(
-                sq, user_id=user_id, limit=10,
+                sq, limit=10,
             )
             for r in synth_fts:
                 sid = r.get("composite_id", "")
@@ -460,7 +455,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         for sq in semantic_queries:
             vec_results = self._vector.search(
                 sq,
-                user_id=user_id,
                 column="vector",
                 limit=recall_limit,
             )
@@ -477,7 +471,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
             # 向量 on synthesized
             synth_vec = self._vector.search_synthesized(
-                sq, user_id=user_id, column="vector", limit=10,
+                sq, column="vector", limit=10,
             )
             for r in synth_vec:
                 sid = r.get("composite_id", "")
@@ -514,7 +508,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         for pq in pragmatic_queries:
             prag_results = self._vector.search(
                 pq,
-                user_id=user_id,
                 column="normalized_vector",
                 limit=recall_limit,
             )
@@ -534,7 +527,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 tool_tags=plan.tool_hints or None,
                 constraint_tags=plan.required_constraints or None,
                 affordance_tags=plan.required_affordances or None,
-                user_id=user_id,
                 limit=recall_limit,
             )
             for r in tag_results:
@@ -550,7 +542,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         if plan.missing_slots:
             slot_results = self._sqlite.search_by_slot_hints(
                 slot_terms=plan.missing_slots,
-                user_id=user_id,
                 limit=recall_limit,
             )
             for r in slot_results:
@@ -566,7 +557,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             if slot_query.strip():
                 synth_slot_results = self._sqlite.fulltext_search_synthesized(
                     slot_query,
-                    user_id=user_id,
                     limit=10,
                 )
                 for r in synth_slot_results:
@@ -582,7 +572,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         if focus_terms:
             focus_results = self._sqlite.search_by_slot_hints(
                 slot_terms=focus_terms,
-                user_id=user_id,
                 limit=max(top_k * 2, 12),
             )
             for r in focus_results:
@@ -598,7 +587,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             if focus_query.strip():
                 synth_focus_results = self._sqlite.fulltext_search_synthesized(
                     focus_query,
-                    user_id=user_id,
                     limit=max(6, top_k),
                 )
                 for r in synth_focus_results:
@@ -622,7 +610,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 if record_type_bias:
                     focused_records = self._sqlite.fulltext_search(
                         fq,
-                        user_id=user_id,
                         limit=focused_limit,
                         memory_types=record_type_bias,
                     )
@@ -638,7 +625,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 if synth_type_bias:
                     focused_synth = self._sqlite.fulltext_search_synthesized(
                         fq,
-                        user_id=user_id,
                         limit=max(6, top_k),
                         memory_types=synth_type_bias,
                     )
@@ -657,7 +643,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                     constraint_tags=plan.required_constraints or None,
                     affordance_tags=plan.required_affordances or None,
                     memory_types=record_type_bias,
-                    user_id=user_id,
                     limit=focused_limit,
                 )
                 for r in focused_tags:
@@ -673,7 +658,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 focused_slots = self._sqlite.search_by_slot_hints(
                     slot_terms=plan.missing_slots,
                     memory_types=record_type_bias,
-                    user_id=user_id,
                     limit=focused_limit,
                 )
                 for r in focused_slots:
@@ -690,7 +674,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             time_results = self._sqlite.search_by_time(
                 since=plan.temporal_filter.get("since"),
                 until=plan.temporal_filter.get("until"),
-                user_id=user_id,
                 limit=recall_limit,
             )
             for r in time_results:
@@ -736,7 +719,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         tree_expanded = self._expand_tree_candidates(
             plan=plan,
             base_candidates=candidates,
-            user_id=user_id,
             top_k=top_k,
             focus_terms=focus_terms,
         )
@@ -1173,14 +1155,13 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         *,
         plan: SearchPlan,
         base_candidates: list[dict[str, Any]],
-        user_id: str,
         top_k: int,
         focus_terms: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         if plan.tree_retrieval_mode == "root_only" or int(plan.tree_expansion_depth or 0) <= 0:
             return []
 
-        composite_map, source_sets, parent_to_children = self._build_composite_tree_index(user_id=user_id)
+        composite_map, source_sets, parent_to_children = self._build_composite_tree_index()
         if not composite_map:
             return []
 
@@ -1274,10 +1255,8 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
     def _build_composite_tree_index(
         self,
-        *,
-        user_id: str,
     ) -> tuple[dict[str, CompositeRecord], dict[str, set[str]], dict[str, list[str]]]:
-        composites = self._sqlite.list_synthesized(user_id=user_id)
+        composites = self._sqlite.list_synthesized()
         composite_map = {
             composite.composite_id: composite
             for composite in composites
@@ -1420,7 +1399,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         *,
         turns: list[dict[str, Any]],
         session_id: str,
-        user_id: str = "",
         retrieved_context: str = "",
         turn_index_offset: int = 0,
         reference_timestamp: str | None = None,
@@ -1458,7 +1436,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             current,
             previous_turns=previous,
             session_id=session_id,
-            user_id=user_id,
             turn_index_offset=turn_index_offset + max(0, len(turns) - len(current)),
         )
 
@@ -1491,13 +1468,12 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
             # 3b. FTS 候选 + 向量候选合并去重
             similar = self._sqlite.find_similar_by_normalized_text(
-                record.normalized_text, user_id=user_id, limit=3,
+                record.normalized_text, limit=3,
             )
             # 向量补充去重：FTS 对中文近重复召回弱，用 normalized_vector 兜底
             try:
                 vec_hits = self._vector.search(
                     record.normalized_text,
-                    user_id=user_id,
                     column="normalized_vector",
                     limit=5,
                 )
@@ -1536,7 +1512,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 try:
                     self._vector.upsert(
                         record_id=record.record_id,
-                        user_id=record.user_id,
                         memory_type=record.memory_type,
                         semantic_text=record.semantic_text,
                         normalized_text=record.normalized_text,
@@ -1563,7 +1538,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         if actually_added > 0:
             composite_records = self._synthesizer.synthesize_on_ingest(
                 persisted_records,
-                user_id=user_id,
             )
             fusion_stats = self._synthesizer.get_last_run_stats()
 
@@ -1598,13 +1572,13 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
     # delete / export
     # ════════════════════════════════════════════════════════════════
 
-    def delete_all_for_user(self, user_id: str) -> dict[str, int]:
-        result = self._sqlite.delete_all_for_user(user_id)
-        self._vector.delete_all_for_user(user_id)
+    def delete_all(self) -> dict[str, int]:
+        result = self._sqlite.delete_all()
+        self._vector.delete_all()
         return result
 
-    def export_debug(self, *, user_id: str = "") -> dict[str, Any]:
-        return self._sqlite.export_all(user_id=user_id)
+    def export_debug(self) -> dict[str, Any]:
+        return self._sqlite.export_all()
 
     def finalize_usage_log(
         self,
@@ -1627,7 +1601,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         *,
         session_id: str,
         user_turn: str,
-        user_id: str = "",
     ) -> dict[str, Any]:
         if not session_id or not str(user_turn or "").strip():
             return {}
@@ -1635,8 +1608,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         logs = self._sqlite.get_recent_usage_logs(session_id=session_id, limit=10)
         pending_log = None
         for log in logs:
-            if user_id and log.user_id and log.user_id != user_id:
-                continue
             mode = str((log.retrieval_plan or {}).get("mode") or "").strip().lower()
             if mode not in {"action", "mixed"}:
                 continue
@@ -2112,7 +2083,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             "evidence_turn_range": record.evidence_turn_range,
             "source_session": record.source_session,
             "source_role": record.source_role,
-            "user_id": record.user_id,
             "temporal": record.temporal,
             "entities": record.entities,
         }
@@ -2306,7 +2276,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 min(evidence_turns),
                 max(evidence_turns),
                 window=max(0, int(window or 0)),
-                user_id=str(record_data.get("user_id") or ""),
             )
         except Exception:
             return []
@@ -2468,7 +2437,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         *,
         query: str,
         session_id: str,
-        user_id: str,
         plan: SearchPlan,
         action_state: ActionState,
         retrieved_ids: list[str],
@@ -2479,7 +2447,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         log = UsageLog(
             log_id=log_id,
             session_id=session_id,
-            user_id=user_id,
             timestamp=datetime.now(timezone.utc).isoformat(),
             query=query,
             retrieval_plan={

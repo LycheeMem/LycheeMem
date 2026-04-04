@@ -1,9 +1,7 @@
 import { create } from "zustand";
-import { clearAuth, getStoredUser, storeAuth } from "./api";
 import type {
     AgentName,
     AgentStatusValue,
-    AuthUser,
     GraphData,
     GraphEdge,
     Message,
@@ -16,9 +14,6 @@ import type {
 import { AGENT_NAMES } from "./types";
 
 export interface AppState {
-  // Auth
-  user: AuthUser | null;
-
   // Session
   sessionId: string;
   sessions: SessionInfo[];
@@ -97,8 +92,6 @@ export interface AppState {
   setStreamingContent: (content: string) => void;
   appendStreamingContent: (token: string) => void;
   newSession: () => void;
-  login: (user: AuthUser) => void;
-  logout: () => void;
 }
 
 function makeInitialAgents(): Record<AgentName, AgentStatusValue> {
@@ -114,7 +107,6 @@ function generateSessionId(): string {
 }
 
 export const useStore = create<AppState>((set) => ({
-  user: getStoredUser(),
   sessionId: generateSessionId(),
   sessions: [],
   messages: [],
@@ -191,27 +183,4 @@ export const useStore = create<AppState>((set) => ({
       completedSteps: [],
       streamingContent: "",
     }),
-  login: (user) => {
-    storeAuth(user);
-    set({ user });
-  },
-  logout: () => {
-    clearAuth();
-    set({
-      user: null,
-      sessionId: generateSessionId(),
-      sessions: [],
-      messages: [],
-      agents: makeInitialAgents(),
-      graphData: { nodes: [], edges: [], treeRoots: [] },
-      graphEdges: [],
-      skills: [],
-      wmTurns: [],
-      wmSummaries: [],
-      wmBoundaryIndex: -1,
-      currentTrace: null,
-      partialTrace: null,
-      completedSteps: [],
-    });
-  },
 }));

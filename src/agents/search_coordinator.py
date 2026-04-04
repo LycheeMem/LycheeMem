@@ -88,7 +88,6 @@ class SearchCoordinator(BaseAgent):
         session_id = kwargs.get("session_id")
         if session_id is not None:
             session_id = str(session_id)
-        user_id = kwargs.get("user_id", "")
         top_k = kwargs.get("top_k")
         include_skills = bool(kwargs.get("include_skills", True))
 
@@ -109,7 +108,6 @@ class SearchCoordinator(BaseAgent):
                 feedback_update = self.semantic_engine.apply_feedback_from_user_turn(
                     session_id=session_id,
                     user_turn=user_query,
-                    user_id=user_id,
                 )
             except Exception:
                 feedback_update = {}
@@ -117,7 +115,6 @@ class SearchCoordinator(BaseAgent):
         result = self._run_compact(
             user_query,
             session_id=session_id,
-            user_id=user_id,
             recent_context=recent_context,
             action_state=action_state,
             top_k=int(top_k) if top_k is not None else None,
@@ -131,7 +128,6 @@ class SearchCoordinator(BaseAgent):
         user_query: str,
         *,
         session_id: str | None = None,
-        user_id: str = "",
         recent_context: str = "",
         action_state: ActionState | None = None,
         top_k: int | None = None,
@@ -142,7 +138,6 @@ class SearchCoordinator(BaseAgent):
             query=user_query,
             session_id=session_id,
             top_k=int(top_k or 0),
-            user_id=user_id,
             recent_context=recent_context,
             action_state=self._action_state_to_dict(action_state),
         )
@@ -169,7 +164,6 @@ class SearchCoordinator(BaseAgent):
                 user_query,
                 plan=result.retrieval_plan,
                 action_state=result.action_state,
-                user_id=user_id,
                 top_k=top_k,
             )
 
@@ -188,7 +182,6 @@ class SearchCoordinator(BaseAgent):
         *,
         plan: dict[str, Any] | None = None,
         action_state: dict[str, Any] | None = None,
-        user_id: str = "",
         top_k: int | None = None,
     ) -> list[dict[str, Any]]:
         """按 mode / decision state 自适应检索技能库。"""
@@ -218,7 +211,6 @@ class SearchCoordinator(BaseAgent):
             query=skill_query,
             top_k=skill_top_k,
             query_embedding=hyde_embedding,
-            user_id=user_id,
         )
 
         reuse_threshold = self.skill_reuse_threshold

@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
-from src.api.dependencies import get_optional_user, get_pipeline
+from src.api.dependencies import get_pipeline
 from src.api.models import ChatRequest, ChatResponse
 from src.api.trace_builders import (
     _build_chat_response,
@@ -27,14 +27,13 @@ def _sse(data: dict) -> str:
 
 
 @router.post("/chat/complete", response_model=ChatResponse)
-async def chat_complete(req: ChatRequest, pipeline=Depends(get_pipeline), user=Depends(get_optional_user)):
-    user_id = user.user_id if user else ""
-    result = pipeline.run(user_query=req.message, session_id=req.session_id, user_id=user_id)
+async def chat_complete(req: ChatRequest, pipeline=Depends(get_pipeline)):
+    result = pipeline.run(user_query=req.message, session_id=req.session_id)
     return _build_chat_response(req.session_id, result)
 
 
 @router.post("/chat")
-async def chat_stream(req: ChatRequest, pipeline=Depends(get_pipeline), user=Depends(get_optional_user)):
+async def chat_stream(req: ChatRequest, pipeline=Depends(get_pipeline)):
     """SSE 流式对话。
 
     流式 chunk 格式 (Server-Sent Events):
@@ -49,9 +48,8 @@ async def chat_stream(req: ChatRequest, pipeline=Depends(get_pipeline), user=Dep
     async def event_stream():
         accumulated: dict[str, Any] = {}
         final_result: dict = {}
-        user_id = user.user_id if user else ""
         async for evt in pipeline.astream_steps(
-            user_query=req.message, session_id=req.session_id, user_id=user_id
+            user_query=req.message, session_id=req.session_id
         ):
             if evt["type"] == "step":
                 step_name = evt["step"]
