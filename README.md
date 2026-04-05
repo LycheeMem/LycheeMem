@@ -20,9 +20,7 @@ LycheeMem is a compact memory framework for LLM agents. It starts from efficient
 <div align="center">
   <a href="#news">News</a>
   •
-  <a href="#memory-architecture">Memory Architecture</a>
-  •
-  <a href="#pipeline">Pipeline</a>
+  <a href="#related-projects">Related Projects</a>
   •
   <a href="#quick-start">Quick Start</a>
   •
@@ -31,6 +29,10 @@ LycheeMem is a compact memory framework for LLM agents. It starts from efficient
   <a href="#openclaw-plugin">OpenClaw Plugin</a>
   •
   <a href="#mcp">MCP</a>
+  •
+  <a href="#memory-architecture">Memory Architecture</a>
+  •
+  <a href="#pipeline">Pipeline</a>
   •
   <a href="#api-reference">API Reference</a>
 </div>
@@ -49,222 +51,25 @@ LycheeMem is a compact memory framework for LLM agents. It starts from efficient
 
 ---
 
-<a id="memory-architecture"></a>
+<a id="related-projects"></a>
 
-## 📚 Memory Architecture
+## 🔗 Related Projects 
 
-LycheeMem organizes memory into three complementary stores:
+LycheeMem is part of the **3rd-generation Lychee (立知) large model series**, which focuses on memory intelligence, continual learning, and long-context reasoning.
 
-<table>
-  <thead>
-    <tr>
-      <th>Working Memory</th>
-      <th>Semantic Memory</th>
-      <th>Procedural Memory</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>
-        <p>(Episodic)</p>
-        <ul>
-          <li>Session turns</li>
-          <li>Summaries</li>
-          <li>Token budget management</li>
-        </ul>
-      </td>
-      <td>
-        <p>(Typed Action Store)</p>
-        <ul>
-          <li>7 MemoryRecord types</li>
-          <li>Conflict-aware Record Fusion</li>
-          <li>Hierarchical memory tree</li>
-          <li>Action-grounded retrieval planning</li>
-          <li>Usage feedback loop + RL-ready statistics</li>
-        </ul>
-      </td>
-      <td>
-        <p>(Skills)</p>
-        <ul>
-          <li>Skill entries</li>
-          <li>HyDE retrieval</li>
-        </ul>
-      </td>
-    </tr>
-  </tbody>
-</table>
+We welcome you to explore our related works:
 
-### 💾 Working Memory
+- **LycheeMemory**: a unified framework for implicit long-term memory and explicit working memory collaboration in large language models  
+  [![arXiv](https://img.shields.io/badge/arXiv-2602.08382-B31B1B?logo=arxiv&logoColor=fff)](https://arxiv.org/abs/2602.08382) [![GitHub](https://img.shields.io/badge/GitHub-LycheeMemory-181717?logo=github&logoColor=fff)](https://github.com/owoakuma/LycheeMemory) [![Hugging Face](https://img.shields.io/badge/Hugging%20Face-LycheeMemory--7B-FFD21E?logo=huggingface)](https://huggingface.co/lerverson/LycheeMemory-7B)
 
-The working memory window holds the active conversation context for a session. It operates under a **dual-threshold token budget**:
+- **LycheeMem (this project)**: long-term memory infrastructure for LLM-based agents  
+  [![Project Page](https://img.shields.io/badge/Project_Page-LycheeMem-blue?logo=google-chrome&logoColor=fff)](https://lycheemem.github.io) [![GitHub](https://img.shields.io/badge/GitHub-LycheeMem-181717?logo=github&logoColor=fff)](https://github.com/LycheeMem/LycheeMem)
 
-- **Warn threshold (70%)** — triggers asynchronous background pre-compression; the current request is not blocked.
-- **Block threshold (90%)** — the pipeline pauses and flushes older turns to a compressed summary before proceeding.
+- **LycheeDecode**: selective recall from massive KV-cache context memory  
+  [![Project Page](https://img.shields.io/badge/Project_Page-lycheedecode-blue?logo=google-chrome&logoColor=fff)](https://lg9077.github.io/lycheedecode) [![arXiv](https://img.shields.io/badge/arXiv-2602.04541-B31B1B?logo=arxiv&logoColor=fff)](https://arxiv.org/abs/2602.04541) [![GitHub](https://img.shields.io/badge/GitHub-LycheeDecode-181717?logo=github&logoColor=fff)](https://github.com/HITsz-TMG/TMGNLP/tree/main/LycheeDecode)
 
-Compression produces *summary anchors* (past context, distilled) + *raw recent turns* (last N turns, verbatim). Both are passed downstream as the conversation history.
-
-### 🗺️ Semantic Memory — Compact Semantic Memory
-
-Semantic memory is organised around **typed MemoryRecords plus action-grounded retrieval state**. The storage layer is SQLite (FTS5 full-text search) + LanceDB (vector index), while retrieval is conditioned on recent context, tentative action, constraints, and missing slots.
-
-#### Memory Record Types
-
-Each memory entry is stored as a `MemoryRecord`. The `memory_type` field distinguishes seven semantic categories:
-
-| Type | Description |
-|------|-------------|
-| `fact` | Objective facts about the user, environment, or world |
-| `preference` | User preferences (style, habits, likes/dislikes) |
-| `event` | Specific events that have occurred |
-| `constraint` | Conditions that must be respected |
-| `procedure` | Reusable step-by-step procedures / methods |
-| `failure_pattern` | Previously failed action paths and their causes |
-| `tool_affordance` | Capabilities and applicable scenarios of tools/APIs |
-
-Beyond text, every `MemoryRecord` carries **action-facing metadata** (`tool_tags`, `constraint_tags`, `failure_tags`, `affordance_tags`) and **usage statistics** (`retrieval_count`, `action_success_count`, etc.) to seed future reinforcement-learning signals. Retrieval logs also persist `retrieval_plan`, `action_state`, response excerpts, and later user feedback so the system can close a lightweight action-outcome loop without training.
-
-Related `MemoryRecord`s can be fused online by the **Record Fusion Engine** into denser `CompositeRecord`s. Composite entries persist direct `child_composite_ids`, so long-term semantic memory is organised as a **hierarchical memory tree** instead of a flat bag of summaries.
-
-#### Four-Module Pipeline
-
-##### Module 1: Compact Semantic Encoding
-
-A single-pass pipeline that converts conversation turns into a list of `MemoryRecord`s:
-
-1. **Typed extraction** — LLM extracts self-contained facts and assigns a semantic category to each record.
-2. **Decontextualization** — Pronouns and context-dependent phrases are expanded into full expressions, so each record is understandable without the original dialogue.
-3. **Action metadata annotation** — LLM annotates each record with `memory_type`, `tool_tags`, `constraint_tags`, `failure_tags`, `affordance_tags`, and other structured labels.
-
-`record_id = SHA256(normalized_text)` — naturally idempotent; duplicate content is deduplicated automatically.
-
-##### Module 2: Record Fusion, Conflict Update, and Hierarchical Consolidation
-
-Triggered online after each consolidation:
-
-1. FTS / vector recall gathers related **existing atomic records** around the new records (candidate pool).
-2. The existing synthesis judge prompt decides whether each candidate set should produce a new `CompositeRecord` **or** perform a `conflict_update` against an existing atomic record.
-3. On `conflict_update`, the existing anchor record is updated in place, conflicting incoming records are soft-expired, and composites covering affected source records are invalidated.
-4. On synthesis, the engine writes a new `CompositeRecord` to SQLite + LanceDB.
-5. Additional hierarchy rounds can synthesize `record -> composite` and `composite -> composite`, persisting `child_composite_ids` so the memory tree can keep growing upward.
-
-##### Module 3: Action-Grounded Retrieval Planning
-
-Before retrieval, `ActionAwareRetrievalPlanner` analyses the **user query + recent context + ActionState** and emits a `SearchPlan`:
-
-- `mode`: `answer` (factual Q&A) / `action` (needs execution) / `mixed`
-- `semantic_queries`: content-facing search terms
-- `pragmatic_queries`: action/tool/constraint-facing search terms
-- `tool_hints`: tools likely needed for this request
-- `required_constraints`: constraints that must be respected
-- `required_affordances`: capabilities the retrieved memory should provide
-- `missing_slots`: parameters / slots that are absent
-- `tree_retrieval_mode` / `tree_expansion_depth` / `include_leaf_records`: whether retrieval should stay at high-level composites (`root_only`) or descend into child composites / direct leaf records (`balanced` / `descend`)
-
-`ActionState` can carry fields such as `current_subgoal`, `tentative_action`, `known_constraints`, `available_tools`, `failure_signal`, and a recent-context excerpt. The planner merges this state with the LLM-produced plan so retrieval is conditioned on the current decision state rather than the query alone.
-
-The plan drives multi-channel recall:
-
-1. **FTS channel** — SQLite FTS5 keyword recall over `MemoryRecord` + `CompositeRecord`
-2. **Semantic vector channel** — LanceDB ANN over `semantic_text` embeddings
-3. **Normalised vector channel** — LanceDB ANN over `normalized_text` embeddings (for pragmatic queries)
-4. **Tag filter channel** — exact filter by `tool_hints` / `required_constraints` / `required_affordances`
-5. **Temporal channel** — filter by `SearchPlan.temporal_filter` time window
-6. **Slot-hint supplementation** — when `missing_slots` is non-empty, extra FTS/tag recall is triggered to find records that can fill missing parameters
-
-After base recall, retrieval can also expand along the **memory tree**. `root_only` keeps high-level composite summaries, `balanced` descends one level when tree hints match, and `descend` pulls child composites plus direct leaf records when the current action needs finer-grained detail.
-
-##### Module 4: Multi-Dimensional Scorer
-
-Candidates from all channels are de-duplicated and ranked by `MemoryScorer` using a weighted linear combination. Final top-k selection is **composite-first**: covering parent composites are preferred, covered child records are folded away unless they add unique value, and near-duplicate fragments are suppressed.
-
-$$\text{Score} = \alpha \cdot S_\text{sem} + \beta \cdot S_\text{action} + \kappa \cdot S_\text{slot} + \gamma \cdot S_\text{temporal} + \delta \cdot S_\text{recency} + \eta \cdot S_\text{evidence} - \lambda \cdot C_\text{token}$$
-
-| Weight | Meaning | Default |
-|--------|---------|---------|
-| α | SemanticRelevance (vector distance -> similarity) | 0.25 |
-| β | ActionUtility (tag match score, mode-aware) | 0.25 |
-| κ | SlotUtility (whether the memory helps fill missing action slots) | 0.15 |
-| γ | TemporalFit (temporal reference match) | 0.15 |
-| δ | Recency (memory freshness) | 0.10 |
-| η | EvidenceDensity (evidence span density) | 0.10 |
-| λ | TokenCost penalty (text length penalty) | 0.10 |
-
-### 🛠️ Procedural Memory — Skill Store
-
-The skill store preserves reusable *how-to* knowledge as structured skill entries, each carrying:
-
-- **Intent** — a short description of what the skill does.
-- **`doc_markdown`** — a full Markdown document describing the procedure, commands, parameters, and caveats.
-- **Embedding** — a dense vector of the intent text, used for similarity search.
-- **Metadata** — usage counters, last-used timestamp, preconditions.
-
-Skill retrieval uses **HyDE (Hypothetical Document Embeddings)**: the query is first expanded into a *hypothetical ideal answer* by the LLM, then that draft text is embedded to produce a query vector that matches well against stored procedure descriptions, even when the user's original phrasing is vague.
-
----
-
-<a id="pipeline"></a>
-
-## ⚙️ Pipeline
-
-Every request passes through a fixed sequence of five agents. Four are synchronous stages in the LangGraph pipeline; one is a background post-processing task.
-
-<div align="center">
-  <div>
-    <div>START</div>
-    <div>▼</div>
-    <div>
-      <div>
-        <div>
-          <strong>1. WMManager</strong> — Token budget check + compress/render
-        </div>
-        <div>↓</div>
-        <div>
-          <strong>2. SearchCoordinator</strong> — Planner → Semantic + Skill retrieval
-        </div>
-        <div>↓</div>
-        <div>
-          <strong>3. SynthesizerAgent</strong> — LLM-as-Judge scoring + context fusion
-        </div>
-        <div>↓</div>
-        <div>
-          <strong>4. ReasoningAgent</strong> — Final response generation
-        </div>
-      </div>
-    </div>
-    <div>▼</div>
-    <div>END</div>
-    <div>
-      <span>Background</span>
-      <span>asyncio.create_task( <strong>ConsolidatorAgent</strong> )</span>
-    </div>
-  </div>
-</div>
-
-### Stage 1 — WMManager
-
-Rule-based agent (no LLM prompt). Appends the user turn to the session log, counts tokens, and fires compression if either threshold is crossed. Produces `compressed_history` and `raw_recent_turns` for downstream stages.
-
-### Stage 2 — SearchCoordinator
-
-`SearchCoordinator` first builds `recent_context` from compressed summaries + raw recent turns, then derives an `ActionState` from the current query, constraints, recent failures, token budget, and recent tool use. `ActionAwareRetrievalPlanner` uses that state to produce a `SearchPlan` containing `mode`, `semantic_queries`, `pragmatic_queries`, `tool_hints`, `required_affordances`, `missing_slots`, tree-traversal strategy, and more. Multi-channel recall (FTS, semantic vector, normalised vector, tag/affordance filter, temporal filter, slot-hint supplementation, plus tree expansion when needed) then queries SQLite + LanceDB. This stage returns raw semantic fragments, skill hits, retrieval provenance, and a dedicated `novelty_retrieved_context` built from **pre-synthesis** semantic fragments for later novelty checking; it does **not** build the final `background_context` yet. Skill retrieval is mode-aware (`answer` / `action` / `mixed`) and uses HyDE against the skill store only when it is likely to help.
-
-When a new user turn arrives, `SearchCoordinator` also tries to apply lightweight feedback to the most recent unresolved action/mixed retrieval log, so the next turn can mark the prior memory usage as success / fail / correction.
-
-### Stage 3 — SynthesizerAgent
-
-Acts as an **LLM-as-Judge**: scores every retrieved memory fragment on an absolute 0-1 relevance scale, discards fragments below the threshold (default 0.6), and fuses the survivors into a single dense `background_context` string. It also identifies `skill_reuse_plan` entries that can directly guide the final response. This stage is where the final answer-time context is built; it outputs `provenance` — a citation list containing scoring breakdown and source references for each kept memory item.
-
-### Stage 4 — ReasoningAgent
-
-Receives `compressed_history`, `background_context`, and `skill_reuse_plan` and generates the final assistant reply. It appends the assistant turn back to the session store, and the pipeline finalizes the semantic usage log with a response excerpt so the next user turn can provide outcome feedback.
-
-### Background — ConsolidatorAgent
-
-Triggered immediately after `ReasoningAgent` completes, runs in a thread pool and **does not block the response**. It:
-
-1. Performs a **novelty check** — LLM judges whether the conversation introduced new information worth persisting. Skips consolidation for pure retrieval exchanges.
-2. **Compact consolidation** — calls `CompactSemanticEngine.ingest_conversation()`, which runs a single-pass encoder (typed extraction → decontextualization → action metadata annotation), writes `MemoryRecord`s to SQLite + LanceDB, then triggers conflict-aware Record Fusion. Novelty check uses the search-stage `novelty_retrieved_context` (raw semantic fragments), not the answer-time `background_context`, so query-conditioned synthesis does not suppress valid new-memory ingestion.
-3. **Skill extraction** — identifies successful tool-usage patterns in the conversation and adds skill entries to the skill store. Runs in parallel with compact consolidation (ThreadPoolExecutor).
+- **LycheeCluster**: structured organization and hierarchical indexing for context memory  
+  [![arXiv](https://img.shields.io/badge/arXiv-2603.08453-B31B1B?logo=arxiv&logoColor=fff)](https://arxiv.org/abs/2603.08453)
 
 ---
 
@@ -495,6 +300,225 @@ curl -X POST http://localhost:8000/mcp \
 2. Use `lychee_memory_smart_search` in `compact` mode for the default one-shot recall path.
 3. Use `lychee_memory_search` + `lychee_memory_synthesize` only when you explicitly want search and synthesis as separate stages.
 4. After the conversation ends, call `lychee_memory_consolidate` with the same `session_id`.
+
+---
+
+<a id="memory-architecture"></a>
+
+## 📚 Memory Architecture
+
+LycheeMem organizes memory into three complementary stores:
+
+<table>
+  <thead>
+    <tr>
+      <th>Working Memory</th>
+      <th>Semantic Memory</th>
+      <th>Procedural Memory</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <p>(Episodic)</p>
+        <ul>
+          <li>Session turns</li>
+          <li>Summaries</li>
+          <li>Token budget management</li>
+        </ul>
+      </td>
+      <td>
+        <p>(Typed Action Store)</p>
+        <ul>
+          <li>7 MemoryRecord types</li>
+          <li>Conflict-aware Record Fusion</li>
+          <li>Hierarchical memory tree</li>
+          <li>Action-grounded retrieval planning</li>
+          <li>Usage feedback loop + RL-ready statistics</li>
+        </ul>
+      </td>
+      <td>
+        <p>(Skills)</p>
+        <ul>
+          <li>Skill entries</li>
+          <li>HyDE retrieval</li>
+        </ul>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+### 💾 Working Memory
+
+The working memory window holds the active conversation context for a session. It operates under a **dual-threshold token budget**:
+
+- **Warn threshold (70%)** — triggers asynchronous background pre-compression; the current request is not blocked.
+- **Block threshold (90%)** — the pipeline pauses and flushes older turns to a compressed summary before proceeding.
+
+Compression produces *summary anchors* (past context, distilled) + *raw recent turns* (last N turns, verbatim). Both are passed downstream as the conversation history.
+
+### 🗺️ Semantic Memory — Compact Semantic Memory
+
+Semantic memory is organised around **typed MemoryRecords plus action-grounded retrieval state**. The storage layer is SQLite (FTS5 full-text search) + LanceDB (vector index), while retrieval is conditioned on recent context, tentative action, constraints, and missing slots.
+
+#### Memory Record Types
+
+Each memory entry is stored as a `MemoryRecord`. The `memory_type` field distinguishes seven semantic categories:
+
+| Type | Description |
+|------|-------------|
+| `fact` | Objective facts about the user, environment, or world |
+| `preference` | User preferences (style, habits, likes/dislikes) |
+| `event` | Specific events that have occurred |
+| `constraint` | Conditions that must be respected |
+| `procedure` | Reusable step-by-step procedures / methods |
+| `failure_pattern` | Previously failed action paths and their causes |
+| `tool_affordance` | Capabilities and applicable scenarios of tools/APIs |
+
+Beyond text, every `MemoryRecord` carries **action-facing metadata** (`tool_tags`, `constraint_tags`, `failure_tags`, `affordance_tags`) and **usage statistics** (`retrieval_count`, `action_success_count`, etc.) to seed future reinforcement-learning signals. Retrieval logs also persist `retrieval_plan`, `action_state`, response excerpts, and later user feedback so the system can close a lightweight action-outcome loop without training.
+
+Related `MemoryRecord`s can be fused online by the **Record Fusion Engine** into denser `CompositeRecord`s. Composite entries persist direct `child_composite_ids`, so long-term semantic memory is organised as a **hierarchical memory tree** instead of a flat bag of summaries.
+
+#### Four-Module Pipeline
+
+##### Module 1: Compact Semantic Encoding
+
+A single-pass pipeline that converts conversation turns into a list of `MemoryRecord`s:
+
+1. **Typed extraction** — LLM extracts self-contained facts and assigns a semantic category to each record.
+2. **Decontextualization** — Pronouns and context-dependent phrases are expanded into full expressions, so each record is understandable without the original dialogue.
+3. **Action metadata annotation** — LLM annotates each record with `memory_type`, `tool_tags`, `constraint_tags`, `failure_tags`, `affordance_tags`, and other structured labels.
+
+`record_id = SHA256(normalized_text)` — naturally idempotent; duplicate content is deduplicated automatically.
+
+##### Module 2: Record Fusion, Conflict Update, and Hierarchical Consolidation
+
+Triggered online after each consolidation:
+
+1. FTS / vector recall gathers related **existing atomic records** around the new records (candidate pool).
+2. The existing synthesis judge prompt decides whether each candidate set should produce a new `CompositeRecord` **or** perform a `conflict_update` against an existing atomic record.
+3. On `conflict_update`, the existing anchor record is updated in place, conflicting incoming records are soft-expired, and composites covering affected source records are invalidated.
+4. On synthesis, the engine writes a new `CompositeRecord` to SQLite + LanceDB.
+5. Additional hierarchy rounds can synthesize `record -> composite` and `composite -> composite`, persisting `child_composite_ids` so the memory tree can keep growing upward.
+
+##### Module 3: Action-Grounded Retrieval Planning
+
+Before retrieval, `ActionAwareRetrievalPlanner` analyses the **user query + recent context + ActionState** and emits a `SearchPlan`:
+
+- `mode`: `answer` (factual Q&A) / `action` (needs execution) / `mixed`
+- `semantic_queries`: content-facing search terms
+- `pragmatic_queries`: action/tool/constraint-facing search terms
+- `tool_hints`: tools likely needed for this request
+- `required_constraints`: constraints that must be respected
+- `required_affordances`: capabilities the retrieved memory should provide
+- `missing_slots`: parameters / slots that are absent
+- `tree_retrieval_mode` / `tree_expansion_depth` / `include_leaf_records`: whether retrieval should stay at high-level composites (`root_only`) or descend into child composites / direct leaf records (`balanced` / `descend`)
+
+`ActionState` can carry fields such as `current_subgoal`, `tentative_action`, `known_constraints`, `available_tools`, `failure_signal`, and a recent-context excerpt. The planner merges this state with the LLM-produced plan so retrieval is conditioned on the current decision state rather than the query alone.
+
+The plan drives multi-channel recall:
+
+1. **FTS channel** — SQLite FTS5 keyword recall over `MemoryRecord` + `CompositeRecord`
+2. **Semantic vector channel** — LanceDB ANN over `semantic_text` embeddings
+3. **Normalised vector channel** — LanceDB ANN over `normalized_text` embeddings (for pragmatic queries)
+4. **Tag filter channel** — exact filter by `tool_hints` / `required_constraints` / `required_affordances`
+5. **Temporal channel** — filter by `SearchPlan.temporal_filter` time window
+6. **Slot-hint supplementation** — when `missing_slots` is non-empty, extra FTS/tag recall is triggered to find records that can fill missing parameters
+
+After base recall, retrieval can also expand along the **memory tree**. `root_only` keeps high-level composite summaries, `balanced` descends one level when tree hints match, and `descend` pulls child composites plus direct leaf records when the current action needs finer-grained detail.
+
+##### Module 4: Multi-Dimensional Scorer
+
+Candidates from all channels are de-duplicated and ranked by `MemoryScorer` using a weighted linear combination. Final top-k selection is **composite-first**: covering parent composites are preferred, covered child records are folded away unless they add unique value, and near-duplicate fragments are suppressed.
+
+$$\text{Score} = \alpha \cdot S_\text{sem} + \beta \cdot S_\text{action} + \kappa \cdot S_\text{slot} + \gamma \cdot S_\text{temporal} + \delta \cdot S_\text{recency} + \eta \cdot S_\text{evidence} - \lambda \cdot C_\text{token}$$
+
+| Weight | Meaning | Default |
+|--------|---------|---------|
+| α | SemanticRelevance (vector distance -> similarity) | 0.25 |
+| β | ActionUtility (tag match score, mode-aware) | 0.25 |
+| κ | SlotUtility (whether the memory helps fill missing action slots) | 0.15 |
+| γ | TemporalFit (temporal reference match) | 0.15 |
+| δ | Recency (memory freshness) | 0.10 |
+| η | EvidenceDensity (evidence span density) | 0.10 |
+| λ | TokenCost penalty (text length penalty) | 0.10 |
+
+### 🛠️ Procedural Memory — Skill Store
+
+The skill store preserves reusable *how-to* knowledge as structured skill entries, each carrying:
+
+- **Intent** — a short description of what the skill does.
+- **`doc_markdown`** — a full Markdown document describing the procedure, commands, parameters, and caveats.
+- **Embedding** — a dense vector of the intent text, used for similarity search.
+- **Metadata** — usage counters, last-used timestamp, preconditions.
+
+Skill retrieval uses **HyDE (Hypothetical Document Embeddings)**: the query is first expanded into a *hypothetical ideal answer* by the LLM, then that draft text is embedded to produce a query vector that matches well against stored procedure descriptions, even when the user's original phrasing is vague.
+
+---
+
+<a id="pipeline"></a>
+
+## ⚙️ Pipeline
+
+Every request passes through a fixed sequence of five agents. Four are synchronous stages in the LangGraph pipeline; one is a background post-processing task.
+
+<div align="center">
+  <div>
+    <div>START</div>
+    <div>▼</div>
+    <div>
+      <div>
+        <div>
+          <strong>1. WMManager</strong> — Token budget check + compress/render
+        </div>
+        <div>↓</div>
+        <div>
+          <strong>2. SearchCoordinator</strong> — Planner → Semantic + Skill retrieval
+        </div>
+        <div>↓</div>
+        <div>
+          <strong>3. SynthesizerAgent</strong> — LLM-as-Judge scoring + context fusion
+        </div>
+        <div>↓</div>
+        <div>
+          <strong>4. ReasoningAgent</strong> — Final response generation
+        </div>
+      </div>
+    </div>
+    <div>▼</div>
+    <div>END</div>
+    <div>
+      <span>Background</span>
+      <span>asyncio.create_task( <strong>ConsolidatorAgent</strong> )</span>
+    </div>
+  </div>
+</div>
+
+### Stage 1 — WMManager
+
+Rule-based agent (no LLM prompt). Appends the user turn to the session log, counts tokens, and fires compression if either threshold is crossed. Produces `compressed_history` and `raw_recent_turns` for downstream stages.
+
+### Stage 2 — SearchCoordinator
+
+`SearchCoordinator` first builds `recent_context` from compressed summaries + raw recent turns, then derives an `ActionState` from the current query, constraints, recent failures, token budget, and recent tool use. `ActionAwareRetrievalPlanner` uses that state to produce a `SearchPlan` containing `mode`, `semantic_queries`, `pragmatic_queries`, `tool_hints`, `required_affordances`, `missing_slots`, tree-traversal strategy, and more. Multi-channel recall (FTS, semantic vector, normalised vector, tag/affordance filter, temporal filter, slot-hint supplementation, plus tree expansion when needed) then queries SQLite + LanceDB. This stage returns raw semantic fragments, skill hits, retrieval provenance, and a dedicated `novelty_retrieved_context` built from **pre-synthesis** semantic fragments for later novelty checking; it does **not** build the final `background_context` yet. Skill retrieval is mode-aware (`answer` / `action` / `mixed`) and uses HyDE against the skill store only when it is likely to help.
+
+When a new user turn arrives, `SearchCoordinator` also tries to apply lightweight feedback to the most recent unresolved action/mixed retrieval log, so the next turn can mark the prior memory usage as success / fail / correction.
+
+### Stage 3 — SynthesizerAgent
+
+Acts as an **LLM-as-Judge**: scores every retrieved memory fragment on an absolute 0-1 relevance scale, discards fragments below the threshold (default 0.6), and fuses the survivors into a single dense `background_context` string. It also identifies `skill_reuse_plan` entries that can directly guide the final response. This stage is where the final answer-time context is built; it outputs `provenance` — a citation list containing scoring breakdown and source references for each kept memory item.
+
+### Stage 4 — ReasoningAgent
+
+Receives `compressed_history`, `background_context`, and `skill_reuse_plan` and generates the final assistant reply. It appends the assistant turn back to the session store, and the pipeline finalizes the semantic usage log with a response excerpt so the next user turn can provide outcome feedback.
+
+### Background — ConsolidatorAgent
+
+Triggered immediately after `ReasoningAgent` completes, runs in a thread pool and **does not block the response**. It:
+
+1. Performs a **novelty check** — LLM judges whether the conversation introduced new information worth persisting. Skips consolidation for pure retrieval exchanges.
+2. **Compact consolidation** — calls `CompactSemanticEngine.ingest_conversation()`, which runs a single-pass encoder (typed extraction → decontextualization → action metadata annotation), writes `MemoryRecord`s to SQLite + LanceDB, then triggers conflict-aware Record Fusion. Novelty check uses the search-stage `novelty_retrieved_context` (raw semantic fragments), not the answer-time `background_context`, so query-conditioned synthesis does not suppress valid new-memory ingestion.
+3. **Skill extraction** — identifies successful tool-usage patterns in the conversation and adds skill entries to the skill store. Runs in parallel with compact consolidation (ThreadPoolExecutor).
 
 ---
 
