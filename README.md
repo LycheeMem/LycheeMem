@@ -15,21 +15,15 @@
 
 LycheeMem is a compact memory framework for LLM agents. It starts from efficient conversational memory—through structured organization, lightweight consolidation, and adaptive retrieval—and gradually extends toward action-aware, usage-aware memory for more capable agentic systems.
 
-<p align="center">
-  <a href="https://ik.imagekit.io/wvs0koh4k/99043dc9-b8dd-4e78-ac48-c38da4e7405c.mp4">
-    <img src="./assets/demo-preview.png" width="920" alt="LycheeMem Demo" />
-  </a>
-</p>
+<a href="https://ik.imagekit.io/wvs0koh4k/99043dc9-b8dd-4e78-ac48-c38da4e7405c.mp4">
+  <p align="center">
+    <strong>Demo:</strong> LycheeMem vs ChatGPT Free on long-horizon memory tasks
+  </p>
 
-<p align="center">
-  <strong>Demo:</strong> LycheeMem vs ChatGPT Free on long-horizon memory tasks
-</p>
-
-<p align="center">
-  <a href="https://ik.imagekit.io/wvs0koh4k/99043dc9-b8dd-4e78-ac48-c38da4e7405c.mp4">
-    Watch the full video
-  </a>
-</p>
+  <p align="center">
+      Watch the full video
+  </p>
+</a>
 
 
 ---

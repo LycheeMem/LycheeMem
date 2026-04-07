@@ -15,21 +15,15 @@
 
 LycheeMem 是一个面向 LLM Agent 的紧凑型终身记忆框架。它以高效对话记忆为起点，通过结构化组织、轻量化固化和自适应检索，建立稳定且实用的记忆底座，并逐步扩展到面向行动、面向使用的记忆机制，以支撑更强的 Agent 能力。
 
-<p align="center">
-  <a href="https://ik.imagekit.io/wvs0koh4k/99043dc9-b8dd-4e78-ac48-c38da4e7405c.mp4">
-    <img src="./assets/demo_preview.png" width="920" alt="LycheeMem 演示" />
-  </a>
-</p>
+<a href="https://ik.imagekit.io/wvs0koh4k/99043dc9-b8dd-4e78-ac48-c38da4e7405c.mp4">
+  <p align="center">
+    <strong>演示：</strong>LycheeMem 与 ChatGPT Free 在长程记忆任务下的对比
+  </p>
 
-<p align="center">
-  <strong>演示：</strong>LycheeMem 与 ChatGPT Free 在长程记忆任务下的对比
-</p>
-
-<p align="center">
-  <a href="https://ik.imagekit.io/wvs0koh4k/99043dc9-b8dd-4e78-ac48-c38da4e7405c.mp4">
-    查看完整视频
-  </a>
-</p>
+  <p align="center">
+      查看完整视频
+  </p>
+</a>
 
 ---
 
