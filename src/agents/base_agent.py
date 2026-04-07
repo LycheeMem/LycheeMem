@@ -46,7 +46,7 @@ class BaseAgent(ABC):
 
     @staticmethod
     def _append_time_basis(system_prompt: str, now: datetime.datetime | None = None) -> str:
-        """为 system prompt 追加当前时间基准，便于解析“今天/明天/下周三”等相对时间。"""
+        """Append the current time basis to the system prompt to help resolve relative time expressions."""
         if not system_prompt:
             return system_prompt
         if now is None:
@@ -55,9 +55,9 @@ class BaseAgent(ABC):
         today_local = now.date().isoformat()
         return (
             system_prompt
-            + "\n\n当前时间基准（用于解析相对时间表达）：\n"
-            + f"- 当前本地日期：{today_local}\n"
-            + f"- 当前 UTC 时间：{now_utc.isoformat()}\n"
+            + "\n\nCurrent time basis (for resolving relative time expressions):\n"
+            + f"- Current local date: {today_local}\n"
+            + f"- Current UTC time: {now_utc.isoformat()}\n"
         )
 
     @staticmethod

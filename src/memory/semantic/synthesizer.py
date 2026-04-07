@@ -71,8 +71,6 @@ class RecordFusionEngine:
     def synthesize_on_ingest(
         self,
         new_records: list[MemoryRecord],
-        *,
-        user_id: str = "",
     ) -> list[CompositeRecord]:
         """在新 records 写入后触发融合流程。
 
@@ -89,12 +87,11 @@ class RecordFusionEngine:
         if not new_records:
             return []
 
-        existing_composites = self._sqlite.list_synthesized(user_id=user_id)
+        existing_composites = self._sqlite.list_synthesized()
         covered_record_ids, _ = self._build_existing_hierarchy_maps(existing_composites)
 
         active_new_records, updated_existing_records = self._resolve_conflicts_on_ingest(
             new_records,
-            user_id=user_id,
         )
         frontier_records_map = {
             record.record_id: record
@@ -105,14 +102,13 @@ class RecordFusionEngine:
             return []
 
         if self._last_run_stats.get("invalidated_composite_ids"):
-            existing_composites = self._sqlite.list_synthesized(user_id=user_id)
+            existing_composites = self._sqlite.list_synthesized()
             covered_record_ids, _ = self._build_existing_hierarchy_maps(existing_composites)
 
         frontier_records = list(frontier_records_map.values())
 
         synthesized = self._synthesize_records_on_ingest(
             frontier_records,
-            user_id=user_id,
             covered_record_ids=covered_record_ids,
         )
         if self._max_hierarchy_rounds <= 0:
@@ -133,7 +129,7 @@ class RecordFusionEngine:
         seen_ids = {item.composite_id for item in synthesized}
 
         for _ in range(self._max_hierarchy_rounds):
-            next_level = self._synthesize_hierarchy_on_ingest(frontier, user_id=user_id)
+            next_level = self._synthesize_hierarchy_on_ingest(frontier)
             next_level = [item for item in next_level if item.composite_id not in seen_ids]
             if not next_level:
                 break
@@ -148,7 +144,6 @@ class RecordFusionEngine:
         self,
         new_records: list[MemoryRecord],
         *,
-        user_id: str = "",
         covered_record_ids: set[str] | None = None,
     ) -> list[CompositeRecord]:
         """第一层融合：new/existing records -> composite。"""
@@ -170,7 +165,6 @@ class RecordFusionEngine:
             # FTS 检索相关旧条目
             fts_results = self._sqlite.find_similar_by_normalized_text(
                 record.normalized_text,
-                user_id=user_id,
                 limit=5,
             )
             for r in fts_results:
@@ -244,7 +238,6 @@ class RecordFusionEngine:
                 failure_tags=synth_result.get("failure_tags", []),
                 affordance_tags=synth_result.get("affordance_tags", []),
                 confidence=synth_result.get("confidence", 0.9),
-                user_id=user_id,
                 created_at=now_iso,
                 updated_at=now_iso,
             )
@@ -257,14 +250,12 @@ class RecordFusionEngine:
     def _synthesize_hierarchy_on_ingest(
         self,
         new_items: list[MemoryRecord | CompositeRecord],
-        *,
-        user_id: str = "",
     ) -> list[CompositeRecord]:
         """层级融合：new record/composite + related root composites -> parent composite。"""
         if not new_items:
             return []
 
-        existing_composites = self._sqlite.list_synthesized(user_id=user_id)
+        existing_composites = self._sqlite.list_synthesized()
         _, child_to_parent = self._build_existing_hierarchy_maps(existing_composites)
 
         candidate_map: dict[str, MemoryRecord | CompositeRecord] = {}
@@ -282,7 +273,6 @@ class RecordFusionEngine:
         for item in list(candidate_map.values()):
             for related in self._find_related_root_composites(
                 item,
-                user_id=user_id,
                 child_to_parent=child_to_parent,
             ):
                 item_id = self._item_id(item)
@@ -368,7 +358,6 @@ class RecordFusionEngine:
                 failure_tags=synth_result.get("failure_tags", []),
                 affordance_tags=synth_result.get("affordance_tags", []),
                 confidence=synth_result.get("confidence", 0.9),
-                user_id=user_id,
                 created_at=now_iso,
                 updated_at=now_iso,
             )
@@ -381,8 +370,6 @@ class RecordFusionEngine:
     def _resolve_conflicts_on_ingest(
         self,
         new_records: list[MemoryRecord],
-        *,
-        user_id: str = "",
     ) -> tuple[list[MemoryRecord], list[MemoryRecord]]:
         active_new_records = [record for record in new_records if not record.expired]
         if not active_new_records:
@@ -403,7 +390,6 @@ class RecordFusionEngine:
         for record in active_new_records:
             for related in self._find_related_existing_records(
                 record,
-                user_id=user_id,
                 exclude_ids=new_record_ids,
             ):
                 if related.expired:
@@ -493,7 +479,6 @@ class RecordFusionEngine:
                 evidence_turn_range=merged_evidence_turns,
                 source_session=merged_session,
                 source_role=merged_source_role,
-                user_id=anchor_record.user_id,
                 created_at=anchor_record.created_at,
                 updated_at=now_iso,
                 retrieval_count=anchor_record.retrieval_count,
@@ -509,7 +494,6 @@ class RecordFusionEngine:
             self._sqlite.upsert_record(updated_record)
             self._vector.upsert(
                 record_id=updated_record.record_id,
-                user_id=updated_record.user_id,
                 memory_type=updated_record.memory_type,
                 semantic_text=updated_record.semantic_text,
                 normalized_text=updated_record.normalized_text,
@@ -533,7 +517,7 @@ class RecordFusionEngine:
                 if str(composite.composite_id or "").strip()
             })
             if stale_composite_ids:
-                self._sqlite.delete_synthesized_many(stale_composite_ids, user_id=user_id)
+                self._sqlite.delete_synthesized_many(stale_composite_ids)
                 for composite_id in stale_composite_ids:
                     self._vector.delete_synthesized(composite_id)
                 invalidated_composite_ids.update(stale_composite_ids)
@@ -556,7 +540,6 @@ class RecordFusionEngine:
         self,
         record: MemoryRecord,
         *,
-        user_id: str = "",
         exclude_ids: set[str] | None = None,
     ) -> list[MemoryRecord]:
         exclude_ids = {
@@ -586,7 +569,6 @@ class RecordFusionEngine:
         for query_text in queries[:4]:
             for result in self._sqlite.fulltext_search(
                 query_text,
-                user_id=user_id,
                 limit=6,
             ):
                 record_id = str(result.get("record_id") or "").strip()
@@ -599,7 +581,6 @@ class RecordFusionEngine:
             for column in ("vector", "normalized_vector"):
                 for result in self._vector.search(
                     query_text,
-                    user_id=user_id,
                     column=column,
                     limit=6,
                 ):
@@ -616,7 +597,6 @@ class RecordFusionEngine:
         self._sqlite.upsert_synthesized(composite)
         self._vector.upsert_synthesized(
             composite_id=composite.composite_id,
-            user_id=composite.user_id,
             memory_type=composite.memory_type,
             semantic_text=composite.semantic_text,
             normalized_text=composite.normalized_text,
@@ -655,7 +635,6 @@ class RecordFusionEngine:
         self,
         item: MemoryRecord | CompositeRecord,
         *,
-        user_id: str = "",
         child_to_parent: dict[str, str] | None = None,
     ) -> list[CompositeRecord]:
         related: dict[str, CompositeRecord] = {}
@@ -675,7 +654,6 @@ class RecordFusionEngine:
         for query_text in queries[:4]:
             fts_results = self._sqlite.fulltext_search_synthesized(
                 query_text,
-                user_id=user_id,
                 limit=6,
             )
             for result in fts_results:
@@ -691,7 +669,6 @@ class RecordFusionEngine:
             for column in ("vector", "normalized_vector"):
                 vector_results = self._vector.search_synthesized(
                     query_text,
-                    user_id=user_id,
                     column=column,
                     limit=6,
                 )

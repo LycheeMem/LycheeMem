@@ -7,38 +7,6 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-# ─── Auth ───
-
-
-class RegisterRequest(BaseModel):
-    """用户注册请求。"""
-
-    username: str = Field(..., min_length=2, max_length=64)
-    password: str = Field(..., min_length=6, max_length=128)
-    display_name: str | None = None
-
-
-class RegisterResponse(BaseModel):
-    user_id: str
-    username: str
-    display_name: str
-    token: str
-
-
-class LoginRequest(BaseModel):
-    """用户登录请求。"""
-
-    username: str = Field(..., min_length=1)
-    password: str = Field(..., min_length=1)
-
-
-class LoginResponse(BaseModel):
-    user_id: str
-    username: str
-    display_name: str
-    token: str
-
-
 # ─── Chat ───
 
 

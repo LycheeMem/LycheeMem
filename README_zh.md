@@ -721,10 +721,6 @@ python examples/api_pipeline_demo.py
 # 多轮对话演示（3 轮连续对话，最后统一固化）
 python examples/api_pipeline_demo.py --multi-turn
 
-# 自定义查询和用户
-python examples/api_pipeline_demo.py --username alice --password secret123 \
-  --query "如何用 pg_dump 备份我的数据库？"
-
 # 使用固定 session_id（方便多次运行复现会话历史累积效果）
 python examples/api_pipeline_demo.py --session-id my-test-session
 ```

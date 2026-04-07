@@ -27,7 +27,6 @@ class CompactSemanticEncoder:
         *,
         previous_turns: list[dict[str, Any]] | None = None,
         session_id: str = "",
-        user_id: str = "",
         turn_index_offset: int = 0,
     ) -> list[MemoryRecord]:
         """单次 LLM 调用完成抽取 + 指代消解 + action metadata 标注。
@@ -36,7 +35,6 @@ class CompactSemanticEncoder:
             current_turns: 需要处理的当前对话轮次
             previous_turns: 最近的上文轮次（供指代消解参考，可选）
             session_id: 会话 ID
-            user_id: 用户 ID
             turn_index_offset: current_turns 在完整 session 中的起始 turn 索引
 
         Returns:
@@ -85,7 +83,6 @@ class CompactSemanticEncoder:
                 ),
                 source_session=session_id,
                 source_role=source_role,
-                user_id=user_id,
                 created_at=now_iso,
                 updated_at=now_iso,
             )
@@ -103,7 +100,7 @@ class CompactSemanticEncoder:
         previous_turns: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         """单次 LLM 调用：输出包含全部字段的 record 列表。"""
-        prev_text = self._format_section(previous_turns) if previous_turns else "（无上文）"
+        prev_text = self._format_section(previous_turns) if previous_turns else "(no previous turns)"
         curr_text = self._format_section(current_turns)
 
         user_content = (

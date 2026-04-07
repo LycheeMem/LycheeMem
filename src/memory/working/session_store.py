@@ -21,7 +21,6 @@ class SessionLog:
     """单个会话的完整对话日志。"""
 
     session_id: str
-    user_id: str = ""  # 所属用户（空串表示匿名/兼容旧数据）
     turns: list[dict[str, Any]] = field(default_factory=list)
     summaries: list[dict[str, Any]] = field(default_factory=list)
     # summaries 结构：[{"boundary_index": int, "content": str, "token_count": int}]
@@ -41,13 +40,13 @@ class InMemorySessionStore:
     def __init__(self):
         self._store: dict[str, SessionLog] = {}
 
-    def get_or_create(self, session_id: str, *, user_id: str = "") -> SessionLog:
+    def get_or_create(self, session_id: str) -> SessionLog:
         if session_id not in self._store:
-            self._store[session_id] = SessionLog(session_id=session_id, user_id=user_id)
+            self._store[session_id] = SessionLog(session_id=session_id)
         return self._store[session_id]
 
-    def append_turn(self, session_id: str, role: str, content: str, token_count: int = 0, *, user_id: str = "") -> None:
-        log = self.get_or_create(session_id, user_id=user_id)
+    def append_turn(self, session_id: str, role: str, content: str, token_count: int = 0) -> None:
+        log = self.get_or_create(session_id)
         log.turns.append({"role": role, "content": content, "token_count": token_count, "created_at": _now_iso()})
         log.updated_at = _now_iso()
 
@@ -61,10 +60,9 @@ class InMemorySessionStore:
         end_index: int,
         *,
         window: int = 0,
-        user_id: str = "",
     ) -> list[dict[str, Any]]:
         """按绝对 turn 索引回溯原始对话窗口。"""
-        log = self.get_or_create(session_id, user_id=user_id)
+        log = self.get_or_create(session_id)
         if not log.turns:
             return []
 
@@ -109,12 +107,10 @@ class InMemorySessionStore:
         if tags is not None:
             log.tags = tags
 
-    def list_sessions(self, offset: int = 0, limit: int = 50, *, user_id: str = "") -> list[dict]:
-        """返回会话的摘要列表，按最新活动倒序，支持分页。指定 user_id 时只返回该用户的会话。"""
+    def list_sessions(self, offset: int = 0, limit: int = 50) -> list[dict]:
+        """返回会话的摘要列表，按最新活动倒序，支持分页。"""
         result = []
         for session_id, log in self._store.items():
-            if user_id and log.user_id != user_id:
-                continue
             active_turns = [t for t in log.turns if not t.get("deleted", False)]
             first_user = next(
                 (t["content"] for t in active_turns if t["role"] == "user"), ""

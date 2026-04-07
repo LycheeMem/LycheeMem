@@ -1,11 +1,3 @@
-// ── Auth ──
-export interface AuthUser {
-  user_id: string;
-  username: string;
-  display_name: string;
-  token: string;
-}
-
 // ── Message ──
 export interface MessageMeta {
   memories_retrieved: number;

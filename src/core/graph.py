@@ -57,11 +57,11 @@ class LycheePipeline:
         self._consolidation_job_seq = 0
 
     @staticmethod
-    def _consolidation_key(session_id: str, user_id: str = "") -> str:
-        return f"{user_id}::{session_id}"
+    def _consolidation_key(session_id: str) -> str:
+        return session_id
 
-    def _begin_consolidation(self, session_id: str, user_id: str = "") -> int:
-        key = self._consolidation_key(session_id, user_id)
+    def _begin_consolidation(self, session_id: str) -> int:
+        key = self._consolidation_key(session_id)
         with self._consolidation_state_lock:
             self._consolidation_job_seq += 1
             job_id = self._consolidation_job_seq
@@ -84,12 +84,11 @@ class LycheePipeline:
         self,
         *,
         session_id: str,
-        user_id: str = "",
         job_id: int,
         result: dict[str, Any] | None = None,
         error: str | None = None,
     ) -> None:
-        key = self._consolidation_key(session_id, user_id)
+        key = self._consolidation_key(session_id)
         with self._consolidation_state_lock:
             current = self._consolidation_results.get(key)
             if current is not None and int(current.get("job_id") or 0) != job_id:
@@ -129,12 +128,11 @@ class LycheePipeline:
         self,
         *,
         session_id: str | None = None,
-        user_id: str = "",
     ) -> dict[str, Any] | None:
         if not session_id:
             return dict(self._last_consolidation) if self._last_consolidation is not None else None
 
-        key = self._consolidation_key(session_id, user_id)
+        key = self._consolidation_key(session_id)
         with self._consolidation_state_lock:
             result = self._consolidation_results.get(key)
             return dict(result) if result is not None else None
@@ -148,7 +146,6 @@ class LycheePipeline:
         result = self.wm_manager.run(
             session_id=state["session_id"],
             user_query=state["user_query"],
-            user_id=state.get("user_id", ""),
         )
         return {
             "compressed_history": result["compressed_history"],
@@ -161,7 +158,6 @@ class LycheePipeline:
         result = self.search_coordinator.run(
             user_query=state["user_query"],
             session_id=state.get("session_id"),
-            user_id=state.get("user_id", ""),
             compressed_history=state.get("compressed_history", []),
             raw_recent_turns=state.get("raw_recent_turns", []),
             wm_token_usage=state.get("wm_token_usage", 0),
@@ -207,7 +203,6 @@ class LycheePipeline:
         # 将 assistant 回复写回会话日志
         self.wm_manager.append_assistant_turn(
             state["session_id"], result["final_response"],
-            user_id=state.get("user_id", ""),
         )
 
         semantic_engine = getattr(self.search_coordinator, "semantic_engine", None)
@@ -325,13 +320,12 @@ class LycheePipeline:
     # Public API
     # ──────────────────────────────────────
 
-    def run(self, user_query: str, session_id: str, user_id: str = "") -> dict[str, Any]:
+    def run(self, user_query: str, session_id: str) -> dict[str, Any]:
         """同步运行 Pipeline。
 
         Args:
             user_query: 用户输入。
             session_id: 会话 ID。
-            user_id: 用户 ID（用于多用户隔离）。
 
         Returns:
             完整的 PipelineState（包含 final_response 等所有字段）。
@@ -342,11 +336,9 @@ class LycheePipeline:
             initial_state: dict[str, Any] = {
                 "user_query": user_query,
                 "session_id": session_id,
-                "user_id": user_id,
             }
             result = self._graph.invoke(initial_state)
         finally:
-            # 先读取计数，再复位——确保后台固化线程启动后的 LLM 调用不计入本轮
             in_tok, out_tok = counter["input"], counter["output"]
             _token_accumulator.reset(tok)
 
@@ -355,33 +347,30 @@ class LycheePipeline:
 
         # 后台线程触发固化（fire-and-forget，不阻塞响应返回）
         if result.get("consolidation_pending"):
-            job_id = self._begin_consolidation(session_id, user_id=user_id)
+            job_id = self._begin_consolidation(session_id)
             self._trigger_consolidation_bg(
                 session_id,
                 retrieved_context=str(result.get("novelty_retrieved_context") or ""),
-                user_id=user_id,
                 job_id=job_id,
             )
 
         return result
 
-    async def arun(self, user_query: str, session_id: str, user_id: str = "") -> dict[str, Any]:
+    async def arun(self, user_query: str, session_id: str) -> dict[str, Any]:
         """异步运行 Pipeline。"""
         initial_state: dict[str, Any] = {
             "user_query": user_query,
             "session_id": session_id,
-            "user_id": user_id,
         }
         result = await self._graph.ainvoke(initial_state)
 
         # 异步触发固化
         if result.get("consolidation_pending"):
-            job_id = self._begin_consolidation(session_id, user_id=user_id)
+            job_id = self._begin_consolidation(session_id)
             asyncio.create_task(
                 self._aconsolidate(
                     session_id,
                     retrieved_context=str(result.get("novelty_retrieved_context") or ""),
-                    user_id=user_id,
                     job_id=job_id,
                 )
             )
@@ -389,7 +378,7 @@ class LycheePipeline:
         return result
 
     async def astream_steps(
-        self, user_query: str, session_id: str, user_id: str = ""
+        self, user_query: str, session_id: str
     ) -> AsyncIterator[dict[str, Any]]:
         """逐节点执行 Pipeline，每步完成后 yield 进度事件。
 
@@ -408,7 +397,7 @@ class LycheePipeline:
                 _token_accumulator.reset(tok)
 
         try:
-            state: dict[str, Any] = {"user_query": user_query, "session_id": session_id, "user_id": user_id}
+            state: dict[str, Any] = {"user_query": user_query, "session_id": session_id}
 
             patch = await asyncio.to_thread(self._wm_manager_node, state)
             state.update(patch)
@@ -445,7 +434,6 @@ class LycheePipeline:
                 self.wm_manager.append_assistant_turn,
                 state["session_id"],
                 streaming_response,
-                user_id,
             )
             semantic_engine = getattr(self.search_coordinator, "semantic_engine", None)
             usage_log_id = str(state.get("semantic_usage_log_id") or "")
@@ -468,12 +456,11 @@ class LycheePipeline:
             _reset_once()
 
             if state.get("consolidation_pending"):
-                job_id = self._begin_consolidation(session_id, user_id=user_id)
+                job_id = self._begin_consolidation(session_id)
                 asyncio.create_task(
                     self._aconsolidate(
                         session_id,
                         retrieved_context=str(state.get("novelty_retrieved_context") or ""),
-                        user_id=user_id,
                         job_id=job_id,
                     )
                 )
@@ -483,7 +470,7 @@ class LycheePipeline:
             _reset_once()
 
     def consolidate(
-        self, session_id: str, retrieved_context: str = "", user_id: str = ""
+        self, session_id: str, retrieved_context: str = ""
     ) -> dict[str, Any]:
         """手动触发固化（公共方法，可由 API BackgroundTasks 调用）。
 
@@ -500,7 +487,7 @@ class LycheePipeline:
             dict 包含：entities_added, skills_added
         """
         store = self.wm_manager.session_store
-        log = store.get_or_create(session_id, user_id=user_id)
+        log = store.get_or_create(session_id)
         watermark = log.last_consolidated_turn_index
         raw_total = len(log.turns)
         new_turns = [
@@ -511,7 +498,6 @@ class LycheePipeline:
         result = self.consolidator.run(
             turns=new_turns, session_id=session_id, retrieved_context=retrieved_context,
             turn_index_offset=watermark,
-            user_id=user_id,
         )
         # 固化成功后推进水位线
         store.set_last_consolidated_turn_index(session_id, raw_total)
@@ -521,13 +507,12 @@ class LycheePipeline:
         self,
         session_id: str,
         retrieved_context: str = "",
-        user_id: str = "",
         job_id: int = 0,
     ) -> None:
         """在守护线程中触发固化（fire-and-forget）。"""
         thread = threading.Thread(
             target=self._safe_consolidate,
-            args=(session_id, retrieved_context, user_id, job_id),
+            args=(session_id, retrieved_context, job_id),
             daemon=True,
         )
         thread.start()
@@ -536,17 +521,15 @@ class LycheePipeline:
         self,
         session_id: str,
         retrieved_context: str = "",
-        user_id: str = "",
         job_id: int = 0,
     ) -> None:
         """安全执行固化，异常不影响主流程。"""
         graphiti = getattr(self.consolidator, "graphiti_engine", None)
         strict = bool(getattr(graphiti, "strict", False))
         try:
-            result = self.consolidate(session_id, retrieved_context=retrieved_context, user_id=user_id)
+            result = self.consolidate(session_id, retrieved_context=retrieved_context)
             self._finish_consolidation(
                 session_id=session_id,
-                user_id=user_id,
                 job_id=job_id,
                 result=result,
             )
@@ -554,7 +537,6 @@ class LycheePipeline:
             logger.exception("固化失败 session=%s", session_id)
             self._finish_consolidation(
                 session_id=session_id,
-                user_id=user_id,
                 job_id=job_id,
                 error=str(exc),
             )
@@ -565,21 +547,19 @@ class LycheePipeline:
         self,
         session_id: str,
         retrieved_context: str = "",
-        user_id: str = "",
         job_id: int = 0,
     ) -> None:
         """异步场景下的后台固化（使用水位线，只处理新增 turns）。"""
         graphiti = getattr(self.consolidator, "graphiti_engine", None)
         strict = bool(getattr(graphiti, "strict", False))
         store = self.wm_manager.session_store
-        log = store.get_or_create(session_id, user_id=user_id)
+        log = store.get_or_create(session_id)
         watermark = log.last_consolidated_turn_index
         raw_total = len(log.turns)
         new_turns = [t for t in log.turns[watermark:] if not t.get("deleted", False)]
         if not new_turns:
             self._finish_consolidation(
                 session_id=session_id,
-                user_id=user_id,
                 job_id=job_id,
                 result={
                     "entities_added": 0,
@@ -600,14 +580,12 @@ class LycheePipeline:
                     session_id=session_id,
                     retrieved_context=retrieved_context,
                     turn_index_offset=watermark,
-                    user_id=user_id,
                 ),
             )
             # 固化成功后推进水位线
             store.set_last_consolidated_turn_index(session_id, raw_total)
             self._finish_consolidation(
                 session_id=session_id,
-                user_id=user_id,
                 job_id=job_id,
                 result=result,
             )
@@ -615,7 +593,6 @@ class LycheePipeline:
             logger.exception("固化失败 session=%s", session_id)
             self._finish_consolidation(
                 session_id=session_id,
-                user_id=user_id,
                 job_id=job_id,
                 error=str(exc),
             )

@@ -81,7 +81,6 @@ class SQLiteSemanticStore:
                     evidence_turn_range TEXT NOT NULL DEFAULT '[]',
                     source_session   TEXT NOT NULL DEFAULT '',
                     source_role      TEXT NOT NULL DEFAULT '',
-                    user_id          TEXT NOT NULL DEFAULT '',
                     created_at       TEXT NOT NULL DEFAULT '',
                     updated_at       TEXT NOT NULL DEFAULT '',
                     retrieval_count       INTEGER NOT NULL DEFAULT 0,
@@ -110,7 +109,6 @@ class SQLiteSemanticStore:
                     failure_tags     TEXT NOT NULL DEFAULT '[]',
                     affordance_tags  TEXT NOT NULL DEFAULT '[]',
                     confidence       REAL NOT NULL DEFAULT 1.0,
-                    user_id          TEXT NOT NULL DEFAULT '',
                     created_at       TEXT NOT NULL DEFAULT '',
                     updated_at       TEXT NOT NULL DEFAULT '',
                     retrieval_count       INTEGER NOT NULL DEFAULT 0,
@@ -123,7 +121,6 @@ class SQLiteSemanticStore:
                 CREATE TABLE IF NOT EXISTS usage_logs (
                     log_id           TEXT PRIMARY KEY,
                     session_id       TEXT NOT NULL,
-                    user_id          TEXT NOT NULL DEFAULT '',
                     timestamp        TEXT NOT NULL,
                     query            TEXT NOT NULL,
                     retrieval_plan   TEXT NOT NULL DEFAULT '{}',
@@ -135,11 +132,9 @@ class SQLiteSemanticStore:
                     action_outcome   TEXT NOT NULL DEFAULT ''
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_mr_user_id ON memory_records(user_id);
                 CREATE INDEX IF NOT EXISTS idx_mr_memory_type ON memory_records(memory_type);
                 CREATE INDEX IF NOT EXISTS idx_mr_expired ON memory_records(expired);
                 CREATE INDEX IF NOT EXISTS idx_mr_created_at ON memory_records(created_at);
-                CREATE INDEX IF NOT EXISTS idx_cr_user_id ON composite_records(user_id);
                 CREATE INDEX IF NOT EXISTS idx_ul_session ON usage_logs(session_id);
             """)
 
@@ -214,7 +209,7 @@ class SQLiteSemanticStore:
                     record_id, memory_type, semantic_text, normalized_text,
                     entities, temporal, task_tags, tool_tags,
                     constraint_tags, failure_tags, affordance_tags,
-                    confidence, evidence_turn_range, source_session, source_role, user_id,
+                    confidence, evidence_turn_range, source_session, source_role,
                     created_at, updated_at,
                     retrieval_count, retrieval_hit_count,
                     action_success_count, action_fail_count,
@@ -224,7 +219,7 @@ class SQLiteSemanticStore:
                     ?, ?, ?, ?,
                     ?, ?, ?, ?,
                     ?, ?, ?,
-                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?,
                     ?, ?,
                     ?, ?,
                     ?, ?,
@@ -258,7 +253,7 @@ class SQLiteSemanticStore:
                     _json_dumps(record.constraint_tags), _json_dumps(record.failure_tags),
                     _json_dumps(record.affordance_tags),
                     record.confidence, _json_dumps(record.evidence_turn_range),
-                    record.source_session, record.source_role, record.user_id,
+                    record.source_session, record.source_role,
                     record.created_at, record.updated_at,
                     record.retrieval_count, record.retrieval_hit_count,
                     record.action_success_count, record.action_fail_count,
@@ -303,18 +298,12 @@ class SQLiteSemanticStore:
         ).fetchall()
         return [self._row_to_record(r) for r in rows]
 
-    def delete_record(self, record_id: str, *, user_id: str = "") -> None:
+    def delete_record(self, record_id: str) -> None:
         """硬删除一个 MemoryRecord。"""
         with self._lock:
-            if user_id:
-                self._conn.execute(
-                    "DELETE FROM memory_records WHERE record_id = ? AND user_id = ?",
-                    (record_id, user_id),
-                )
-            else:
-                self._conn.execute(
-                    "DELETE FROM memory_records WHERE record_id = ?", (record_id,)
-                )
+            self._conn.execute(
+                "DELETE FROM memory_records WHERE record_id = ?", (record_id,)
+            )
             self._conn.commit()
 
     def expire_record(
@@ -329,24 +318,18 @@ class SQLiteSemanticStore:
             )
             self._conn.commit()
 
-    def delete_all_for_user(self, user_id: str) -> dict[str, int]:
-        """清空指定用户的所有数据。"""
+    def delete_all(self) -> dict[str, int]:
+        """清空全部数据。"""
         with self._lock:
             c1 = self._conn.execute(
-                "SELECT COUNT(*) FROM memory_records WHERE user_id = ?", (user_id,)
+                "SELECT COUNT(*) FROM memory_records"
             ).fetchone()[0]
             c2 = self._conn.execute(
-                "SELECT COUNT(*) FROM composite_records WHERE user_id = ?", (user_id,)
+                "SELECT COUNT(*) FROM composite_records"
             ).fetchone()[0]
-            self._conn.execute(
-                "DELETE FROM memory_records WHERE user_id = ?", (user_id,)
-            )
-            self._conn.execute(
-                "DELETE FROM composite_records WHERE user_id = ?", (user_id,)
-            )
-            self._conn.execute(
-                "DELETE FROM usage_logs WHERE user_id = ?", (user_id,)
-            )
+            self._conn.execute("DELETE FROM memory_records")
+            self._conn.execute("DELETE FROM composite_records")
+            self._conn.execute("DELETE FROM usage_logs")
             self._conn.commit()
         return {"records_deleted": c1, "composites_deleted": c2}
 
@@ -359,7 +342,6 @@ class SQLiteSemanticStore:
         query: str,
         *,
         limit: int = 30,
-        user_id: str = "",
         memory_types: list[str] | None = None,
         include_expired: bool = False,
     ) -> list[dict[str, Any]]:
@@ -376,9 +358,6 @@ class SQLiteSemanticStore:
         )
         params: list[Any] = [fts_query]
 
-        if user_id:
-            sql += "AND m.user_id = ? "
-            params.append(user_id)
         if not include_expired:
             sql += "AND m.expired = 0 "
         if memory_types:
@@ -397,7 +376,6 @@ class SQLiteSemanticStore:
         query: str,
         *,
         limit: int = 10,
-        user_id: str = "",
         memory_types: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """BM25 全文召回复合记录。"""
@@ -413,9 +391,6 @@ class SQLiteSemanticStore:
         )
         params: list[Any] = [fts_query]
 
-        if user_id:
-            sql += "AND s.user_id = ? "
-            params.append(user_id)
         if memory_types:
             placeholders = ",".join("?" for _ in memory_types)
             sql += f"AND s.memory_type IN ({placeholders}) "
@@ -437,16 +412,12 @@ class SQLiteSemanticStore:
         since: str | None = None,
         until: str | None = None,
         limit: int = 30,
-        user_id: str = "",
         include_expired: bool = False,
     ) -> list[dict[str, Any]]:
         """按创建时间范围查询 MemoryRecord。"""
         sql = "SELECT * FROM memory_records WHERE 1=1 "
         params: list[Any] = []
 
-        if user_id:
-            sql += "AND user_id = ? "
-            params.append(user_id)
         if not include_expired:
             sql += "AND expired = 0 "
         if since:
@@ -476,16 +447,12 @@ class SQLiteSemanticStore:
         affordance_tags: list[str] | None = None,
         memory_types: list[str] | None = None,
         limit: int = 30,
-        user_id: str = "",
         include_expired: bool = False,
     ) -> list[dict[str, Any]]:
         """按 tag 字段做 LIKE 匹配查询。"""
         sql = "SELECT * FROM memory_records WHERE 1=1 "
         params: list[Any] = []
 
-        if user_id:
-            sql += "AND user_id = ? "
-            params.append(user_id)
         if not include_expired:
             sql += "AND expired = 0 "
         if memory_types:
@@ -519,7 +486,6 @@ class SQLiteSemanticStore:
         slot_terms: list[str],
         memory_types: list[str] | None = None,
         limit: int = 30,
-        user_id: str = "",
         include_expired: bool = False,
     ) -> list[dict[str, Any]]:
         """根据缺失 slot 关键字，在文本与 tags 上做定向召回。"""
@@ -530,9 +496,6 @@ class SQLiteSemanticStore:
         sql = "SELECT * FROM memory_records WHERE 1=1 "
         params: list[Any] = []
 
-        if user_id:
-            sql += "AND user_id = ? "
-            params.append(user_id)
         if not include_expired:
             sql += "AND expired = 0 "
         if memory_types:
@@ -574,10 +537,10 @@ class SQLiteSemanticStore:
                     source_record_ids, child_composite_ids, synthesis_reason,
                     entities, temporal, task_tags, tool_tags,
                     constraint_tags, failure_tags, affordance_tags,
-                    confidence, user_id, created_at, updated_at,
+                    confidence, created_at, updated_at,
                     retrieval_count, retrieval_hit_count,
                     action_success_count, action_fail_count, last_retrieved_at
-                ) VALUES (?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?,  ?, ?,  ?, ?, ?)
+                ) VALUES (?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?,  ?, ?,  ?, ?, ?)
                 ON CONFLICT(composite_id) DO UPDATE SET
                     memory_type = excluded.memory_type,
                     semantic_text = excluded.semantic_text,
@@ -605,7 +568,7 @@ class SQLiteSemanticStore:
                     _json_dumps(composite.task_tags), _json_dumps(composite.tool_tags),
                     _json_dumps(composite.constraint_tags), _json_dumps(composite.failure_tags),
                     _json_dumps(composite.affordance_tags),
-                    composite.confidence, composite.user_id, composite.created_at, composite.updated_at,
+                    composite.confidence, composite.created_at, composite.updated_at,
                     composite.retrieval_count, composite.retrieval_hit_count,
                     composite.action_success_count, composite.action_fail_count,
                     composite.last_retrieved_at,
@@ -647,19 +610,13 @@ class SQLiteSemanticStore:
             return None
         return self._row_to_synth(row)
 
-    def delete_synthesized(self, composite_id: str, *, user_id: str = "") -> None:
+    def delete_synthesized(self, composite_id: str) -> None:
         """硬删除单个 CompositeRecord。"""
         with self._lock:
-            if user_id:
-                row = self._conn.execute(
-                    "SELECT rowid FROM composite_records WHERE composite_id = ? AND user_id = ?",
-                    (composite_id, user_id),
-                ).fetchone()
-            else:
-                row = self._conn.execute(
-                    "SELECT rowid FROM composite_records WHERE composite_id = ?",
-                    (composite_id,),
-                ).fetchone()
+            row = self._conn.execute(
+                "SELECT rowid FROM composite_records WHERE composite_id = ?",
+                (composite_id,),
+            ).fetchone()
 
             if row is None:
                 return
@@ -669,33 +626,22 @@ class SQLiteSemanticStore:
                 "DELETE FROM composite_records_fts WHERE rowid = ?",
                 (rowid,),
             )
-            if user_id:
-                self._conn.execute(
-                    "DELETE FROM composite_records WHERE composite_id = ? AND user_id = ?",
-                    (composite_id, user_id),
-                )
-            else:
-                self._conn.execute(
-                    "DELETE FROM composite_records WHERE composite_id = ?",
-                    (composite_id,),
-                )
+            self._conn.execute(
+                "DELETE FROM composite_records WHERE composite_id = ?",
+                (composite_id,),
+            )
             self._conn.commit()
 
-    def delete_synthesized_many(self, composite_ids: list[str], *, user_id: str = "") -> None:
+    def delete_synthesized_many(self, composite_ids: list[str]) -> None:
         """批量硬删除 CompositeRecord。"""
         for composite_id in composite_ids:
             if not str(composite_id or "").strip():
                 continue
-            self.delete_synthesized(str(composite_id).strip(), user_id=user_id)
+            self.delete_synthesized(str(composite_id).strip())
 
-    def list_synthesized(self, *, user_id: str = "") -> list[CompositeRecord]:
-        """获取指定用户的全部 CompositeRecord。"""
-        sql = "SELECT * FROM composite_records"
-        params: list[Any] = []
-        if user_id:
-            sql += " WHERE user_id = ?"
-            params.append(user_id)
-        rows = self._conn.execute(sql, params).fetchall()
+    def list_synthesized(self) -> list[CompositeRecord]:
+        """获取全部 CompositeRecord。"""
+        rows = self._conn.execute("SELECT * FROM composite_records").fetchall()
         return [self._row_to_synth(r) for r in rows]
 
     # ──────────────────────────────────────
@@ -706,7 +652,6 @@ class SQLiteSemanticStore:
         self,
         normalized_text: str,
         *,
-        user_id: str = "",
         limit: int = 5,
     ) -> list[MemoryRecord]:
         """FTS5 模糊匹配，用于写入时去重。"""
@@ -720,9 +665,6 @@ class SQLiteSemanticStore:
             "WHERE memory_records_fts MATCH ? AND m.expired = 0 "
         )
         params: list[Any] = [fts_query]
-        if user_id:
-            sql += "AND m.user_id = ? "
-            params.append(user_id)
         sql += "LIMIT ?"
         params.append(limit)
 
@@ -738,12 +680,12 @@ class SQLiteSemanticStore:
         with self._lock:
             self._conn.execute(
                 "INSERT OR IGNORE INTO usage_logs "
-                "(log_id, session_id, user_id, timestamp, query, "
+                "(log_id, session_id, timestamp, query, "
                 "retrieval_plan, action_state, retrieved_record_ids, kept_record_ids, "
                 "final_response_excerpt, user_feedback, action_outcome) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    log.log_id, log.session_id, log.user_id, log.timestamp,
+                    log.log_id, log.session_id, log.timestamp,
                     log.query, _json_dumps(log.retrieval_plan),
                     _json_dumps(log.action_state),
                     _json_dumps(log.retrieved_record_ids),
@@ -764,7 +706,6 @@ class SQLiteSemanticStore:
         return UsageLog(
             log_id=row["log_id"],
             session_id=row["session_id"],
-            user_id=row["user_id"],
             timestamp=row["timestamp"],
             query=row["query"],
             retrieval_plan=_json_loads_dict(row["retrieval_plan"]),
@@ -821,7 +762,6 @@ class SQLiteSemanticStore:
             UsageLog(
                 log_id=r["log_id"],
                 session_id=r["session_id"],
-                user_id=r["user_id"],
                 timestamp=r["timestamp"],
                 query=r["query"],
                 retrieval_plan=_json_loads_dict(r["retrieval_plan"]),
@@ -911,19 +851,10 @@ class SQLiteSemanticStore:
     # 调试导出
     # ──────────────────────────────────────
 
-    def export_all(self, *, user_id: str = "") -> dict[str, Any]:
+    def export_all(self) -> dict[str, Any]:
         """导出全部数据用于调试/前端。"""
-        sql_mu = "SELECT * FROM memory_records"
-        sql_su = "SELECT * FROM composite_records"
-        params: list[Any] = []
-        if user_id:
-            sql_mu += " WHERE user_id = ?"
-            sql_su += " WHERE user_id = ?"
-            params = [user_id]
-
-        records = [self._row_to_dict(r) for r in self._conn.execute(sql_mu, params).fetchall()]
-        synths = [self._row_to_dict(r) for r in self._conn.execute(sql_su, params).fetchall()]
-
+        records = [self._row_to_dict(r) for r in self._conn.execute("SELECT * FROM memory_records").fetchall()]
+        synths = [self._row_to_dict(r) for r in self._conn.execute("SELECT * FROM composite_records").fetchall()]
         return {
             "records": records,
             "composites": synths,
@@ -931,22 +862,12 @@ class SQLiteSemanticStore:
             "total_composites": len(synths),
         }
 
-    def count_records(self, *, user_id: str = "") -> int:
-        if user_id:
-            return self._conn.execute(
-                "SELECT COUNT(*) FROM memory_records WHERE user_id = ? AND expired = 0",
-                (user_id,),
-            ).fetchone()[0]
+    def count_records(self) -> int:
         return self._conn.execute(
             "SELECT COUNT(*) FROM memory_records WHERE expired = 0"
         ).fetchone()[0]
 
-    def count_composites(self, *, user_id: str = "") -> int:
-        if user_id:
-            return self._conn.execute(
-                "SELECT COUNT(*) FROM composite_records WHERE user_id = ?",
-                (user_id,),
-            ).fetchone()[0]
+    def count_composites(self) -> int:
         return self._conn.execute(
             "SELECT COUNT(*) FROM composite_records"
         ).fetchone()[0]
@@ -1016,7 +937,6 @@ class SQLiteSemanticStore:
             evidence_turn_range=_json_loads(d["evidence_turn_range"]),
             source_session=d["source_session"],
             source_role=d.get("source_role", ""),
-            user_id=d["user_id"],
             created_at=d["created_at"],
             updated_at=d["updated_at"],
             retrieval_count=int(d["retrieval_count"]),
@@ -1047,7 +967,6 @@ class SQLiteSemanticStore:
             failure_tags=_json_loads(row["failure_tags"]),
             affordance_tags=_json_loads(row["affordance_tags"]),
             confidence=float(row["confidence"]),
-            user_id=row["user_id"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             retrieval_count=int(row["retrieval_count"]),
