@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assert/logo.png" alt="LycheeMem Logo" width="200">
+  <img src="assets/logo.png" alt="LycheeMem Logo" width="200">
   <h1>LycheeMem</h1>
   <p>
     <img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License">

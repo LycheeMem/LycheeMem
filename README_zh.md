@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assert/logo.png" alt="LycheeMem Logo" width="200">
+  <img src="assets/logo.png" alt="LycheeMem Logo" width="200">
   <h1>LycheeMem</h1>
   <p>
     <img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License">
@@ -17,7 +17,7 @@ LycheeMem 是一个面向 LLM Agent 的紧凑型终身记忆框架。它以高�
 
 <p align="center">
   <a href="https://ik.imagekit.io/wvs0koh4k/99043dc9-b8dd-4e78-ac48-c38da4e7405c.mp4">
-    <img src="./assets/demo-preview.png" width="920" alt="LycheeMem 演示" />
+    <img src="./assets/demo_preview.png" width="920" alt="LycheeMem 演示" />
   </a>
 </p>
 
