@@ -69,7 +69,8 @@ class LycheeMemPluginClient:
         include_graph: bool = True,
         include_skills: bool = True,
         synthesize: bool = True,
-        mode: str = "compact",
+        mode: str = "full",
+        include_provenance: bool = False,
     ) -> dict[str, Any]:
         payload = {
             "query": query,
@@ -78,6 +79,7 @@ class LycheeMemPluginClient:
             "include_skills": include_skills,
             "synthesize": synthesize,
             "mode": mode,
+            "include_provenance": include_provenance,
         }
         if self.config.transport == "mcp":
             return self._call_mcp_tool("lychee_memory_smart_search", payload)

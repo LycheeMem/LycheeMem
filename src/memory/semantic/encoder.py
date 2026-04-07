@@ -12,7 +12,7 @@ from typing import Any
 
 from src.llm.base import BaseLLM
 from src.memory.semantic.models import MemoryRecord, VALID_MEMORY_TYPES
-from src.memory.semantic.prompts import COMPACT_ENCODING_SYSTEM
+from src.memory.semantic.prompts import get_compact_encoding_system
 
 
 class CompactSemanticEncoder:
@@ -107,7 +107,7 @@ class CompactSemanticEncoder:
         )
 
         response = self._llm.generate([
-            {"role": "system", "content": COMPACT_ENCODING_SYSTEM},
+            {"role": "system", "content": get_compact_encoding_system()},
             {"role": "user", "content": user_content},
         ])
 

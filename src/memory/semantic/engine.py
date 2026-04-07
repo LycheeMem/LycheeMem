@@ -659,13 +659,20 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             mt = d.get("memory_type", "unknown")
             text = d.get("semantic_text", d.get("normalized_text", ""))
             entities = d.get("entities", [])
+            temporal = d.get("temporal", {})
             score = f"{sc.final_score:.3f}"
 
             header = f"[{i}] ({mt}, score={score})"
             if entities:
                 header += f" entities=[{', '.join(entities)}]"
-
-            parts.append(f"{header}\n{text}")
+            # Expose temporal metadata in the retrieval text so MCP callers and
+            # the synthesis stage can still use dates even when semantic_text
+            # omitted or abstracted them away.
+            temporal_summary = self._format_temporal_summary(temporal)
+            if temporal_summary:
+                parts.append(f"{header}\ntemporal: {temporal_summary}\n{text}")
+            else:
+                parts.append(f"{header}\n{text}")
 
         return "\n\n".join(parts)
 
@@ -683,8 +690,25 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 "score_breakdown": sc.score_breakdown,
                 "semantic_text": d.get("semantic_text", ""),
                 "entities": d.get("entities", []),
+                # Keep temporal metadata in provenance for debugging and for
+                # downstream callers that need explicit timestamps.
+                "temporal": d.get("temporal", {}),
+                "created_at": d.get("created_at", ""),
             })
         return provenance
+
+    @staticmethod
+    def _format_temporal_summary(temporal: dict[str, Any] | None) -> str:
+        """Render record temporal metadata in a compact, machine-readable form."""
+        if not isinstance(temporal, dict) or not temporal:
+            return ""
+
+        parts: list[str] = []
+        for key in ("t_ref", "t_valid_from", "t_valid_to"):
+            value = str(temporal.get(key, "")).strip()
+            if value:
+                parts.append(f"{key}={value}")
+        return ", ".join(parts)
 
     def _log_usage(
         self,

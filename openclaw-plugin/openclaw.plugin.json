@@ -9,7 +9,7 @@
     "properties": {
       "baseUrl": {
         "type": "string",
-        "default": "http://127.0.0.1:8000"
+        "default": "http://127.0.0.1:8100"
       },
       "transport": {
         "type": "string",
@@ -56,7 +56,7 @@
   "uiHints": {
     "baseUrl": {
       "label": "LycheeMem Base URL",
-      "placeholder": "http://127.0.0.1:8000"
+      "placeholder": "http://127.0.0.1:8100"
     },
     "transport": {
       "label": "Transport",

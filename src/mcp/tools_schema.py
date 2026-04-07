@@ -5,8 +5,8 @@ TOOLS_SCHEMA = [
         "name": "lychee_memory_smart_search",
         "description": (
             "Primary recall path for agents. Performs LycheeMem search with optional automatic "
-            "synthesis in one tool call. Use compact mode by default when you want a concise "
-            "background_context; use full or raw only when you need to inspect retrieval details."
+            "synthesis in one tool call. Use full mode by default so agents can inspect both "
+            "retrieval details and synthesized output in a single response."
         ),
         "inputSchema": {
             "type": "object",
@@ -35,9 +35,14 @@ TOOLS_SCHEMA = [
                     "default": True,
                     "description": "是否在检索后自动执行 synthesize，生成 background_context。",
                 },
+                "include_provenance": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "是否返回 provenance 溯源细节。默认关闭，以减少返回体积。",
+                },
                 "mode": {
                     "type": "string",
-                    "default": "compact",
+                    "default": "full",
                     "description": "返回模式：raw 仅返回原始检索结果；full 返回原始结果和 synthesize 结果；compact 仅返回压缩后的结果。",
                 },
             },

@@ -6,6 +6,10 @@ LycheeMem 记忆链路的提示词实现：
 - 模块三（Action-Aware Search Planning）：检索规划 + 充分性反思 + 补充查询生成
 """
 
+from __future__ import annotations
+
+import os
+
 # ---------------------------------------------------------------------------
 # 模块一：Compact Semantic Encoding
 # ---------------------------------------------------------------------------
@@ -761,6 +765,51 @@ assistant: 好的，我来协助您准备部署。
     "reasoning": "用户既查询历史失败事实（UserService 教训）又需要行动指导（DataFlow 如何规避），属于 mixed 模式；depth 调高以同时覆盖失败模式记忆与操作流程记忆。"
 }
 """
+
+
+def get_semantic_output_language() -> str:
+    """Return the configured semantic-memory output language."""
+    raw = os.getenv("LYCHEEMEM_SEMANTIC_OUTPUT_LANGUAGE", "en").strip().lower()
+    if raw in {"zh", "zh-cn", "zh_hans", "chinese"}:
+        return "zh"
+    return "en"
+
+
+def get_compact_encoding_system() -> str:
+    """Return the encoding prompt with a lightweight output-language override."""
+    language = get_semantic_output_language()
+    if language == "zh":
+        return (
+            COMPACT_ENCODING_SYSTEM
+            + "\n\n额外要求：\n"
+            + "- `semantic_text` 与 `normalized_text` 默认使用中文输出。\n"
+            + "- 若能确定绝对日期，优先写入 ISO 8601 日期。"
+        )
+    return (
+        COMPACT_ENCODING_SYSTEM
+        + "\n\nAdditional requirements:\n"
+        + "- Write `semantic_text` and `normalized_text` in English.\n"
+        + "- Preserve person names, entity names, and ISO 8601 dates exactly.\n"
+        + "- When relative dates can be resolved from context, normalize them to absolute dates."
+    )
+
+
+def get_synthesis_execute_system() -> str:
+    """Return the composite-synthesis prompt with a matching output-language override."""
+    language = get_semantic_output_language()
+    if language == "zh":
+        return (
+            SYNTHESIS_EXECUTE_SYSTEM
+            + "\n\n额外要求：\n"
+            + "- 输出中的 `semantic_text` 与 `normalized_text` 默认使用中文。\n"
+            + "- 合成时保留原始记录中的所有绝对日期与时间范围。"
+        )
+    return (
+        SYNTHESIS_EXECUTE_SYSTEM
+        + "\n\nAdditional requirements:\n"
+        + "- Write `semantic_text` and `normalized_text` in English.\n"
+        + "- Preserve absolute dates, time ranges, and named entities from the source records."
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,19 @@ logger = logging.getLogger("src.api")
 router = APIRouter()
 
 
+def _strip_provenance_from_graph_results(graph_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return graph results without verbose provenance payloads."""
+    cleaned: list[dict[str, Any]] = []
+    for item in graph_results:
+        if not isinstance(item, dict):
+            cleaned.append(item)
+            continue
+        cloned = item.copy()
+        cloned["provenance"] = []
+        cleaned.append(cloned)
+    return cleaned
+
+
 def run_memory_search(
     pipeline,
     req: MemorySearchRequest,
@@ -133,12 +146,15 @@ def run_memory_smart_search(
         ),
         user_id=user_id,
     )
+    graph_results = search_result.graph_results
+    if not req.include_provenance:
+        graph_results = _strip_provenance_from_graph_results(graph_results)
 
     if not req.synthesize:
         return MemorySmartSearchResponse(
             query=search_result.query,
             mode=req.mode,
-            graph_results=search_result.graph_results,
+            graph_results=graph_results,
             skill_results=search_result.skill_results,
             total=search_result.total,
             synthesized=False,
@@ -148,7 +164,7 @@ def run_memory_smart_search(
         return MemorySmartSearchResponse(
             query=search_result.query,
             mode=req.mode,
-            graph_results=search_result.graph_results,
+            graph_results=graph_results,
             skill_results=search_result.skill_results,
             total=search_result.total,
             synthesized=False,
@@ -172,7 +188,7 @@ def run_memory_smart_search(
             synthesized=True,
             background_context=synth_result.background_context,
             skill_reuse_plan=synth_result.skill_reuse_plan,
-            provenance=synth_result.provenance,
+            provenance=synth_result.provenance if req.include_provenance else [],
             kept_count=synth_result.kept_count,
             dropped_count=synth_result.dropped_count,
         )
@@ -180,13 +196,13 @@ def run_memory_smart_search(
     return MemorySmartSearchResponse(
         query=search_result.query,
         mode=req.mode,
-        graph_results=search_result.graph_results,
+        graph_results=graph_results,
         skill_results=search_result.skill_results,
         total=search_result.total,
         synthesized=True,
         background_context=synth_result.background_context,
         skill_reuse_plan=synth_result.skill_reuse_plan,
-        provenance=synth_result.provenance,
+        provenance=synth_result.provenance if req.include_provenance else [],
         kept_count=synth_result.kept_count,
         dropped_count=synth_result.dropped_count,
     )
@@ -540,5 +556,4 @@ async def delete_skill(skill_id: str, pipeline=Depends(get_pipeline), user=Depen
     user_id = user.user_id if user else ""
     skill_store.delete([skill_id], user_id=user_id)
     return DeleteResponse(message=f"Skill '{skill_id}' deleted.")
-
 

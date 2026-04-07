@@ -89,10 +89,15 @@ const SMART_SEARCH_SCHEMA = {
       default: true,
       description: "Whether to automatically synthesize a compressed background_context."
     },
+    include_provenance: {
+      type: "boolean",
+      default: false,
+      description: "Whether to include verbose provenance details in the tool result."
+    },
     mode: {
       type: "string",
-      default: "compact",
-      description: "Return mode: compact is the recommended default for agents, raw returns only retrieval results, and full returns both raw and synthesized output."
+      default: "full",
+      description: "Return mode: full is the recommended default for agents, raw returns only retrieval results, and compact returns only synthesized output."
     }
   },
   required: ["query"]
@@ -166,7 +171,7 @@ const CONSOLIDATE_SCHEMA = {
 } as const;
 
 function normalizeBaseUrl(url: string): string {
-  return (url || "http://127.0.0.1:8000").replace(/\/+$/, "");
+  return (url || "http://127.0.0.1:8100").replace(/\/+$/, "");
 }
 
 function asString(value: unknown): string | undefined {
@@ -208,7 +213,7 @@ function getPluginConfig(api: any): PluginConfig {
   const env = typeof process !== "undefined" ? process.env ?? {} : {};
 
   return {
-    baseUrl: normalizeBaseUrl(String(raw.baseUrl ?? env.LYCHEEMEM_BASE_URL ?? "http://127.0.0.1:8000")),
+    baseUrl: normalizeBaseUrl(String(raw.baseUrl ?? env.LYCHEEMEM_BASE_URL ?? "http://127.0.0.1:8100")),
     transport: String(raw.transport ?? env.LYCHEEMEM_TRANSPORT ?? "mcp").trim().toLowerCase() === "http" ? "http" : "mcp",
     timeout: Number(raw.timeout ?? env.LYCHEEMEM_TIMEOUT ?? 120),
     apiToken: String(raw.apiToken ?? env.LYCHEEMEM_API_TOKEN ?? ""),
@@ -659,7 +664,7 @@ class OpenClawAdapter {
       "LycheeMem is the default external long-term memory layer for this host.",
       "Treat the LycheeMem skill as active background policy even when the user does not mention it explicitly.",
       "When the request may depend on project history, user preferences, prior decisions, or cross-session background, prefer `lychee_memory_smart_search` first.",
-      "Use `lychee_memory_smart_search` in its default compact mode unless you are explicitly debugging retrieval internals.",
+      "Use `lychee_memory_smart_search` in its default full mode so retrieval details and synthesized output are both visible.",
       "OpenClaw owns short-range session context. LycheeMem owns structured long-range recall across sessions.",
       "Host lifecycle integration usually mirrors user and assistant turns automatically and triggers boundary consolidation automatically, so manual `lychee_memory_append_turn` and `lychee_memory_consolidate` calls are mainly for debugging or non-standard flows."
     ].join("\n");
@@ -1031,12 +1036,12 @@ export default {
     registerTool(api, {
       name: "lychee_memory_smart_search",
       description:
-        "Primary LycheeMem recall path for OpenClaw. Uses compact mode by default so agents receive a concise synthesized background_context in one call.",
+        "Primary LycheeMem recall path for OpenClaw. Uses full mode by default so agents receive both retrieval details and synthesized background_context in one call.",
       parameters: SMART_SEARCH_SCHEMA,
       async execute(_id, params) {
         const cfg = getPluginConfig(api);
         const payload = {
-          mode: "compact",
+          mode: "full",
           ...params
         };
         if (cfg.transport === "http") {

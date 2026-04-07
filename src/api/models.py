@@ -291,7 +291,8 @@ class MemorySmartSearchRequest(BaseModel):
     include_graph: bool = True
     include_skills: bool = True
     synthesize: bool = True
-    mode: str = Field(default="compact", pattern="^(raw|full|compact)$")
+    mode: str = Field(default="full", pattern="^(raw|full|compact)$")
+    include_provenance: bool = False
 
 
 # ─── Memory Synthesize ───
@@ -320,7 +321,7 @@ class MemorySynthesizeResponse(BaseModel):
 
 class MemorySmartSearchResponse(BaseModel):
     query: str
-    mode: str = "compact"
+    mode: str = "full"
     graph_results: list[dict[str, Any]]
     skill_results: list[dict[str, Any]]
     total: int

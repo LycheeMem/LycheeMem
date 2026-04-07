@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
@@ -29,7 +31,7 @@ MCP_SERVER_VERSION = "0.1.0"
 MCP_INSTRUCTIONS = (
     "LycheeMem is a structured long-term memory system for agents. "
     "Prefer lychee_memory_smart_search as the default recall path for agents. It performs search "
-    "and can automatically synthesize a compact background_context in one tool call; compact mode "
+    "and can automatically synthesize memory output in one tool call; full mode "
     "is the recommended default for normal agent use. "
     "Use lychee_memory_search to retrieve relevant historical facts, entity relationships, "
     "project context, and reusable procedural knowledge when you explicitly want the raw retrieval "
@@ -46,6 +48,59 @@ MCP_INSTRUCTIONS = (
     "LycheeMem is optimized for structured recall and long-term memory persistence rather than "
     "direct final-answer generation."
 )
+
+
+def _create_mcp_logger() -> logging.Logger:
+    logger = logging.getLogger("src.mcp.tools")
+    if logger.handlers:
+        return logger
+
+    repo_root = Path(__file__).resolve().parents[2]
+    log_dir = repo_root / "appdata"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(log_dir / "mcp_tools.log", encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    return logger
+
+
+def _summarize_arguments(name: str | None, arguments: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(arguments, dict):
+        return {"arguments_type": type(arguments).__name__}
+
+    if name in {"lychee_memory_search", "lychee_memory_smart_search"}:
+        return {
+            "query": arguments.get("query"),
+            "session_id": arguments.get("session_id"),
+            "mode": arguments.get("mode"),
+            "top_k": arguments.get("top_k"),
+        }
+    if name == "lychee_memory_append_turn":
+        content = str(arguments.get("content", ""))
+        return {
+            "session_id": arguments.get("session_id"),
+            "role": arguments.get("role"),
+            "content_preview": content[:120],
+            "content_length": len(content),
+        }
+    if name == "lychee_memory_consolidate":
+        return {
+            "session_id": arguments.get("session_id"),
+            "background": arguments.get("background"),
+            "retrieved_context_length": len(str(arguments.get("retrieved_context", ""))),
+        }
+    if name == "lychee_memory_synthesize":
+        return {
+            "user_query": arguments.get("user_query"),
+            "graph_results_count": len(arguments.get("graph_results", []) or []),
+            "skill_results_count": len(arguments.get("skill_results", []) or []),
+        }
+    return {"keys": sorted(arguments.keys())}
+
+
+LOGGER = _create_mcp_logger()
 
 
 class LycheeMCPHandler:
@@ -97,6 +152,15 @@ class LycheeMCPHandler:
         if not isinstance(arguments, dict):
             return self._err(req_id, -32602, "Tool arguments must be an object")
 
+        summary = _summarize_arguments(name, arguments)
+        LOGGER.info(
+            "call.start req_id=%s user_id=%s tool=%s summary=%s",
+            req_id,
+            user_id or "-",
+            name,
+            json.dumps(summary, ensure_ascii=False),
+        )
+
         try:
             if name == "lychee_memory_search":
                 result = run_memory_search(
@@ -128,11 +192,34 @@ class LycheeMCPHandler:
                     user_id=user_id,
                 ).model_dump()
             else:
+                LOGGER.warning("call.error req_id=%s user_id=%s tool=%s error=%s", req_id, user_id or "-", name, "Unknown tool")
                 return self._err(req_id, -32602, f"Unknown tool: {name}")
         except ValidationError as exc:
+            LOGGER.warning(
+                "call.error req_id=%s user_id=%s tool=%s error=%s",
+                req_id,
+                user_id or "-",
+                name,
+                json.dumps(exc.errors(), ensure_ascii=False),
+            )
             return self._err(req_id, -32602, exc.errors())
         except Exception as exc:  # noqa: BLE001
+            LOGGER.exception(
+                "call.error req_id=%s user_id=%s tool=%s error=%s",
+                req_id,
+                user_id or "-",
+                name,
+                str(exc),
+            )
             return self._err(req_id, -32603, str(exc))
+
+        LOGGER.info(
+            "call.ok req_id=%s user_id=%s tool=%s result_keys=%s",
+            req_id,
+            user_id or "-",
+            name,
+            sorted(result.keys()) if isinstance(result, dict) else type(result).__name__,
+        )
 
         return self._ok(
             req_id,

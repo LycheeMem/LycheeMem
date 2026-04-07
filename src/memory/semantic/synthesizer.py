@@ -22,7 +22,7 @@ from src.memory.semantic.models import (
 )
 from src.memory.semantic.prompts import (
     SYNTHESIS_JUDGE_SYSTEM,
-    SYNTHESIS_EXECUTE_SYSTEM,
+    get_synthesis_execute_system,
 )
 from src.memory.semantic.sqlite_store import SQLiteSemanticStore
 from src.memory.semantic.vector_index import LanceVectorIndex
@@ -227,7 +227,7 @@ class RecordFusionEngine:
         )
 
         response = self._llm.generate([
-            {"role": "system", "content": SYNTHESIS_EXECUTE_SYSTEM},
+            {"role": "system", "content": get_synthesis_execute_system()},
             {"role": "user", "content": user_content},
         ])
 
