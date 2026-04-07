@@ -26,44 +26,13 @@ Confirm the following before proceeding:
 
 - OpenClaw is installed and the `openclaw` command is available
 - The LycheeMem backend is running (default: `http://127.0.0.1:8100`)
-- You have a LycheeMem Bearer Token (see below)
 
 **Check backend health:**
 ```bash
 curl http://127.0.0.1:8100/health
 ```
 
-### Obtaining a Bearer Token
-
-LycheeMem uses JWT authentication. Register once, then log in to retrieve a token.
-
-#### Register (first time)
-```bash
-curl -s -X POST http://127.0.0.1:8100/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"username": "your_username", "password": "your_password"}' \
-  | python3 -m json.tool
-```
-*Example response:*
-```json
-{
-  "user_id": "...",
-  "username": "your_username",
-  "display_name": "your_username",
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-}
-```
-
-#### Log in (existing account)
-```bash
-curl -s -X POST http://127.0.0.1:8100/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username": "your_username", "password": "your_password"}' \
-  | python3 -m json.tool
-```
-*The response structure is identical to registration. Copy the `token` field value.*
-
-> **Note:** Tokens are valid for 7 days by default. Log in again when the token expires.
+> **Current auth model:** the merged LycheeMem backend is currently running in a no-auth / single-tenant mode. The OpenClaw plugin therefore does not need a login flow or Bearer token for normal local use. If you later restore authenticated multi-user deployments, the optional `apiToken` field remains available for backward compatibility.
 
 ---
 
@@ -101,7 +70,7 @@ Go to the left sidebar and open the config area. Scroll to the bottom, open **Pl
 Fill in at minimum:
 - **LycheeMem Base URL** = `http://127.0.0.1:8100`
 - **Transport** = `mcp`
-- **API Token** = `your LycheeMem Bearer Token`
+- **API Token (Optional)** = leave empty for the current no-auth backend
 
 Make sure these plugin-level switches are enabled:
 - **Enable LycheeMem Tools**
@@ -135,7 +104,6 @@ Recommended default:
         "config": {
           "baseUrl": "http://127.0.0.1:8100",
           "transport": "mcp",
-          "apiToken": "YOUR_LYCHEEMEM_BEARER_TOKEN",
           "enableHostLifecycle": true,
           "enablePromptPresence": true,
           "enableAutoAppendTurns": true,

@@ -146,6 +146,7 @@ class LycheeMCPHandler:
     ) -> dict[str, Any]:
         name = params.get("name")
         arguments = params.get("arguments", {}) or {}
+        user_label = "-"
 
         if not isinstance(arguments, dict):
             return self._err(req_id, -32602, "Tool arguments must be an object")
@@ -154,7 +155,7 @@ class LycheeMCPHandler:
         LOGGER.info(
             "call.start req_id=%s user_id=%s tool=%s summary=%s",
             req_id,
-            user_id or "-",
+            user_label,
             name,
             json.dumps(summary, ensure_ascii=False),
         )
@@ -186,13 +187,13 @@ class LycheeMCPHandler:
                     MemoryConsolidateRequest.model_validate(arguments),
                 ).model_dump()
             else:
-                LOGGER.warning("call.error req_id=%s user_id=%s tool=%s error=%s", req_id, user_id or "-", name, "Unknown tool")
+                LOGGER.warning("call.error req_id=%s user_id=%s tool=%s error=%s", req_id, user_label, name, "Unknown tool")
                 return self._err(req_id, -32602, f"Unknown tool: {name}")
         except ValidationError as exc:
             LOGGER.warning(
                 "call.error req_id=%s user_id=%s tool=%s error=%s",
                 req_id,
-                user_id or "-",
+                user_label,
                 name,
                 json.dumps(exc.errors(), ensure_ascii=False),
             )
@@ -201,7 +202,7 @@ class LycheeMCPHandler:
             LOGGER.exception(
                 "call.error req_id=%s user_id=%s tool=%s error=%s",
                 req_id,
-                user_id or "-",
+                user_label,
                 name,
                 str(exc),
             )
@@ -210,7 +211,7 @@ class LycheeMCPHandler:
         LOGGER.info(
             "call.ok req_id=%s user_id=%s tool=%s result_keys=%s",
             req_id,
-            user_id or "-",
+            user_label,
             name,
             sorted(result.keys()) if isinstance(result, dict) else type(result).__name__,
         )

@@ -263,6 +263,8 @@ function toHeaders(cfg: PluginConfig, extra: Record<string, string> = {}): Recor
     "Content-Type": "application/json",
     ...extra
   };
+  // Keep optional Bearer support for older secured deployments, but the
+  // current merged LycheeMem backend no longer requires authentication.
   if (cfg.apiToken) {
     headers.Authorization = `Bearer ${cfg.apiToken}`;
   }
