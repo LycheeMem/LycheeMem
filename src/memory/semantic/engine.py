@@ -223,7 +223,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         ) if raw_candidates else []
 
         # Step 4: 反思循环（最多 max_reflection_rounds 轮）
-        for _ in range(self._max_reflection_rounds):
+        for reflection_round in range(self._max_reflection_rounds):
             current_top = scored[:top_k]
             self._enrich_candidates_with_episodic_context(
                 current_top,
@@ -289,11 +289,30 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 focus_terms=focus_terms,
                 adequacy=adequacy,
             )
+
+            # 逐轮扩大检索范围和召回数量
+            # 第二次检索（round 0）：适度扩大召回量
+            # 第三次检索（round 1+）：强制启用原始对话情节上下文，显著增大召回量
+            if reflection_round == 0:
+                extra_top_k = max(top_k + 5, int(top_k * 1.5))
+            else:
+                extra_top_k = max(top_k * 2, top_k + 10)
+                supplement_plan.include_episodic_context = True
+                supplement_plan.episodic_turn_window = max(
+                    3, int(supplement_plan.episodic_turn_window or 0) + 2,
+                )
+                supplement_plan.include_leaf_records = True
+                if supplement_plan.tree_retrieval_mode == "root_only":
+                    supplement_plan.tree_retrieval_mode = "balanced"
+                supplement_plan.tree_expansion_depth = max(
+                    2, int(supplement_plan.tree_expansion_depth or 1) + 1,
+                )
+
             extra_candidates = self._multi_channel_recall(
                 plan=supplement_plan,
                 query=query,
                 query_embedding=None,
-                top_k=top_k,
+                top_k=extra_top_k,
                 record_type_bias=self._derive_record_type_bias(
                     plan=supplement_plan,
                     action_state=resolved_action_state,
