@@ -109,7 +109,7 @@ class WorkingMemoryCompressor:
 
         history_parts: list[str] = []
         if prev_summary_content:
-            history_parts.append(f"[前次历史摘要]\n{prev_summary_content}")
+            history_parts.append(f"[Previous Historical Summary]\n{prev_summary_content}")
         history_parts.extend(
             f"{t['role']}: {t['content']}" for t in active_to_compress
         )
@@ -136,7 +136,7 @@ class WorkingMemoryCompressor:
         boundary = latest_summary["boundary_index"]
 
         context = [
-            {"role": "system", "content": f"[历史摘要]\n{latest_summary['content']}"},
+            {"role": "system", "content": f"[Historical Summary]\n{latest_summary['content']}"},
         ]
         # 保留 boundary 之后的原始对话；理论上不会有 deleted turn，但防御性过滤
         context.extend(t for t in turns[boundary:] if not t.get("deleted", False))

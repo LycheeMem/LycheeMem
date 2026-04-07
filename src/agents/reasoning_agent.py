@@ -15,7 +15,7 @@ from src.agents.base_agent import BaseAgent
 from src.llm.base import BaseLLM
 
 REASONING_SYSTEM_PROMPT = """\
-你是一个智能助手，拥有丰富的背景知识和记忆能力。
+You are an intelligent assistant with access to background knowledge and memory.
 
 {history_section}
 
@@ -23,14 +23,14 @@ REASONING_SYSTEM_PROMPT = """\
 
 {skill_plan_section}
 
-请根据以上背景知识和对话历史，为用户提供准确、有帮助的回答。
+Based on the background knowledge and conversation history above, provide an accurate and helpful answer to the user.
 
-规则：
-- 优先使用记忆中的事实信息回答
-- 如果有可复用的技能文档（Markdown），优先参考其中的步骤、命令与注意事项
-- 如果记忆信息不足以回答，可以基于通用知识回答，但需说明
-- 保持回答简洁聚焦
-- 不要虚构不存在的事实"""
+Rules:
+- Prefer factual information from memory when answering
+- If reusable skill documents (Markdown) are available, prioritize their steps, commands, and cautions
+- If memory is insufficient, you may answer from general knowledge, but state that clearly
+- Keep the answer concise and focused
+- Do not fabricate facts that are not present"""
 
 
 class ReasoningAgent(BaseAgent):
@@ -88,17 +88,17 @@ class ReasoningAgent(BaseAgent):
 
         if history_summary_parts:
             history_section = (
-                "以下是之前对话的压缩摘要：\n\n" + "\n\n".join(history_summary_parts)
+                "Compressed summary of previous conversation:\n\n" + "\n\n".join(history_summary_parts)
             )
         else:
             history_section = ""
 
         if background_context:
             background_section = (
-                "以下是从你的记忆中检索到的相关背景知识：\n\n" + background_context
+                "Relevant background knowledge retrieved from memory:\n\n" + background_context
             )
         else:
-            background_section = "当前没有检索到相关的背景记忆。"
+            background_section = "No relevant background memory was retrieved."
 
         # 优先使用原始检索技能（保留完整原文），否则退回到经 Synthesizer 过滤的计划
         if retrieved_skills:
@@ -129,13 +129,13 @@ class ReasoningAgent(BaseAgent):
         """将原始检索技能列表格式化为 system prompt 片段（保留完整 doc_markdown 原文）。"""
         if not skills:
             return ""
-        lines = ["以下是检索到的技能文档（原文），可作为操作指南："]
+        lines = ["Retrieved skill documents (original text), which may be used as operational guidance:"]
         for i, skill in enumerate(skills, 1):
             intent = skill.get("intent", "?")
             skill_id = skill.get("id", "")
             score = skill.get("score", 0)
             doc = skill.get("doc_markdown", "")
-            header = f"\n---\n技能{i}: {intent}"
+            header = f"\n---\nSkill {i}: {intent}"
             if skill_id:
                 header += f" (id={skill_id})"
             if score:
@@ -150,21 +150,21 @@ class ReasoningAgent(BaseAgent):
         """将可复用技能文档列表格式化为 system prompt 片段。"""
         if not plan:
             return ""
-        lines = ["以下是可复用的技能文档（Markdown），可作为操作指南："]
+        lines = ["Reusable skill documents (Markdown), which may be used as operational guidance:"]
         for i, step in enumerate(plan, 1):
             intent = step.get("intent", "?")
             skill_id = step.get("skill_id", "")
             score = step.get("score", 0)
             conditions = step.get("conditions", "")
             doc = step.get("doc_markdown", "")
-            header = f"\n---\n技能{i}: {intent}"
+            header = f"\n---\nSkill {i}: {intent}"
             if skill_id:
                 header += f" (id={skill_id})"
             if score:
                 header += f" | score={score:.2f}" if isinstance(score, (int, float)) else ""
             lines.append(header)
             if conditions:
-                lines.append(f"适用条件：{conditions}")
+                lines.append(f"Applicable conditions: {conditions}")
             if doc:
                 lines.append(doc)
         return "\n".join(lines)

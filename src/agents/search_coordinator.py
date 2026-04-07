@@ -19,27 +19,27 @@ from src.memory.semantic.base import BaseSemanticMemoryEngine
 from src.memory.semantic.models import ActionState
 
 HYDE_SYSTEM_PROMPT = """\
-你是 HyDE 假设性回答生成器。
+You are a HyDE hypothetical answer generator.
 
-你的任务：
-- 给定用户查询，为"程序/技能类"意图生成一段 **假设性的理想回答文本（Draft Answer）**。
-- 这段草稿回答不会直接返回给用户，而是作为向量检索的"锚点文本"，用来提高召回率。
+Your task:
+- Given a user query, generate a **hypothetical ideal draft answer** for procedural / skill-oriented intents.
+- This draft answer will not be returned to the user directly. It will be used as an embedding anchor text to improve retrieval recall.
 
-要求：
-1. 假装你已经成功完成了用户想要的任务，用 2-3 句话描述一个合理的解决方案草稿。
-2. 文本中应自然包含：可能会调用的工具名称、关键参数名、重要中间产物等关键信息。
-3. 保持简洁，聚焦关键实体、步骤和概念，不要展开长篇解释。
-4. 不要使用列表或 JSON，只输出连续自然语言段落。
+Requirements:
+1. Write as if you have already completed the user's requested task successfully, using 2-3 sentences to describe a plausible solution draft.
+2. Naturally include important cues such as likely tool names, key parameter names, and important intermediate artifacts.
+3. Keep it concise and focused on key entities, steps, and concepts. Do not expand into a long explanation.
+4. Do not use lists or JSON. Output only a continuous natural-language paragraph.
 
-## 示例（仅供参考，不要原样抄写）
+## Examples (for reference only, do not copy verbatim)
 
-- 用户查询："帮我写一个脚本，每天凌晨 3 点备份 PostgreSQL 数据库到 S3。"
-    参考输出：
-    "我为你编写了一个使用 `pg_dump` 的备份脚本，并通过 crontab 配置在每天凌晨 3 点运行。脚本会将生成的备份文件上传到你指定的 S3 bucket，并使用时间戳作为文件名，方便后续检索和清理。"
+- User query: "Write me a script that backs up a PostgreSQL database to S3 every day at 3 AM."
+    Reference output:
+    "I wrote a backup script using `pg_dump` and configured it to run daily at 3 AM through crontab. The script uploads each backup file to the specified S3 bucket and uses a timestamp-based filename so that backups are easy to locate and clean up later."
 
-- 用户查询："搭一个最简单的 FastAPI 服务，并用 Docker 部署。"
-    参考输出：
-    "我创建了一个包含单个 `/health` 路由的 FastAPI 应用，并编写了一个使用 `python:3.10-slim` 基础镜像的 Dockerfile。通过 `docker build` 构建镜像后，在服务器上使用 `docker run -p 8000:8000` 运行该服务。"
+- User query: "Set up the simplest possible FastAPI service and deploy it with Docker."
+    Reference output:
+    "I created a FastAPI application with a single `/health` route and added a Dockerfile based on the `python:3.10-slim` image. After building the image with `docker build`, the service runs on the server through `docker run -p 8000:8000`."
 """
 
 

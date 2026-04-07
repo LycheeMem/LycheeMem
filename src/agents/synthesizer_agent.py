@@ -17,55 +17,55 @@ from src.agents.base_agent import BaseAgent
 from src.llm.base import BaseLLM
 
 SYNTHESIS_SYSTEM_PROMPT = """\
-你是严苛的记忆整合与判断器（Memory Synthesizer & Judge）。
-你将收到用户当前的任务需求，以及从不同记忆源（semantic / skill）召回的若干原始记忆片段。
+You are a strict Memory Synthesizer and Judge.
+You will receive the user's current task and several raw memory fragments retrieved from different memory sources (`semantic` / `skill`).
 
-你的任务：
-1. 为每一段记忆评估其对当前任务的绝对贡献度；
-2. 将明显无关或价值很低的记忆丢弃；
-3. 将保留下来的高价值记忆去重、融合为一段高密度的 Background Context。
+Your tasks:
+1. Evaluate the absolute contribution of each memory fragment to the current task.
+2. Discard fragments that are clearly irrelevant or low value.
+3. Deduplicate and fuse the retained high-value fragments into a dense `background_context`.
 
-打分与阈值策略：
-- 你可以先在脑中按 0-10 分评估贡献度，然后归一化为 0.0-1.0 写入 `relevance` 字段；
-- 约等价：6/10 ≈ 0.6；
-- 请尽量丢弃 relevance < 0.6 的片段，只保留真正有用的内容。
+Scoring and threshold strategy:
+- You may first score contribution mentally on a 0-10 scale, then normalize it to 0.0-1.0 in the `relevance` field.
+- Rough equivalence: 6/10 ≈ 0.6.
+- Try to discard fragments with relevance < 0.6 and keep only genuinely useful content.
 
-请严格以 JSON 格式回复，结构如下（字段名必须保持一致）：
+Reply strictly in JSON using exactly the following structure and field names:
 {
     "scored_fragments": [
-        {"source": "semantic|skill", "index": 0, "relevance": 0.95, "summary": "精炼后的该片段要点"}
+        {"source": "semantic|skill", "index": 0, "relevance": 0.95, "summary": "Condensed key point of this fragment"}
     ],
-    "kept_count": 保留的片段数,
-    "dropped_count": 丢弃的片段数,
-    "background_context": "整合后的背景知识文本（直接可用于注入系统的上文）"
+    "kept_count": number_of_kept_fragments,
+    "dropped_count": number_of_dropped_fragments,
+    "background_context": "Integrated background knowledge text that can be injected directly as system context"
 }
 
-规则：
-- 如果全部片段都不相关，background_context 必须是空字符串；
-- background_context 应是高密度的融合文本，不要简单拼接原文，要进行信息压缩和改写；
-- 保持事实准确，不虚构检索结果中不存在的信息；
-- 如果片段带有“时间”标注，必须显式利用这些时间信息，区分“记忆写入时间(created_at)”与“事件/事实时间(temporal)”；
-- 整合时不得把不同时间段的事实错误混合成同一时态结论；涉及约束、状态、故障、任务进度时，优先保留与当前问题最相关的时间条件；
-- scored_fragments 按 relevance 降序排列，summary 用简短中文概括该片段的核心信息。
+Rules:
+- If all fragments are irrelevant, `background_context` must be an empty string.
+- `background_context` should be a dense fused text. Do not simply concatenate originals; compress and rewrite the information.
+- Keep facts accurate and do not invent information absent from the retrieved fragments.
+- If fragments include time annotations, explicitly use them and distinguish between memory write time (`created_at`) and event / fact time (`temporal`).
+- During synthesis, do not incorrectly merge facts from different time periods into one tense or conclusion. For constraints, states, failures, and task progress, prioritize the time conditions most relevant to the current problem.
+- Sort `scored_fragments` by `relevance` in descending order. Use `summary` to briefly describe the fragment's core information.
 
-## 示例（仅供参考，不要原样抄写）
+## Example (for reference only, do not copy verbatim)
 
-用户查询：
-    "帮我回顾一下这个项目里和 'user-service 超时' 相关的历史问题，避免我这次排查踩坑。"
+User query:
+    "Review the historical issues in this project related to 'user-service timeout' so I can avoid repeating the same mistakes in this investigation."
 
-来自不同记忆源的片段（由系统预先整理好给你）：
-- [semantic] 片段 0：语义记忆中存在一条历史故障记录，备注为 "上次因为下游 payment-service 慢导致整体超时"。
-- [skill] 片段 1：技能库中有一条技能，其 intent 为 "排查 user-service 超时问题"，包含一份 Markdown 技能文档（步骤、命令、注意事项等）。
+Fragments from different memory sources (already prepared by the system):
+- [semantic] Fragment 0: A historical failure record in semantic memory says, "Last time the overall timeout was caused by a slow downstream payment-service."
+- [skill] Fragment 1: A skill exists in the skill library with the intent "troubleshoot user-service timeout", containing a Markdown skill document with steps, commands, and notes.
 
-期望的 JSON 输出示例：
+Expected JSON output:
 {
     "scored_fragments": [
-        {"source": "skill", "index": 1, "relevance": 0.95, "summary": "历史上专门用于排查 user-service 超时问题的多步排查技能，可直接复用其检查顺序。"},
-        {"source": "semantic", "index": 0, "relevance": 0.85, "summary": "历史语义记忆表明 2024-01-15 的超时主要由下游 payment-service 变慢引起。"}
+        {"source": "skill", "index": 1, "relevance": 0.95, "summary": "A specialized multi-step troubleshooting skill for user-service timeout exists and its checking order can be reused directly."},
+        {"source": "semantic", "index": 0, "relevance": 0.85, "summary": "Historical semantic memory indicates that the timeout on 2024-01-15 was mainly caused by downstream payment-service slowdown."}
     ],
     "kept_count": 2,
     "dropped_count": 0,
-    "background_context": "历史信息显示：user-service 的超时曾与 payment-service 性能问题高度相关，并且你之前已经有一套成熟的排查技能（包含查看网关 QPS、user-service 错误率以及下游依赖状态等步骤）。建议本次排查优先复用该技能的步骤顺序，并重点关注 payment-service 与网关流量情况，以避免重复踩入相同故障模式。"
+    "background_context": "Historical information shows that user-service timeouts were strongly related to payment-service performance issues, and there is already a mature troubleshooting skill that includes checking gateway QPS, user-service error rate, and downstream dependency status. For this investigation, reuse that troubleshooting order first and pay special attention to payment-service and gateway traffic so the same failure pattern is not repeated."
 }
 """
 
@@ -125,7 +125,7 @@ class SynthesizerAgent(BaseAgent):
             }
 
         fragments_text = self._format_fragments(fragments)
-        user_content = f"用户查询：{user_query}\n\n检索到的记忆片段：\n{fragments_text}"
+        user_content = f"User query: {user_query}\n\nRetrieved memory fragments:\n{fragments_text}"
         response = self._call_llm(
             user_content,
             system_content=self.prompt_template,
@@ -185,7 +185,7 @@ class SynthesizerAgent(BaseAgent):
 
         semantic_fragments = [f for f in fragments if f.get("source") == "semantic"]
         if semantic_fragments:
-            lines = ["[语义记忆]"]
+            lines = ["[Semantic Memory]"]
             for frag in semantic_fragments:
                 idx = int(frag.get("index", 0))
                 memory_type = str(frag.get("memory_type", "") or "unknown")
@@ -197,28 +197,28 @@ class SynthesizerAgent(BaseAgent):
                     text = text[:800] + "…"
 
                 lines.append(
-                    f"  片段{idx}: 来源={semantic_source_type}, memory_type={memory_type}, 检索分数={retrieval_score:.3f}"
+                    f"  Fragment {idx}: source={semantic_source_type}, memory_type={memory_type}, retrieval_score={retrieval_score:.3f}"
                 )
                 time_info = SynthesizerAgent._format_fragment_time_info(frag)
                 if time_info:
-                    lines.append(f"    时间: {time_info}")
-                lines.append(f"    内容: {text}")
+                    lines.append(f"    Time: {time_info}")
+                lines.append(f"    Content: {text}")
 
                 entities = frag.get("entities") or []
                 if entities:
                     preview = ", ".join(str(e) for e in entities[:8])
-                    lines.append(f"    实体: {preview}")
+                    lines.append(f"    Entities: {preview}")
             sections.append("\n".join(lines))
 
         skill_fragments = [f for f in fragments if f.get("source") == "skill"]
         if skill_fragments:
-            lines = ["[技能库]"]
+            lines = ["[Skill Library]"]
             for frag in skill_fragments:
                 idx = int(frag.get("index", 0))
                 intent = str(frag.get("intent", "") or "?")
                 doc = str(frag.get("doc_markdown", "") or "")
                 doc_preview = doc.replace("\n", " ").strip()[:240]
-                lines.append(f"  片段{idx}: 意图={intent}, 文档={doc_preview}")
+                lines.append(f"  Fragment {idx}: intent={intent}, document={doc_preview}")
             sections.append("\n".join(lines))
 
         return "\n\n".join(sections)
@@ -430,19 +430,19 @@ class SynthesizerAgent(BaseAgent):
 
         created_at = SynthesizerAgent._compact_timestamp(fragment.get("created_at"))
         if created_at:
-            parts.append(f"记忆写入={created_at}")
+            parts.append(f"memory_written={created_at}")
 
         temporal = fragment.get("temporal") or {}
         temporal_text = SynthesizerAgent._format_temporal_dict(temporal)
         if temporal_text:
-            parts.append(f"事件时间={temporal_text}")
+            parts.append(f"event_time={temporal_text}")
 
         episode_refs = fragment.get("episode_refs") or []
         episode_time_text = SynthesizerAgent._format_episode_time_refs(episode_refs)
         if episode_time_text:
-            parts.append(f"原始对话时间={episode_time_text}")
+            parts.append(f"source_dialogue_time={episode_time_text}")
 
-        return "；".join(parts)
+        return "; ".join(parts)
 
     @staticmethod
     def _format_temporal_dict(temporal: Any) -> str:

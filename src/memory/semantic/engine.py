@@ -230,7 +230,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 plan=plan,
                 focus_terms=focus_terms,
             )
-            context_preview = self._format_context(current_top) or "（无检索结果）"
+            context_preview = self._format_context(current_top) or "(no retrieved results)"
 
             adequacy = self._check_adequacy(
                 query,
@@ -1718,7 +1718,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         """LLM 根据 action-grounded 缺失信息生成补充检索查询和补充计划。
 
         Returns:
-            dict，包含 semantic/pragmatic queries 以及需补充的约束/slot/affordance。
+            A dict containing semantic/pragmatic queries and any constraints / slots / affordances that still need to be supplemented.
         """
         missing_info = str(adequacy.get("missing_info", ""))
         user_content = (
@@ -1786,7 +1786,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             f"{t.get('role', '')}: {t.get('content', '')}" for t in turns
         )
         user_content = (
-            f"<EXISTING_MEMORY>\n{retrieved_context or '（无已有记忆）'}\n</EXISTING_MEMORY>\n\n"
+            f"<EXISTING_MEMORY>\n{retrieved_context or '(no existing memory)'}\n</EXISTING_MEMORY>\n\n"
             f"<CONVERSATION>\n{conversation_text}\n</CONVERSATION>"
         )
         response = self._llm.generate([
@@ -2180,7 +2180,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         candidate_data["display_text"] = base_text
         if episodic_context:
             candidate_data["display_text"] = (
-                f"{base_text}\n\n[原始对话上下文]\n{episodic_context}"
+                f"{base_text}\n\n[Original Dialogue Context]\n{episodic_context}"
                 if base_text else episodic_context
             )
         candidate_data["_episodic_attached"] = True

@@ -100,7 +100,7 @@ class CompactSemanticEncoder:
         previous_turns: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         """单次 LLM 调用：输出包含全部字段的 record 列表。"""
-        prev_text = self._format_section(previous_turns) if previous_turns else "（无上文）"
+        prev_text = self._format_section(previous_turns) if previous_turns else "(no previous turns)"
         curr_text = self._format_section(current_turns)
 
         user_content = (

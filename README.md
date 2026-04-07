@@ -719,10 +719,6 @@ python examples/api_pipeline_demo.py
 # Multi-turn chat demo (3 consecutive turns, followed by consolidation)
 python examples/api_pipeline_demo.py --multi-turn
 
-# Custom query and user credentials
-python examples/api_pipeline_demo.py --username alice --password secret123 \
-  --query "How do I backup my database with pg_dump?"
-
 # Use a fixed session_id (useful for accumulating history across multiple runs)
 python examples/api_pipeline_demo.py --session-id my-test-session
 ```
