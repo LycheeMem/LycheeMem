@@ -75,6 +75,9 @@ Each tag uses short keywords or phrases (no more than 5 words). Use empty list [
 Notes:
 - semantic_text is the complete self-contained long text for human reading; normalized_text is the compact short version for system retrieval — both must be filled in.
 - temporal: t_ref is the reference time when the information was produced, t_valid_from/to is the validity period. Leave empty strings if no time information.
+  Use t_valid_from for the start of validity (e.g., "goes live on DATE" → t_valid_from=DATE).
+  Use t_valid_to for the end of validity or a deadline (e.g., "due by DATE", "expires on DATE" → t_valid_to=DATE).
+  Both may be filled when the validity window has both a start and an end.
 - evidence_turns: Mark which turn in CURRENT_TURNS this information comes from (0-indexed).
 - If there is nothing worth remembering in the conversation, return {"records": []}.
 - Do not output code blocks (```json, etc.), output raw JSON only.
@@ -101,7 +104,7 @@ Expected output:
             "semantic_text": "The user's company's DataFlow project is scheduled to go live on 2026-02-20 (Friday). The tech stack is Python 3.11 and FastAPI, deployed on the company's self-built Kubernetes cluster.",
             "normalized_text": "event:DataFlow goes live 2026-02-20, stack Python3.11+FastAPI+K8s",
             "entities": ["DataFlow", "Python 3.11", "FastAPI", "Kubernetes"],
-            "temporal": {"t_ref": "", "t_valid_from": "", "t_valid_to": "2026-02-20"},
+            "temporal": {"t_ref": "", "t_valid_from": "2026-02-20", "t_valid_to": ""},
             "task_tags": ["project management", "deployment"],
             "tool_tags": ["Python 3.11", "FastAPI", "Kubernetes"],
             "constraint_tags": [],

@@ -1111,8 +1111,8 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         if not left_text or not right_text:
             return False
 
-        left_norm = str(left.get("normalized_text") or left.get("semantic_text") or "").strip()
-        right_norm = str(right.get("normalized_text") or right.get("semantic_text") or "").strip()
+        left_norm = str(left.get("semantic_text") or "").strip()
+        right_norm = str(right.get("semantic_text") or "").strip()
         semantic_ratio = SequenceMatcher(None, left_text, right_text).ratio()
         norm_ratio = SequenceMatcher(None, left_norm, right_norm).ratio() if left_norm and right_norm else 0.0
         max_ratio = max(semantic_ratio, norm_ratio)
@@ -1487,13 +1487,13 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
             # 3b. FTS 候选 + 向量候选合并去重
             similar = self._sqlite.find_similar_by_normalized_text(
-                record.normalized_text, limit=3,
+                record.semantic_text, limit=3,
             )
-            # 向量补充去重：FTS 对中文近重复召回弱，用 normalized_vector 兜底
+            # 向量补充去重：FTS 对中文近重复召回弱，用 vector（semantic_text）兜底
             try:
                 vec_hits = self._vector.search(
-                    record.normalized_text,
-                    column="normalized_vector",
+                    record.semantic_text,
+                    column="vector",
                     limit=5,
                 )
                 seen_dedup_ids = {s.record_id for s in similar}
@@ -1512,15 +1512,16 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 if s.record_id == record.record_id:
                     is_duplicate = True
                     break
-                # 用向量相似度判断重复
+                # 用向量相似度判断重复（使用 semantic_text，保留完整语义）
                 try:
-                    vecs = self._embedder.embed([record.normalized_text, s.normalized_text])
+                    vecs = self._embedder.embed([record.semantic_text, s.semantic_text])
                     sim = self._cosine_similarity(vecs[0], vecs[1])
                     if sim >= self._dedup_threshold:
                         is_duplicate = True
-                        # 更新已有条目而非插入新的
+                        # 更新已有条目而非插入新的；合并 temporal，以新记录为准补充缺失字段
                         s.updated_at = datetime.now(timezone.utc).isoformat()
                         s.confidence = min(1.0, s.confidence + 0.1)
+                        s.temporal = self._merge_temporal(s.temporal, record.temporal)
                         self._sqlite.upsert_record(s)
                         break
                 except Exception:
@@ -2143,6 +2144,26 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             return 0.0
         return dot / (norm_a * norm_b)
 
+    @staticmethod
+    def _merge_temporal(
+        existing: dict[str, str] | None,
+        incoming: dict[str, str] | None,
+    ) -> dict[str, str]:
+        """合并两条记录的 temporal 字段：以 incoming 的非空值覆盖 existing 的空值。
+
+        规则：
+        - incoming 的任意非空字段填补 existing 中的空字段；
+        - 若两者均非空且不同，incoming（较新）优先；
+        - 始终返回含 t_ref / t_valid_from / t_valid_to 三个键的 dict。
+        """
+        base = {"t_ref": "", "t_valid_from": "", "t_valid_to": ""}
+        for k in base:
+            ev = str((existing or {}).get(k) or "").strip()
+            iv = str((incoming or {}).get(k) or "").strip()
+            # incoming 有值则覆盖（不管 existing 是否有值）；否则保留 existing
+            base[k] = iv if iv else ev
+        return base
+
     def _enrich_candidates_with_episodic_context(
         self,
         scored: list[ScoredCandidate],
@@ -2416,6 +2437,19 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             header = f"[{i}] ({mt}, score={score})"
             if entities:
                 header += f" entities=[{', '.join(entities)}]"
+
+            # 拼接 temporal 字段：只输出非空的时间值，让 LLM 能感知有效时间窗口
+            temporal = d.get("temporal") or {}
+            if isinstance(temporal, dict):
+                t_parts = []
+                if temporal.get("t_ref"):
+                    t_parts.append(f"t_ref={self._format_time_label(temporal['t_ref'])}")
+                if temporal.get("t_valid_from"):
+                    t_parts.append(f"valid_from={self._format_time_label(temporal['t_valid_from'])}")
+                if temporal.get("t_valid_to"):
+                    t_parts.append(f"valid_to={self._format_time_label(temporal['t_valid_to'])}")
+                if t_parts:
+                    header += f" temporal=[{', '.join(t_parts)}]"
 
             parts.append(f"{header}\n{text}")
 

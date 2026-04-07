@@ -62,7 +62,7 @@ class CompactSemanticEncoder:
             raw_src = raw.get("source_role", "")
             source_role = raw_src if raw_src in ("user", "assistant", "both") else ""
 
-            record_id = self._make_record_id(normalized_text)
+            record_id = self._make_record_id(semantic_text)
 
             record = MemoryRecord(
                 record_id=record_id,
@@ -127,9 +127,13 @@ class CompactSemanticEncoder:
     # ──────────────────────────────────────
 
     @staticmethod
-    def _make_record_id(normalized_text: str) -> str:
-        """SHA256(normalized_text) 作为幂等 ID。"""
-        return hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
+    def _make_record_id(semantic_text: str) -> str:
+        """SHA256(semantic_text) 作为记录 ID。
+
+        使用 semantic_text（保留完整语义、不裁剪时态信息）而非 normalized_text，
+        避免时间不同的同类事件因 normalized_text 相同而产生 ID 碰撞。
+        """
+        return hashlib.sha256(semantic_text.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _format_section(turns: list[dict[str, Any]]) -> str:

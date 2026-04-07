@@ -163,6 +163,7 @@ class SQLiteSemanticStore:
                     CREATE VIRTUAL TABLE memory_records_fts USING fts5(
                         record_id UNINDEXED,
                         normalized_text,
+                        temporal,
                         entities,
                         task_tags,
                         tool_tags,
@@ -176,6 +177,35 @@ class SQLiteSemanticStore:
                 """)
             except sqlite3.OperationalError:
                 pass  # 已存在
+
+            # 迁移：旧 FTS5 缺少 temporal 列时重建（content table 模式; 数据保留在 memory_records）
+            try:
+                fts_cols = [
+                    row[2]
+                    for row in c.execute("PRAGMA table_info(memory_records_fts)").fetchall()
+                ]
+                if fts_cols and "temporal" not in fts_cols:
+                    c.execute("DROP TABLE IF EXISTS memory_records_fts")
+                    c.execute("""
+                        CREATE VIRTUAL TABLE memory_records_fts USING fts5(
+                            record_id UNINDEXED,
+                            normalized_text,
+                            temporal,
+                            entities,
+                            task_tags,
+                            tool_tags,
+                            constraint_tags,
+                            failure_tags,
+                            affordance_tags,
+                            content=memory_records,
+                            content_rowid=rowid,
+                            tokenize='unicode61'
+                        )
+                    """)
+                    c.execute("INSERT INTO memory_records_fts(memory_records_fts) VALUES('rebuild')")
+                    c.commit()
+            except Exception:
+                pass  # 迁移失败不阻断启动
 
             try:
                 c.execute("""
@@ -264,9 +294,9 @@ class SQLiteSemanticStore:
             # 同步 FTS5
             self._conn.execute(
                 "INSERT OR REPLACE INTO memory_records_fts(rowid, record_id, "
-                "normalized_text, entities, task_tags, tool_tags, "
+                "normalized_text, temporal, entities, task_tags, tool_tags, "
                 "constraint_tags, failure_tags, affordance_tags) "
-                "SELECT rowid, record_id, normalized_text, entities, task_tags, "
+                "SELECT rowid, record_id, normalized_text, temporal, entities, task_tags, "
                 "tool_tags, constraint_tags, failure_tags, affordance_tags "
                 "FROM memory_records WHERE record_id = ?",
                 (record.record_id,),
@@ -414,21 +444,56 @@ class SQLiteSemanticStore:
         limit: int = 30,
         include_expired: bool = False,
     ) -> list[dict[str, Any]]:
-        """按创建时间范围查询 MemoryRecord。"""
-        sql = "SELECT * FROM memory_records WHERE 1=1 "
-        params: list[Any] = []
+        """按事件有效时间范围查询 MemoryRecord。
 
-        if not include_expired:
-            sql += "AND expired = 0 "
+        优先匹配 temporal.t_valid_from / t_valid_to（事件真实发生时间窗口）；
+        同时对 created_at（写入时刻）做回退匹配，取两者的 UNION，保证不遗漏。
+        """
+        params: list[Any] = []
+        expired_clause = "" if include_expired else "AND expired = 0 "
+
+        # 事件时间子查询：JSON_EXTRACT 读取 temporal 字段中的时间值
+        # t_valid_from / t_valid_to 均存储为 ISO 字符串，可直接做字符串比较
+        event_time_clauses: list[str] = []
+        write_time_clauses: list[str] = []
+
         if since:
-            sql += "AND created_at >= ? "
+            # 事件结束时间 >= since（事件在查询区间内仍有效）
+            # 若 t_valid_to 为空则退化为按 t_valid_from >= since
+            event_time_clauses.append(
+                "(JSON_EXTRACT(temporal, '$.t_valid_to') >= ? OR "
+                "(JSON_EXTRACT(temporal, '$.t_valid_to') = '' AND "
+                " JSON_EXTRACT(temporal, '$.t_valid_from') >= ?))"
+            )
+            params.extend([since, since])
+            write_time_clauses.append("created_at >= ?")
             params.append(since)
         if until:
-            sql += "AND created_at <= ? "
+            # 事件开始时间 <= until（事件在查询区间内尚未结束）
+            event_time_clauses.append(
+                "(JSON_EXTRACT(temporal, '$.t_valid_from') <= ? OR "
+                "(JSON_EXTRACT(temporal, '$.t_valid_from') = '' AND "
+                " JSON_EXTRACT(temporal, '$.t_valid_to') <= ?))"
+            )
+            params.extend([until, until])
+            write_time_clauses.append("created_at <= ?")
             params.append(until)
 
-        sql += "ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
+        if event_time_clauses and write_time_clauses:
+            # UNION：事件时间命中 OR 写入时间命中
+            event_where = " AND ".join(event_time_clauses)
+            write_where = " AND ".join(write_time_clauses)
+            sql = (
+                f"SELECT * FROM memory_records WHERE {expired_clause} ({event_where}) "
+                f"UNION "
+                f"SELECT * FROM memory_records WHERE {expired_clause} ({write_where}) "
+                f"ORDER BY created_at DESC LIMIT ?"
+            )
+            params.append(limit)
+        else:
+            # 没有时间约束，退化为全量查询
+            sql = f"SELECT * FROM memory_records WHERE 1=1 {expired_clause}ORDER BY created_at DESC LIMIT ?"
+            params.append(limit)
 
         rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_dict(r) for r in rows]

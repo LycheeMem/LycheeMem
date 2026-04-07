@@ -463,13 +463,26 @@ class RecordFusionEngine:
                 ],
             })
 
+            # 合并所有来源的 temporal，再以 LLM 解析结果覆盖非空字段
+            # 避免 LLM 输出全空时将已有时间信息丢失
+            merged_temporal: dict[str, str] = {"t_ref": "", "t_valid_from": "", "t_valid_to": ""}
+            for src_rec in [anchor_record, *incoming_records]:
+                for k in merged_temporal:
+                    v = str((src_rec.temporal or {}).get(k) or "").strip()
+                    if v and not merged_temporal[k]:
+                        merged_temporal[k] = v
+            for k in merged_temporal:
+                rv = str((resolved.get("temporal") or {}).get(k) or "").strip()
+                if rv:
+                    merged_temporal[k] = rv
+
             updated_record = MemoryRecord(
                 record_id=anchor_record.record_id,
                 memory_type=resolved_memory_type,
                 semantic_text=str(resolved.get("semantic_text") or anchor_record.semantic_text).strip(),
                 normalized_text=str(resolved.get("normalized_text") or anchor_record.normalized_text).strip(),
                 entities=[str(v) for v in (resolved.get("entities") or anchor_record.entities or []) if str(v or "").strip()],
-                temporal=resolved.get("temporal") or dict(anchor_record.temporal),
+                temporal=merged_temporal,
                 task_tags=[str(v) for v in (resolved.get("task_tags") or anchor_record.task_tags or []) if str(v or "").strip()],
                 tool_tags=[str(v) for v in (resolved.get("tool_tags") or anchor_record.tool_tags or []) if str(v or "").strip()],
                 constraint_tags=[str(v) for v in (resolved.get("constraint_tags") or anchor_record.constraint_tags or []) if str(v or "").strip()],
