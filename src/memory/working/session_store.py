@@ -21,7 +21,6 @@ class SessionLog:
     """单个会话的完整对话日志。"""
 
     session_id: str
-    user_id: str = ""  # 所属用户（空串表示匿名/兼容旧数据）
     turns: list[dict[str, Any]] = field(default_factory=list)
     summaries: list[dict[str, Any]] = field(default_factory=list)
     # summaries 结构：[{"boundary_index": int, "content": str, "token_count": int}]
@@ -29,6 +28,10 @@ class SessionLog:
     tags: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
+    # 固化水位线：记录上次成功固化时 turns 列表的长度（包含已软删除的 turn）。
+    # 下次固化只需处理 turns[last_consolidated_turn_index:] 的新增部分，
+    # 从而彻底消除跨轮重复固化问题。
+    last_consolidated_turn_index: int = 0
 
 
 class InMemorySessionStore:
@@ -37,18 +40,43 @@ class InMemorySessionStore:
     def __init__(self):
         self._store: dict[str, SessionLog] = {}
 
-    def get_or_create(self, session_id: str, *, user_id: str = "") -> SessionLog:
+    def get_or_create(self, session_id: str) -> SessionLog:
         if session_id not in self._store:
-            self._store[session_id] = SessionLog(session_id=session_id, user_id=user_id)
+            self._store[session_id] = SessionLog(session_id=session_id)
         return self._store[session_id]
 
-    def append_turn(self, session_id: str, role: str, content: str, token_count: int = 0, *, user_id: str = "") -> None:
-        log = self.get_or_create(session_id, user_id=user_id)
+    def append_turn(self, session_id: str, role: str, content: str, token_count: int = 0) -> None:
+        log = self.get_or_create(session_id)
         log.turns.append({"role": role, "content": content, "token_count": token_count, "created_at": _now_iso()})
         log.updated_at = _now_iso()
 
     def get_turns(self, session_id: str) -> list[dict[str, Any]]:
         return self.get_or_create(session_id).turns
+
+    def get_turn_window(
+        self,
+        session_id: str,
+        start_index: int,
+        end_index: int,
+        *,
+        window: int = 0,
+    ) -> list[dict[str, Any]]:
+        """按绝对 turn 索引回溯原始对话窗口。"""
+        log = self.get_or_create(session_id)
+        if not log.turns:
+            return []
+
+        left = max(0, min(int(start_index), int(end_index)) - max(0, int(window or 0)))
+        right = min(
+            len(log.turns) - 1,
+            max(int(start_index), int(end_index)) + max(0, int(window or 0)),
+        )
+        result: list[dict[str, Any]] = []
+        for turn_index in range(left, right + 1):
+            turn = dict(log.turns[turn_index])
+            turn["turn_index"] = turn_index
+            result.append(turn)
+        return result
 
     def add_summary(self, session_id: str, boundary_index: int, summary_text: str, token_count: int = 0) -> None:
         log = self.get_or_create(session_id)
@@ -59,6 +87,12 @@ class InMemorySessionStore:
         log = self.get_or_create(session_id)
         for i in range(min(boundary_index, len(log.turns))):
             log.turns[i]["deleted"] = True
+
+    def set_last_consolidated_turn_index(self, session_id: str, raw_turn_count: int) -> None:
+        """更新固化水位线（raw_turn_count = 本次固化时 turns 列表的总长度）。"""
+        log = self.get_or_create(session_id)
+        if raw_turn_count > log.last_consolidated_turn_index:
+            log.last_consolidated_turn_index = raw_turn_count
 
     def delete_session(self, session_id: str) -> None:
         self._store.pop(session_id, None)
@@ -73,12 +107,10 @@ class InMemorySessionStore:
         if tags is not None:
             log.tags = tags
 
-    def list_sessions(self, offset: int = 0, limit: int = 50, *, user_id: str = "") -> list[dict]:
-        """返回会话的摘要列表，按最新活动倒序，支持分页。指定 user_id 时只返回该用户的会话。"""
+    def list_sessions(self, offset: int = 0, limit: int = 50) -> list[dict]:
+        """返回会话的摘要列表，按最新活动倒序，支持分页。"""
         result = []
         for session_id, log in self._store.items():
-            if user_id and log.user_id != user_id:
-                continue
             active_turns = [t for t in log.turns if not t.get("deleted", False)]
             first_user = next(
                 (t["content"] for t in active_turns if t["role"] == "user"), ""

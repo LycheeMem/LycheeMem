@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from typing import Any
 
 from src.memory.working.session_store import SessionLog
 
@@ -21,7 +22,7 @@ class SQLiteSessionStore:
     使用 WAL 模式提高并发性能。
     """
 
-    def __init__(self, db_path: str = "lychee_memos_sessions.db"):
+    def __init__(self, db_path: str = "sessions.db"):
         self._db_path = db_path
         self._local = threading.local()
         self._init_db()
@@ -63,6 +64,7 @@ class SQLiteSessionStore:
                 session_id TEXT PRIMARY KEY,
                 topic TEXT NOT NULL DEFAULT '',
                 tags TEXT NOT NULL DEFAULT '[]',
+                last_consolidated_turn_index INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -71,25 +73,16 @@ class SQLiteSessionStore:
         for alter_sql in [
             "ALTER TABLE turns ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE turns ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE turns ADD COLUMN user_id TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE summaries ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE summaries ADD COLUMN user_id TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE session_meta ADD COLUMN user_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE session_meta ADD COLUMN last_consolidated_turn_index INTEGER NOT NULL DEFAULT 0",
         ]:
             try:
                 conn.execute(alter_sql)
                 conn.commit()
             except Exception:
                 pass  # 列已存在
-        # user_id 索引
-        try:
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_user ON turns(user_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_session_meta_user ON session_meta(user_id)")
-            conn.commit()
-        except Exception:
-            pass
 
-    def get_or_create(self, session_id: str, *, user_id: str = "") -> SessionLog:
+    def get_or_create(self, session_id: str) -> SessionLog:
         """获取完整会话日志，不存在则返回空日志。"""
         conn = self._get_conn()
         turns = [
@@ -112,26 +105,27 @@ class SQLiteSessionStore:
                 (session_id,),
             )
         ]
-        # 从 session_meta 读取 user_id（如果已有记录）
+        # 从 session_meta 读取固化水位线
         meta_row = conn.execute(
-            "SELECT user_id FROM session_meta WHERE session_id = ?", (session_id,)
+            "SELECT last_consolidated_turn_index FROM session_meta WHERE session_id = ?", (session_id,)
         ).fetchone()
-        stored_user_id = (meta_row["user_id"] if meta_row and "user_id" in meta_row.keys() else "") or user_id
-        log = SessionLog(session_id=session_id, user_id=stored_user_id)
+        last_consolidated_idx = meta_row["last_consolidated_turn_index"] if meta_row and "last_consolidated_turn_index" in meta_row.keys() else 0
+        log = SessionLog(session_id=session_id)
         log.turns = turns
         log.summaries = summaries
+        log.last_consolidated_turn_index = last_consolidated_idx
         return log
 
-    def append_turn(self, session_id: str, role: str, content: str, token_count: int = 0, *, user_id: str = "") -> None:
+    def append_turn(self, session_id: str, role: str, content: str, token_count: int = 0) -> None:
         conn = self._get_conn()
         conn.execute(
-            "INSERT INTO turns (session_id, role, content, token_count, user_id) VALUES (?, ?, ?, ?, ?)",
-            (session_id, role, content, token_count, user_id),
+            "INSERT INTO turns (session_id, role, content, token_count) VALUES (?, ?, ?, ?)",
+            (session_id, role, content, token_count),
         )
-        # upsert session_meta 的 updated_at 和 user_id
+        # upsert session_meta 的 updated_at
         conn.execute(
-            "INSERT INTO session_meta (session_id, user_id) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET updated_at=CURRENT_TIMESTAMP",
-            (session_id, user_id),
+            "INSERT INTO session_meta (session_id) VALUES (?) ON CONFLICT(session_id) DO UPDATE SET updated_at=CURRENT_TIMESTAMP",
+            (session_id,),
         )
         conn.commit()
 
@@ -150,6 +144,31 @@ class SQLiteSessionStore:
                 (session_id,),
             )
         ]
+
+    def get_turn_window(
+        self,
+        session_id: str,
+        start_index: int,
+        end_index: int,
+        *,
+        window: int = 0,
+    ) -> list[dict[str, Any]]:
+        """按绝对 turn 索引回溯原始对话窗口。"""
+        log = self.get_or_create(session_id)
+        if not log.turns:
+            return []
+
+        left = max(0, min(int(start_index), int(end_index)) - max(0, int(window or 0)))
+        right = min(
+            len(log.turns) - 1,
+            max(int(start_index), int(end_index)) + max(0, int(window or 0)),
+        )
+        result: list[dict[str, Any]] = []
+        for turn_index in range(left, right + 1):
+            turn = dict(log.turns[turn_index])
+            turn["turn_index"] = turn_index
+            result.append(turn)
+        return result
 
     def add_summary(self, session_id: str, boundary_index: int, summary_text: str, token_count: int = 0) -> None:
         conn = self._get_conn()
@@ -173,6 +192,22 @@ class SQLiteSessionStore:
                 ids,
             )
             conn.commit()
+
+    def set_last_consolidated_turn_index(self, session_id: str, raw_turn_count: int) -> None:
+        """更新固化水位线（raw_turn_count = 本次固化时 turns 列表的总长度）。仅允许单调递增。"""
+        conn = self._get_conn()
+        # 先确保 session_meta 行存在（若不存在则插入）
+        conn.execute(
+            "INSERT INTO session_meta (session_id) VALUES (?) ON CONFLICT(session_id) DO NOTHING",
+            (session_id,),
+        )
+        # 仅当新值大于旧值时才更新（单调递增保证）
+        conn.execute(
+            "UPDATE session_meta SET last_consolidated_turn_index = ? "
+            "WHERE session_id = ? AND last_consolidated_turn_index < ?",
+            (raw_turn_count, session_id, raw_turn_count),
+        )
+        conn.commit()
 
     def delete_session(self, session_id: str) -> None:
         conn = self._get_conn()
@@ -198,36 +233,10 @@ class SQLiteSessionStore:
             )
         conn.commit()
 
-    def list_sessions(self, offset: int = 0, limit: int = 50, *, user_id: str = "") -> list[dict]:
-        """返回会话的摘要列表，按最新活动倒序，支持分页。指定 user_id 时只返回该用户的会话。"""
+    def list_sessions(self, offset: int = 0, limit: int = 50) -> list[dict]:
+        """返回会话的摘要列表，按最新活动倒序，支持分页。"""
         conn = self._get_conn()
-        if user_id:
-            rows = conn.execute(
-                """
-                SELECT
-                    t.session_id,
-                    SUM(CASE WHEN t.deleted=0 THEN 1 ELSE 0 END) AS turn_count,
-                    (SELECT t2.content FROM turns t2
-                     WHERE t2.session_id = t.session_id AND t2.role = 'user' AND t2.deleted=0
-                     ORDER BY t2.id DESC LIMIT 1) AS last_message,
-                    (SELECT t2.content FROM turns t2
-                     WHERE t2.session_id = t.session_id AND t2.role = 'user' AND t2.deleted=0
-                     ORDER BY t2.id ASC LIMIT 1) AS first_message,
-                    MAX(t.created_at) AS updated_at,
-                    COALESCE(m.topic, '') AS topic,
-                    COALESCE(m.tags, '[]') AS tags,
-                    COALESCE(m.created_at, MIN(t.created_at)) AS session_created_at
-                FROM turns t
-                LEFT JOIN session_meta m ON m.session_id = t.session_id
-                WHERE m.user_id = ?
-                GROUP BY t.session_id
-                ORDER BY updated_at DESC
-                LIMIT ? OFFSET ?
-            """,
-                (user_id, limit, offset),
-            ).fetchall()
-        else:
-            rows = conn.execute(
+        rows = conn.execute(
                 """
                 SELECT
                     t.session_id,

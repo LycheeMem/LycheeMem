@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from fastapi import HTTPException, Request
 
-from src.auth.auth import get_current_user, get_optional_user  # noqa: F401
-
 
 def get_pipeline(request: Request):
     """FastAPI 依赖：从 app.state 获取已初始化的 LycheePipeline 实例。"""

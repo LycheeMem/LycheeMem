@@ -6,8 +6,10 @@ from src.memory.semantic.base import (
     SemanticSearchResult,
 )
 from src.memory.semantic.engine import CompactSemanticEngine
+from src.memory.semantic.models import ActionState
 
 __all__ = [
+    "ActionState",
     "BaseSemanticMemoryEngine",
     "CompactSemanticEngine",
     "ConsolidationResult",

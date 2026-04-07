@@ -51,7 +51,6 @@ class WMManager:
         self,
         session_id: str,
         user_query: str,
-        user_id: str = "",
         **kwargs,
     ) -> dict[str, Any]:
         """管理工作记忆并返回渲染后的上下文。
@@ -68,8 +67,8 @@ class WMManager:
         """
         # 1. 追加用户消息（带 token 计数）
         user_token_count = len(self.compressor._encoder.encode(user_query)) + 4
-        self.session_store.append_turn(session_id, "user", user_query, token_count=user_token_count, user_id=user_id)
-        log = self.session_store.get_or_create(session_id, user_id=user_id)
+        self.session_store.append_turn(session_id, "user", user_query, token_count=user_token_count)
+        log = self.session_store.get_or_create(session_id)
         turns = log.turns
 
         # 2. 计算 token 用量
@@ -175,7 +174,7 @@ class WMManager:
 
     # ── 公共方法 ──
 
-    def append_assistant_turn(self, session_id: str, content: str, user_id: str = "") -> None:
+    def append_assistant_turn(self, session_id: str, content: str) -> None:
         """在推理器回答后，将 assistant 回复追加到会话日志。"""
         token_count = len(self.compressor._encoder.encode(content)) + 4
-        self.session_store.append_turn(session_id, "assistant", content, token_count=token_count, user_id=user_id)
+        self.session_store.append_turn(session_id, "assistant", content, token_count=token_count)

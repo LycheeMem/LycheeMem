@@ -14,6 +14,7 @@ interface SimNode extends SimulationNodeDatum {
   id: string;
   label: string;
   typeLabel: string;
+  nodeKind?: string;
   properties: Record<string, unknown>;
 }
 
@@ -38,16 +39,22 @@ interface UseGraphCanvasOptions {
   onEdgeSelect?: (edge: GraphEdge | null) => void;
 }
 
-const COLORS = [
-  "#6366f1", "#06b6d4", "#8b5cf6", "#10b981", "#f59e0b",
-  "#ec4899", "#14b8a6", "#f43f5e", "#0ea5e9", "#a855f7",
-];
+const KIND_COLORS: Record<string, string> = {
+  composite: "#4f46e5",
+  record: "#14b8a6",
+  episode: "#f59e0b",
+};
+
+function nodeColor(node: SimNode): string {
+  if (node.nodeKind && KIND_COLORS[node.nodeKind]) return KIND_COLORS[node.nodeKind];
+  return "#0ea5e9";
+}
 
 function edgeColor(e: SimEdge): string {
   const c = e.confidence || 0.5;
-  if (c >= 0.9) return "#06b6d4";
-  if (c >= 0.7) return "#6366f1";
-  return "#334155";
+  if (c >= 0.9) return "#0891b2";
+  if (c >= 0.7) return "#2563eb";
+  return "#94a3b8";
 }
 
 function sameEdgeKey(a: GraphEdge | SimEdge | null, b: GraphEdge | SimEdge | null): boolean {
@@ -205,8 +212,8 @@ export function useGraphCanvas({
       ctx.moveTo(src.x ?? 0, src.y ?? 0);
       ctx.lineTo(tgt.x ?? 0, tgt.y ?? 0);
       ctx.strokeStyle = edgeColor(e);
-      ctx.lineWidth = isActive ? 2.6 : (e.confidence || 0.5) > 0.7 ? 1.8 : 1;
-      ctx.globalAlpha = hasAny ? (isActive ? 1 : 0.12) : 0.6;
+      ctx.lineWidth = isActive ? 2.8 : (e.confidence || 0.5) > 0.7 ? 1.9 : 1.2;
+      ctx.globalAlpha = hasAny ? (isActive ? 0.95 : 0.1) : 0.68;
       ctx.stroke();
       ctx.globalAlpha = 1;
 
@@ -225,17 +232,17 @@ export function useGraphCanvas({
     // Nodes
     simNodes.forEach((n, i) => {
       const isHovered = n === hoveredNode;
-      const radius = isHovered ? 16 : 12;
-      const color = COLORS[i % COLORS.length];
+      const radius = isHovered ? 12 : 9;
+      const color = nodeColor(n);
 
       if (isHovered) {
         ctx.beginPath();
-        ctx.arc(n.x ?? 0, n.y ?? 0, radius + 8, 0, Math.PI * 2);
+        ctx.arc(n.x ?? 0, n.y ?? 0, radius + 10, 0, Math.PI * 2);
         const glow = ctx.createRadialGradient(
           n.x ?? 0, n.y ?? 0, radius,
-          n.x ?? 0, n.y ?? 0, radius + 8
+          n.x ?? 0, n.y ?? 0, radius + 10
         );
-        glow.addColorStop(0, color + "40");
+        glow.addColorStop(0, color + "45");
         glow.addColorStop(1, "transparent");
         ctx.fillStyle = glow;
         ctx.fill();
@@ -243,10 +250,10 @@ export function useGraphCanvas({
 
       ctx.beginPath();
       ctx.arc(n.x ?? 0, n.y ?? 0, radius, 0, Math.PI * 2);
-      ctx.fillStyle = hoveredNode && !isHovered ? color + "30" : color;
+      ctx.fillStyle = hoveredNode && !isHovered ? color + "3a" : color;
       ctx.fill();
-      ctx.strokeStyle = isHovered ? "#ffffff" : color + "80";
-      ctx.lineWidth = isHovered ? 2.5 : 1.5;
+      ctx.strokeStyle = isHovered ? "#ffffff" : color + "99";
+      ctx.lineWidth = isHovered ? 2.4 : 1.4;
       ctx.stroke();
 
       const labelAlpha = hoveredNode ? (isHovered ? 1 : 0.15) : 0.9;
@@ -256,8 +263,8 @@ export function useGraphCanvas({
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
       const txt = String(n.label || "?");
-      const label = txt.length > 16 ? txt.slice(0, 14) + "\u2026" : txt;
-      ctx.fillText(label, n.x ?? 0, (n.y ?? 0) + radius + 4);
+      const label = txt.length > 18 ? txt.slice(0, 16) + "\u2026" : txt;
+      ctx.fillText(label, n.x ?? 0, (n.y ?? 0) + radius + 5);
       ctx.globalAlpha = 1;
     });
 
@@ -316,9 +323,9 @@ export function useGraphCanvas({
           .distance(100)
           .strength(0.4)
       )
-      .force("charge", forceManyBody().strength(-300))
+      .force("charge", forceManyBody().strength(-420))
       .force("center", forceCenter(W / 2, H / 2))
-      .force("collide", forceCollide(30))
+      .force("collide", forceCollide(26))
       .alphaDecay(0.03);
 
     sim.on("tick", scheduleRender);
@@ -400,7 +407,7 @@ export function useGraphCanvas({
         scheduleRender();
       } else {
         const [mx, my] = screenToWorld(ev.offsetX, ev.offsetY);
-        const node = findNodeAt(simNodesRef.current, mx, my, 20 / t.k);
+        const node = findNodeAt(simNodesRef.current, mx, my, 16 / t.k);
         hoveredNodeRef.current = node;
 
         if (node) {
@@ -410,11 +417,12 @@ export function useGraphCanvas({
             tooltip.style.left = ev.offsetX + 12 + "px";
             tooltip.style.top = ev.offsetY - 20 + "px";
             let html = `<strong>${escapeHtml(node.label)}</strong>`;
-            if (node.typeLabel) html += `<br>类型: ${escapeHtml(node.typeLabel)}`;
+            html += `<br>类别: ${escapeHtml(node.typeLabel || node.nodeKind || "node")}`;
             if (node.properties) {
               const p = node.properties;
               if (p.type) html += `<br>type: ${escapeHtml(p.type as string)}`;
-              if (p.description) html += `<br>${escapeHtml(String(p.description).slice(0, 100))}`;
+              if (p.description) html += `<br>${escapeHtml(String(p.description).slice(0, 120))}`;
+              if (p.content && !p.description) html += `<br>${escapeHtml(String(p.content).slice(0, 120))}`;
             }
             tooltip.innerHTML = html;
           }
@@ -487,7 +495,7 @@ export function useGraphCanvas({
     const container = containerRef.current;
     if (!container || !nodes.length) return;
     const rect = container.getBoundingClientRect();
-    transformRef.current = { x: rect.width / 4, y: rect.height / 4, k: 0.8 };
+    transformRef.current = { x: rect.width / 2, y: rect.height / 2, k: 0.9 };
     simRef.current?.alpha(0.3).restart();
   }, [containerRef, nodes.length]);
 

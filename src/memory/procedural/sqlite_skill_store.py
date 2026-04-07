@@ -59,7 +59,6 @@ def _make_skill_vector_schema(dim: int) -> pa.Schema:
     vec_type = pa.list_(pa.float32(), dim) if dim > 0 else pa.list_(pa.float32())
     return pa.schema([
         pa.field("skill_id", pa.utf8()),
-        pa.field("user_id", pa.utf8()),
         pa.field("vector", vec_type),
     ])
 
@@ -124,13 +123,11 @@ class SQLiteSkillStore(BaseMemoryStore):
                     doc_markdown  TEXT NOT NULL,
                     conditions    TEXT NOT NULL DEFAULT '',
                     metadata      TEXT NOT NULL DEFAULT '{}',
-                    user_id       TEXT NOT NULL DEFAULT '',
                     success_count INTEGER NOT NULL DEFAULT 0,
                     last_used     TEXT NOT NULL DEFAULT '',
                     created_at    TEXT NOT NULL DEFAULT ''
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_skills_user    ON skills(user_id);
                 CREATE INDEX IF NOT EXISTS idx_skills_created ON skills(created_at);
             """)
 
@@ -173,7 +170,7 @@ class SQLiteSkillStore(BaseMemoryStore):
     # BaseMemoryStore API
     # ──────────────────────────────────────
 
-    def add(self, items: list[dict[str, Any]], *, user_id: str = "") -> None:
+    def add(self, items: list[dict[str, Any]]) -> None:
         """写入一批技能条目（幂等 upsert，以 skill_id 为主键）。
 
         每条 item 需要 intent + doc_markdown；可选 id、embedding、conditions、metadata
@@ -188,7 +185,6 @@ class SQLiteSkillStore(BaseMemoryStore):
             doc_markdown = item["doc_markdown"]
             conditions = item.get("conditions", "")
             metadata = item.get("metadata", {})
-            uid = item.get("user_id", "") or user_id
             success_count = item.get("success_count", 0)
             last_used = item.get("last_used", "")
             created_at = item.get("created_at", now)
@@ -199,8 +195,8 @@ class SQLiteSkillStore(BaseMemoryStore):
                     """
                     INSERT INTO skills
                         (skill_id, intent, doc_markdown, conditions, metadata,
-                         user_id, success_count, last_used, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         success_count, last_used, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(skill_id) DO UPDATE SET
                         intent        = excluded.intent,
                         doc_markdown  = excluded.doc_markdown,
@@ -209,7 +205,7 @@ class SQLiteSkillStore(BaseMemoryStore):
                         last_used     = excluded.last_used
                     """,
                     (skill_id, intent, doc_markdown, conditions,
-                     _json_dumps(metadata), uid, success_count, last_used, created_at),
+                     _json_dumps(metadata), success_count, last_used, created_at),
                 )
                 # FTS5 同步
                 self._conn.execute(
@@ -226,15 +222,13 @@ class SQLiteSkillStore(BaseMemoryStore):
             if vec is None and self._embedder is not None:
                 vec = self._embedder.embed_query(intent)
             if vec is not None:
-                self._upsert_vector(skill_id, uid, vec)
+                self._upsert_vector(skill_id, vec)
 
     def search(
         self,
         query: str,
         top_k: int = 5,
         query_embedding: list[float] | None = None,
-        *,
-        user_id: str = "",
     ) -> list[dict[str, Any]]:
         """向量 ANN 检索技能库（cosine 相似度）。
 
@@ -258,8 +252,6 @@ class SQLiteSkillStore(BaseMemoryStore):
                 .metric("cosine")
                 .limit(top_k * 3)  # 多取一些，过滤后再截断
             )
-            if user_id:
-                q = q.where(f"user_id = '{_escape_sql(user_id)}'")
             hits = q.to_list()
         except Exception:
             return []
@@ -301,23 +293,17 @@ class SQLiteSkillStore(BaseMemoryStore):
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_k]
 
-    def delete(self, ids: list[str], *, user_id: str = "") -> None:
-        """删除指定 ID 的技能（user_id 非空时只删该用户的条目）。"""
+    def delete(self, ids: list[str]) -> None:
+        """删除指定 ID 的技能。"""
         if not ids:
             return
 
         with self._lock:
             for skill_id in ids:
-                if user_id:
-                    self._conn.execute(
-                        "DELETE FROM skills WHERE skill_id = ? AND user_id = ?",
-                        (skill_id, user_id),
-                    )
-                else:
-                    self._conn.execute(
-                        "DELETE FROM skills WHERE skill_id = ?",
-                        (skill_id,),
-                    )
+                self._conn.execute(
+                    "DELETE FROM skills WHERE skill_id = ?",
+                    (skill_id,),
+                )
             self._conn.commit()
 
         try:
@@ -327,41 +313,26 @@ class SQLiteSkillStore(BaseMemoryStore):
         except Exception:
             pass
 
-    def delete_all(self, *, user_id: str = "") -> None:
-        """清空技能库。user_id 非空时只删该用户的技能。"""
+    def delete_all(self) -> None:
+        """清空技能库。"""
         with self._lock:
-            if user_id:
-                self._conn.execute(
-                    "DELETE FROM skills WHERE user_id = ?", (user_id,)
-                )
-            else:
-                self._conn.execute("DELETE FROM skills")
+            self._conn.execute("DELETE FROM skills")
             self._conn.commit()
 
         try:
-            tbl = self._ldb.open_table(self.SKILL_TABLE)
-            if user_id:
-                tbl.delete(f"user_id = '{_escape_sql(user_id)}'")
-            else:
-                # 重建空表（LanceDB 不支持 TRUNCATE）
-                self._ldb.drop_table(self.SKILL_TABLE)
-                schema = _make_skill_vector_schema(self._embedding_dim)
-                self._ldb.create_table(self.SKILL_TABLE, schema=schema)
+            # 重建空表（LanceDB 不支持 TRUNCATE）
+            self._ldb.drop_table(self.SKILL_TABLE)
+            schema = _make_skill_vector_schema(self._embedding_dim)
+            self._ldb.create_table(self.SKILL_TABLE, schema=schema)
         except Exception:
             pass
 
-    def get_all(self, *, user_id: str = "") -> list[dict[str, Any]]:
+    def get_all(self) -> list[dict[str, Any]]:
         """返回全部技能条目（不含向量）。"""
         with self._lock:
-            if user_id:
-                rows = self._conn.execute(
-                    "SELECT * FROM skills WHERE user_id = ? ORDER BY created_at DESC",
-                    (user_id,),
-                ).fetchall()
-            else:
-                rows = self._conn.execute(
-                    "SELECT * FROM skills ORDER BY created_at DESC"
-                ).fetchall()
+            rows = self._conn.execute(
+                "SELECT * FROM skills ORDER BY created_at DESC"
+            ).fetchall()
 
         return [
             {
@@ -395,7 +366,6 @@ class SQLiteSkillStore(BaseMemoryStore):
         self,
         query: str,
         *,
-        user_id: str = "",
         top_k: int = 10,
     ) -> list[dict[str, Any]]:
         """FTS5 全文检索（按 intent / doc_markdown 关键词匹配）。
@@ -421,8 +391,6 @@ class SQLiteSkillStore(BaseMemoryStore):
 
         result = []
         for row in rows:
-            if user_id and row["user_id"] != user_id:
-                continue
             result.append({
                 "id": row["skill_id"],
                 "intent": row["intent"],
@@ -438,11 +406,11 @@ class SQLiteSkillStore(BaseMemoryStore):
     # 内部工具
     # ──────────────────────────────────────
 
-    def _upsert_vector(self, skill_id: str, user_id: str, vector: list[float]) -> None:
+    def _upsert_vector(self, skill_id: str, vector: list[float]) -> None:
         """在 LanceDB 中写入或更新一条技能向量。"""
         try:
             tbl = self._ldb.open_table(self.SKILL_TABLE)
             tbl.delete(f"skill_id = '{_escape_sql(skill_id)}'")
-            tbl.add([{"skill_id": skill_id, "user_id": user_id, "vector": vector}])
+            tbl.add([{"skill_id": skill_id, "vector": vector}])
         except Exception:
             pass

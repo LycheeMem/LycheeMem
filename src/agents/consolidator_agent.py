@@ -19,108 +19,107 @@ from src.memory.procedural.sqlite_skill_store import SQLiteSkillStore
 from src.memory.semantic.base import BaseSemanticMemoryEngine
 
 CONSOLIDATION_SYSTEM_PROMPT = """\
-你是记忆固化专家（Memory Consolidator）。
-你需要审查刚刚结束的完整对话日志，从中判断是否有值得沉淀为长期记忆的内容。
+You are a Memory Consolidator.
+You need to review the complete conversation log that just ended and determine whether it contains content worth storing as long-term memory.
 
-需要关注两类信息：
-1. 图谱事实 (Graph Facts)：
-     - 用户偏好、项目属性、稳定的客观事实等，可以表示为 [主体, 关系, 客体] 的三元组；
-     - 本系统会在后续步骤中调用专门的实体识别/三元组生成组件来产出具体三元组，
-         因此你只需判断是否存在值得沉淀的事实，不必直接输出三元组。
-2. 程序技能 (Procedural Skills)：
-     - 如果在本次对话中出现了 **成功的多步工具调用/操作流程**，
-         请将其提炼为可复用的“工作流模板”。
+Focus on two kinds of information:
+1. Graph facts:
+     - User preferences, project attributes, stable objective facts, and similar information that can be represented as subject-relation-object triples.
+     - A dedicated entity-recognition / triple-generation component will produce the actual triples later,
+         so you only need to decide whether such facts are worth extracting. Do not output triples directly.
+2. Procedural skills:
+     - If the conversation contains a **successful multi-step tool-use chain or operating procedure**,
+         distill it into a reusable workflow template.
 
-请以 JSON 格式回复，结构如下（字段名必须保持一致）：
+Reply in JSON using exactly the following structure and field names:
 {
     "new_skills": [
         {
-            "intent": "任务意图的一句话描述",
-            "doc_markdown": "# 技能标题\\n\\n用 Markdown 写一份可复用的操作说明文档（可包含步骤、命令、注意事项、输入输出等）"
+            "intent": "One-sentence description of the task intent",
+            "doc_markdown": "# Skill Title\\n\\nWrite a reusable Markdown operation guide that may include steps, commands, notes, and input/output details"
         }
     ],
     "should_extract_entities": true/false
 }
 
-说明：
-- 如果对话没有值得保存的复杂操作模式，`new_skills` 应为一个空数组；
-- 如果本轮对话的主要内容是**调用/使用了已存在的技能**来完成任务（例如：使用"以指定格式总结学习周报"技能来写某周的周报），
-  而不是在**定义/教授新技能**，则 `new_skills` 应为空数组，因为对应技能已经存在。
-  消息块 "已存在技能列表" 中会列出当前技能库的所有 intent，请在判断时参考。
-- 满足以下任意一条，即应将 `should_extract_entities` 设为 true：
-    · 用户偏好、技术选型、编程习惯等个人或项目偏好
-    · 具体计划、日程安排、截止日期、里程碑
-    · 人员分工、小组成员、角色职责
-    · 客观事实（地点、项目名称、工具、组织关系、合同/协议等）
-    · 对已有信息的更新或纠正
-    · 操作流程、步骤约定、规范
-    · 用户明确要求记住的任何内容（如"帮我记住"、"你记一下"）
-- 只有对话内容是纯粹的寒暄、单纯查询已有信息、重复已知事实，或完全没有实质信息时，才设为 false。
-- **倾向于 true。只有非常确信对话中没有任何值得长期保存的新事实时，才返回 false。**
-- 忽略重复说法、明显错误尝试等不值得长期保存的内容。
-- **输出必须是严格 JSON**（不要代码块）。注意：JSON 字符串里不能出现裸换行，换行必须写成 `\\n`。
+Rules:
+- If the conversation does not contain a complex operational pattern worth saving, `new_skills` must be an empty array.
+- If the main content of this turn is **using an already existing skill** to complete a task, rather than **defining or teaching a new skill**, then `new_skills` must be empty because the skill already exists.
+  The message block "Existing Skill List" will provide all current skill intents. Use it when making this judgment.
+- Set `should_extract_entities` to `true` if any of the following is present:
+    · User preferences, technology choices, coding habits, or similar personal / project preferences
+    · Concrete plans, schedules, deadlines, or milestones
+    · Team assignments, members, or role responsibilities
+    · Objective facts such as locations, project names, tools, organizational relationships, contracts, or agreements
+    · Updates or corrections to existing information
+    · Operational procedures, agreed steps, or conventions
+    · Any content the user explicitly asked the system to remember
+- Set it to `false` only when the conversation is purely casual chat, simple querying of already known information, repetition of known facts, or contains no substantive information at all.
+- **Bias toward `true`. Return `false` only when you are highly confident that the conversation contains no new fact worth long-term storage.**
+- Ignore repeated phrasing, obviously failed attempts, and similar content that is not worth saving long term.
+- **The output must be strict JSON** with no code fences. JSON strings must not contain raw line breaks; use `\\n` instead.
 
-技能文档（doc_markdown）要求：
-- 必须是 Markdown 纯文本，不要输出 JSON/YAML。
-- 建议包含：适用场景、前置条件、步骤（编号列表）、关键命令/代码块、常见错误与排查。
+Requirements for `doc_markdown`:
+- It must be plain Markdown text, not JSON or YAML.
+- It should preferably include: applicable scenario, prerequisites, numbered steps, key commands or code blocks, common errors, and troubleshooting.
 
-注意：这里的图谱指“关系图谱/长期事实存储”，你不需要在本步骤直接输出三元组。
+Note: "Graph" here means relationship graph / long-term fact storage. You do not need to output triples directly in this step.
 
-下面是几个示例（只用于帮助你理解格式与抽取标准，不要原样抄写示例中的中文内容）：
+Below are several examples for format and extraction criteria only. Do not copy them verbatim.
 
-## 示例 1：既有图谱事实，也有新技能
+## Example 1: Contains both graph facts and a new skill
 <session_log>
-user: 我想在这个项目里统一用 Python 3.10，并且所有新服务都部署到 k8s 集群 prod-a 上。
-assistant: 好的，我会记住：语言用 Python 3.10，部署目标是 prod-a 集群。
-user: 这次帮我把 user-service 做一个蓝绿发布的流程，我想先在 prod-a 的一半节点上灰度。
-assistant: 我们可以这么做：
-    1）更新 Helm values，把 user-service 的新版本镜像打上 v2 标签；
-    2）使用 kubectl apply 应用新的 Deployment；
-    3）观察 prometheus 的告警和日志，如果无异常，再将所有副本切到新版本。
+user: I want this project to standardize on Python 3.10, and all new services should be deployed to the prod-a Kubernetes cluster.
+assistant: Understood. I will remember that Python 3.10 is the standard language and prod-a is the deployment target.
+user: Help me design a blue-green deployment flow for user-service this time. I want to canary it on half of the prod-a nodes first.
+assistant: We can do it this way:
+    1) Update the Helm values and tag the new user-service image as v2.
+    2) Apply the new Deployment with kubectl.
+    3) Observe Prometheus alerts and logs. If there is no anomaly, shift all replicas to the new version.
 </session_log>
 
-期望 JSON 输出示例：
+Expected JSON output:
 {
     "new_skills": [
         {
-            "intent": "对 user-service 执行蓝绿发布到 prod-a 集群",
-            "doc_markdown": "# user-service 蓝绿发布（prod-a）\\n\\n## 适用场景\\n- 需要将 user-service 发布到 prod-a，并先灰度一半节点\\n\\n## 步骤\\n1. 更新 Helm values，将镜像标记为 v2\\n2. `kubectl apply` 部署到部分节点\\n3. 观察 Prometheus 告警与日志，无异常后将全部副本切到 v2\\n"
+            "intent": "Perform a blue-green deployment of user-service to the prod-a cluster",
+            "doc_markdown": "# user-service Blue-Green Deployment (prod-a)\\n\\n## Applicable Scenario\\n- Deploy user-service to prod-a and canary it on half of the nodes first\\n\\n## Steps\\n1. Update Helm values and mark the image as v2\\n2. Use `kubectl apply` to deploy to part of the nodes\\n3. Observe Prometheus alerts and logs. If there is no anomaly, shift all replicas to v2\\n"
         }
     ],
     "should_extract_entities": true
 }
 
-## 示例 2：只有图谱事实，没有可复用技能
+## Example 2: Contains graph facts only, with no reusable skill
 <session_log>
-user: 以后在这个项目里，所有文档一律用中文撰写，不要再给我英文模版了。
-assistant: 明白了，这个项目的文档统一使用中文。
+user: From now on, all documents in this project must be written in Chinese. Do not give me English templates again.
+assistant: Understood. Documentation for this project will use Chinese consistently.
 </session_log>
 
-期望 JSON 输出示例：
+Expected JSON output:
 {
     "new_skills": [],
     "should_extract_entities": true
 }
 
-## 示例 3：纯闲聊，不需要固化
+## Example 3: Pure small talk, no consolidation needed
 <session_log>
-user: 哈哈，今天心情不错，随便聊聊八卦吧。
-assistant: 好的，我们可以聊点轻松的话题～
+user: I'm in a good mood today. Let's just chat casually.
+assistant: Sure, we can talk about something light.
 </session_log>
 
-期望 JSON 输出示例：
+Expected JSON output:
 {
     "new_skills": [],
     "should_extract_entities": false
 }
 
-## 示例 4：团队分工 + 项目计划 + 截止日期，应固化
+## Example 4: Team assignment + project plan + deadline, should be consolidated
 <session_log>
-user: 我们的推荐系统项目下个迭代（3.31）要做用户画像特征维度扩展。我、王明、赵琳负责这个模块。分工安排：王明负责新增行为特征埋点设计和数据上报，赵琳来处理特征的ETL加工逻辑，我需要完成推荐模型的特征适配和离线训练验证。前期预计2天内要完成设计评审。
-assistant: 好的，已记录。推荐系统下个迭代成员是你、王明和赵琳。特征维度扩展项目，3.31截止，分工确认。设计评审计划2天完成，我会提醒。
+user: In the next iteration of our recommendation-system project, due on 3.31, we need to expand the feature dimensions for user profiles. Wang Ming, Zhao Lin, and I are responsible for this module. Wang Ming will handle new behavioral-feature event tracking design and data reporting, Zhao Lin will handle the ETL processing logic, and I will complete feature adaptation and offline training validation for the recommendation model. The design review is expected to be completed within the first 2 days.
+assistant: Noted. The next recommendation-system iteration involves you, Wang Ming, and Zhao Lin. The feature-expansion project is due on 3.31, the assignments are confirmed, and the design review should finish within 2 days.
 </session_log>
 
-期望 JSON 输出示例：
+Expected JSON output:
 {
     "new_skills": [],
     "should_extract_entities": true
@@ -148,7 +147,7 @@ class ConsolidatorAgent(BaseAgent):
         turns: list[dict[str, Any]],
         session_id: str | None = None,
         retrieved_context: str = "",
-        user_id: str = "",
+        turn_index_offset: int = 0,
         **kwargs,
     ) -> dict[str, Any]:
         """分析对话并固化到长期记忆。
@@ -156,8 +155,9 @@ class ConsolidatorAgent(BaseAgent):
         Args:
             turns: 完整的对话轮次列表。
             session_id: 会话 ID。
-            retrieved_context: Pipeline 检索阶段合成的已有记忆上下文，
-                用于与本轮对话比对，判断是否有新信息需要固化。
+            retrieved_context: search 阶段召回的原始已有语义记忆片段，
+                用于与本轮对话比对，判断是否有新信息需要固化；
+                应优先传 pre-synthesis raw context，而不是回答期的 background_context。
 
         Returns:
             dict 包含：entities_added (int), skills_added (int), facts_added (int)
@@ -172,7 +172,7 @@ class ConsolidatorAgent(BaseAgent):
             turns=turns,
             session_id=session_id,
             retrieved_context=retrieved_context,
-            user_id=user_id,
+            turn_index_offset=turn_index_offset,
         )
 
     def _run_compact(
@@ -181,7 +181,7 @@ class ConsolidatorAgent(BaseAgent):
         turns: list[dict[str, Any]],
         session_id: str,
         retrieved_context: str = "",
-        user_id: str = "",
+        turn_index_offset: int = 0,
     ) -> dict[str, Any]:
         """Compact 后端路径：LLM 分析 → 条件语义固化 + 技能抽取。
 
@@ -197,13 +197,13 @@ class ConsolidatorAgent(BaseAgent):
         # Step 0: 已有技能列表注入（LLM 层去重防线）
         # 拉取当前用户所有技能 intent，以 numbered list 形式前置于对话文本，
         # 让 LLM 感知"哪些技能已经存在"，从而不再重复抽取"使用已有技能"的对话。
-        existing_skills = self.skill_store.get_all(user_id=user_id)
+        existing_skills = self.skill_store.get_all()
         if existing_skills:
-            existing_block_lines = ["## 已存在技能列表（仅供参考，避免重复抽取）"]
+            existing_block_lines = ["## Existing Skill List (for reference only, to avoid duplicate extraction)"]
             for idx, s in enumerate(existing_skills[:30], 1):
                 existing_block_lines.append(f"{idx}. {s['intent']}")
             existing_block_lines.append("")
-            conversation_text = "\n".join(existing_block_lines) + "\n## 本轮对话日志\n" + conversation_text
+            conversation_text = "\n".join(existing_block_lines) + "\n## Current Conversation Log\n" + conversation_text
 
         # Step 1: LLM 整体分析（串行，结果决定后续步骤）
         response = self._call_llm(
@@ -225,8 +225,8 @@ class ConsolidatorAgent(BaseAgent):
             return self.semantic_engine.ingest_conversation(
                 turns=turns,
                 session_id=session_id,
-                user_id=user_id,
                 retrieved_context=retrieved_context,
+                turn_index_offset=turn_index_offset,
             )
 
         def _write_skills() -> int:
@@ -250,19 +250,16 @@ class ConsolidatorAgent(BaseAgent):
                     query=intent,
                     top_k=1,
                     query_embedding=embedding,
-                    user_id=user_id,
                 )
                 if top_existing and top_existing[0].get("score", 0.0) >= DEDUP_THRESHOLD:
                     # 相似技能已存在：upsert 到已有条目（更新内容而非新建）
                     existing_id = top_existing[0]["id"]
                     self.skill_store.add(
                         [{"id": existing_id, "intent": intent, "embedding": embedding, "doc_markdown": doc_markdown}],
-                        user_id=user_id,
                     )
                 else:
                     self.skill_store.add(
                         [{"intent": intent, "embedding": embedding, "doc_markdown": doc_markdown}],
-                        user_id=user_id,
                     )
                 count += 1
             return count
@@ -294,7 +291,8 @@ class ConsolidatorAgent(BaseAgent):
             "entities_added": ingest_result.records_added,
             "skills_added": skills_added,
             "facts_added": ingest_result.records_merged,
-            "has_novelty": ingest_result.records_added > 0 or ingest_result.records_merged > 0,
+            "records_expired": ingest_result.records_expired,
+            "has_novelty": ingest_result.records_added > 0 or ingest_result.records_merged > 0 or ingest_result.records_expired > 0,
             "steps": steps,
         }
 

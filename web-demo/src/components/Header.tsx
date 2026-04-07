@@ -1,11 +1,9 @@
-import { FileTextOutlined, LogoutOutlined, ThunderboltOutlined, UserOutlined } from "@ant-design/icons";
+import { FileTextOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { useCallback, useEffect } from "react";
 import { fetchPipelineStatus } from "../api";
 import { useStore } from "../state";
 
 export default function Header() {
-  const user = useStore((s) => s.user);
-  const logout = useStore((s) => s.logout);
   const pipelineStatus = useStore((s) => s.pipelineStatus);
   const setPipelineStatus = useStore((s) => s.setPipelineStatus);
 
@@ -27,7 +25,7 @@ export default function Header() {
         <div className="logo">
           <img className="logo-img" src="/logo.png" alt="Logo" />
           <span className="logo-text">
-            立知大模型<span className="logo-text">记忆系统</span>
+            LycheeMem 立知大模型记忆系统
           </span>
         </div>
       </div>
@@ -36,23 +34,13 @@ export default function Header() {
           <span className="chip" title="会话数">
             <FileTextOutlined /> {pipelineStatus.session_count}
           </span>
-          <span className="chip" title="图谱节点">
+          <span className="chip" title="记忆树节点">
             ● {pipelineStatus.graph_node_count}
           </span>
           <span className="chip" title="技能数">
             <ThunderboltOutlined /> {pipelineStatus.skill_count}
           </span>
         </div>
-        {user && (
-          <div className="user-info">
-            <span className="user-chip" title={user.username}>
-              <UserOutlined /> {user.display_name || user.username}
-            </span>
-            <button className="icon-btn logout-btn" title="退出登录" onClick={logout}>
-              <LogoutOutlined />
-            </button>
-          </div>
-        )}
       </div>
     </header>
   );

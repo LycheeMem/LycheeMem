@@ -24,7 +24,6 @@ def _make_record_schema(dim: int) -> pa.Schema:
     vec_type = pa.list_(pa.float32(), dim) if dim > 0 else pa.list_(pa.float32())
     return pa.schema([
         pa.field("record_id", pa.utf8()),
-        pa.field("user_id", pa.utf8()),
         pa.field("memory_type", pa.utf8()),
         pa.field("vector", vec_type),
         pa.field("normalized_vector", vec_type),
@@ -37,7 +36,6 @@ def _make_composite_schema(dim: int) -> pa.Schema:
     vec_type = pa.list_(pa.float32(), dim) if dim > 0 else pa.list_(pa.float32())
     return pa.schema([
         pa.field("composite_id", pa.utf8()),
-        pa.field("user_id", pa.utf8()),
         pa.field("memory_type", pa.utf8()),
         pa.field("vector", vec_type),
         pa.field("normalized_vector", vec_type),
@@ -109,7 +107,6 @@ class LanceVectorIndex:
     def upsert(
         self,
         record_id: str,
-        user_id: str,
         memory_type: str,
         semantic_text: str,
         normalized_text: str,
@@ -137,7 +134,6 @@ class LanceVectorIndex:
             pass
         table.add([{
             "record_id": record_id,
-            "user_id": user_id,
             "memory_type": memory_type,
             "vector": semantic_vector,
             "normalized_vector": normalized_vector,
@@ -150,7 +146,7 @@ class LanceVectorIndex:
     ) -> None:
         """批量写入 MemoryRecord 向量。
         
-        每条 record 需要: record_id, user_id, memory_type, semantic_text, normalized_text。
+        每条 record 需要: record_id, memory_type, semantic_text, normalized_text。
         可选: semantic_vector, normalized_vector, expired。
         """
         if not records:
@@ -189,7 +185,6 @@ class LanceVectorIndex:
         rows = [
             {
                 "record_id": r["record_id"],
-                "user_id": r["user_id"],
                 "memory_type": r["memory_type"],
                 "vector": r["semantic_vector"],
                 "normalized_vector": r["normalized_vector"],
@@ -203,7 +198,6 @@ class LanceVectorIndex:
         self,
         query_text: str,
         *,
-        user_id: str = "",
         column: str = "vector",
         limit: int = 20,
         memory_types: list[str] | None = None,
@@ -223,8 +217,6 @@ class LanceVectorIndex:
 
         # 构造过滤条件
         filters: list[str] = []
-        if user_id:
-            filters.append(f"user_id = '{self._escape_sql(user_id)}'")
         if not include_expired:
             filters.append("expired = false")
         if memory_types:
@@ -245,7 +237,6 @@ class LanceVectorIndex:
         return [
             {
                 "record_id": r.get("record_id", ""),
-                "user_id": r.get("user_id", ""),
                 "memory_type": r.get("memory_type", ""),
                 "_distance": r.get("_distance", 999.0),
             }
@@ -259,7 +250,6 @@ class LanceVectorIndex:
     def upsert_synthesized(
         self,
         composite_id: str,
-        user_id: str,
         memory_type: str,
         semantic_text: str,
         normalized_text: str,
@@ -281,7 +271,6 @@ class LanceVectorIndex:
             pass
         table.add([{
             "composite_id": composite_id,
-            "user_id": user_id,
             "memory_type": memory_type,
             "vector": semantic_vector,
             "normalized_vector": normalized_vector,
@@ -291,7 +280,6 @@ class LanceVectorIndex:
         self,
         query_text: str,
         *,
-        user_id: str = "",
         column: str = "vector",
         limit: int = 10,
         query_vector: list[float] | None = None,
@@ -304,8 +292,6 @@ class LanceVectorIndex:
         table = self._db.open_table(self.SYNTH_TABLE)
 
         filters: list[str] = []
-        if user_id:
-            filters.append(f"user_id = '{self._escape_sql(user_id)}'")
         where = " AND ".join(filters) if filters else None
 
         try:
@@ -319,7 +305,6 @@ class LanceVectorIndex:
         return [
             {
                 "composite_id": r.get("composite_id", ""),
-                "user_id": r.get("user_id", ""),
                 "memory_type": r.get("memory_type", ""),
                 "_distance": r.get("_distance", 999.0),
             }
@@ -330,13 +315,12 @@ class LanceVectorIndex:
     # 批量删除
     # ──────────────────────────────────────
 
-    def delete_all_for_user(self, user_id: str) -> None:
-        """删除指定用户的全部向量。"""
-        escaped = self._escape_sql(user_id)
+    def delete_all(self) -> None:
+        """删除全部向量数据。"""
         for tname in [self.MEMORY_TABLE, self.SYNTH_TABLE]:
             try:
                 table = self._db.open_table(tname)
-                table.delete(f"user_id = '{escaped}'")
+                table.delete("1 = 1")
             except Exception:
                 pass
 
@@ -344,6 +328,13 @@ class LanceVectorIndex:
         try:
             table = self._db.open_table(self.MEMORY_TABLE)
             table.delete(f"record_id = '{self._escape_sql(record_id)}'")
+        except Exception:
+            pass
+
+    def delete_synthesized(self, composite_id: str) -> None:
+        try:
+            table = self._db.open_table(self.SYNTH_TABLE)
+            table.delete(f"composite_id = '{self._escape_sql(composite_id)}'")
         except Exception:
             pass
 

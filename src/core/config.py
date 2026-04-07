@@ -47,10 +47,10 @@ class Settings(BaseSettings):
     min_recent_turns: int = 4
 
     # ─── 存储后端选择 ───
-    session_backend: str = "sqlite"  # "memory" | "sqlite"
+    session_backend: str = "sqlite"
 
     # ─── SQLite (会话持久化) ───
-    sqlite_db_path: str = "lychee_memos_sessions.db"
+    sqlite_db_path: str = "data/sessions.db"
 
     # ─── Compact Semantic Memory ───
     compact_memory_db_path: str = "data/compact_memory.db"
@@ -64,17 +64,9 @@ class Settings(BaseSettings):
     skill_vector_db_path: str = "data/skill_vector"
     skill_top_k: int = 3
 
-    # ─── 图谱检索 ───
-    graph_top_k: int = 5  # 语义记忆检索返回条数
-
     # ─── API ───
     api_host: str = "0.0.0.0"
     api_port: int = 8000
-
-    # ─── 用户认证 ───
-    jwt_secret_key: str = "lychee-dev-secret-change-me"
-    jwt_expire_hours: int = 168  # 7 天
-    user_db_path: str = "lychee_memos_users.db"
 
     model_config = SettingsConfigDict(extra="ignore", env_file=".env", env_file_encoding="utf-8")
 

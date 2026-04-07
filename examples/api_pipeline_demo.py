@@ -4,11 +4,10 @@ LycheeMem — 纯 API Pipeline 流程示例脚本
 
 演示如何仅通过 HTTP API 完成完整的 Pipeline 流程，无需直接调用 Python 代码：
 
-    Step 1: (可选) 注册 / 登录，获取 JWT Token
-    Step 2: POST /memory/search     → 从图谱和技能库检索相关记忆
-    Step 3: POST /memory/synthesize → LLM-as-Judge 评分融合，生成 background_context
-    Step 4: POST /memory/reason     → 基于上下文推理，生成最终回答（写入会话）
-    Step 5: POST /memory/consolidate→ 萃取本轮对话，固化到图谱/技能库
+    Step 1: POST /memory/search     → 从图谱和技能库检索相关记忆
+    Step 2: POST /memory/synthesize → LLM-as-Judge 评分融合，生成 background_context
+    Step 3: POST /memory/reason     → 基于上下文推理，生成最终回答（写入会话）
+    Step 4: POST /memory/consolidate→ 萃取本轮对话，固化到图谱/技能库
 
 前置条件：
     - 服务已启动：python main.py
@@ -17,8 +16,6 @@ LycheeMem — 纯 API Pipeline 流程示例脚本
 用法：
     python examples/api_pipeline_demo.py
     python examples/api_pipeline_demo.py --base-url http://localhost:8000
-    python examples/api_pipeline_demo.py --username alice --password secret123
-    python examples/api_pipeline_demo.py --no-auth           # 以匿名模式运行（无需认证）
     python examples/api_pipeline_demo.py --multi-turn        # 演示多轮对话
 """
 
@@ -91,16 +88,11 @@ def _json_preview(obj: Any, indent: int = 4, max_len: int = 400) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class APIClient:
-    """轻量 HTTP 客户端，统一管理 base_url 与认证头。"""
+    """轻量 HTTP 客户端，统一管理 base_url。"""
 
-    def __init__(self, base_url: str, token: str | None = None):
+    def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
         self.session = requests.Session()
-        if token:
-            self.session.headers["Authorization"] = f"Bearer {token}"
-
-    def set_token(self, token: str) -> None:
-        self.session.headers["Authorization"] = f"Bearer {token}"
 
     def post(self, path: str, payload: dict) -> dict:
         url = f"{self.base_url}{path}"
@@ -126,7 +118,7 @@ class APIClient:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def step_health(client: APIClient) -> bool:
-    _hdr("Step 0 · Health Check")
+    _hdr("Step 0 · Health Check")    
     try:
         data = client.get("/health")
         _ok("服务状态", data.get("status"))
@@ -138,49 +130,13 @@ def step_health(client: APIClient) -> bool:
         return False
 
 
-def step_auth(client: APIClient, username: str, password: str) -> str | None:
-    """注册（若用户名已存在则登录），返回 JWT token。"""
-    _hdr("Step 1 · 认证（注册/登录）")
-    # 先尝试注册
-    try:
-        data = client.post("/auth/register", {
-            "username": username,
-            "password": password,
-            "display_name": username,
-        })
-        token = data["token"]
-        _ok("注册成功", f"user_id={data['user_id']}")
-        _ok("Token",   token[:40] + "…")
-        return token
-    except RuntimeError as e:
-        if "409" in str(e):
-            _warn("用户名已存在，尝试登录…")
-        else:
-            _err(f"注册失败：{e}")
-            return None
-
-    # 登录
-    try:
-        data = client.post("/auth/login", {
-            "username": username,
-            "password": password,
-        })
-        token = data["token"]
-        _ok("登录成功", f"user_id={data['user_id']}")
-        _ok("Token",   token[:40] + "…")
-        return token
-    except RuntimeError as e:
-        _err(f"登录失败：{e}")
-        return None
-
-
 def step_search(
     client: APIClient,
     user_query: str,
     top_k: int = 5,
 ) -> dict:
-    """Step 2: POST /memory/search"""
-    _hdr("Step 2 · 记忆检索 /memory/search")
+    """Step 1: POST /memory/search"""
+    _hdr("Step 1 · 记忆检索 /memory/search")
     _info("查询", user_query)
 
     t0 = time.perf_counter()
@@ -220,8 +176,8 @@ def step_synthesize(
     user_query: str,
     search_result: dict,
 ) -> dict:
-    """Step 3: POST /memory/synthesize"""
-    _hdr("Step 3 · 记忆合成 /memory/synthesize")
+    """Step 2: POST /memory/synthesize"""
+    _hdr("Step 2 · 记忆合成 /memory/synthesize")
 
     t0 = time.perf_counter()
     result = client.post("/memory/synthesize", {
@@ -253,8 +209,8 @@ def step_reason(
     synthesize_result: dict,
     append_to_session: bool = True,
 ) -> dict:
-    """Step 4: POST /memory/reason"""
-    _hdr("Step 4 · 最终推理 /memory/reason")
+    """Step 3: POST /memory/reason"""
+    _hdr("Step 3 · 最终推理 /memory/reason")
 
     t0 = time.perf_counter()
     result = client.post("/memory/reason", {
@@ -287,12 +243,12 @@ def step_consolidate(
     retrieved_context: str,
     background: bool = True,
 ) -> dict:
-    """Step 5: POST /memory/consolidate
+    """Step 4: POST /memory/consolidate
 
     background=True（默认）：立即返回，固化在服务端后台线程中异步执行。
     background=False：同步等待完成，适合调试（可能耗时数分钟）。
     """
-    _hdr("Step 5 · 记忆固化 /memory/consolidate")
+    _hdr("Step 4 · 记忆固化 /memory/consolidate")
     _info("模式", "后台异步" if background else "同步等待")
 
     timeout = 30 if background else 600  # 后台模式只需等待触发确认
@@ -393,7 +349,6 @@ def main() -> None:
     parser.add_argument("--username",  default="demo_user", help="用于注册/登录的用户名")
     parser.add_argument("--password",  default="demo_password_123", help="密码")
     parser.add_argument("--session-id", default=None, help="会话 ID（不指定时自动生成）")
-    parser.add_argument("--no-auth",   action="store_true", help="跳过认证，以匿名模式运行")
     parser.add_argument("--multi-turn", action="store_true", help="演示多轮对话模式")
     parser.add_argument("--query",     default=SINGLE_TURN_QUERY, help="单轮模式下使用的查询文本")
     parser.add_argument("--top-k",     type=int, default=5, help="检索返回条数")
@@ -407,7 +362,6 @@ def main() -> None:
     print(f"\n{BOLD}LycheeMem — 纯 API Pipeline 流程演示{RESET}")
     print(f"  Base URL  : {args.base_url}")
     print(f"  Session   : {session_id}")
-    print(f"  Auth      : {'禁用（匿名）' if args.no_auth else args.username}")
     print(f"  模式      : {'多轮对话' if args.multi_turn else '单轮对话'}")
 
     client = APIClient(args.base_url)
@@ -416,35 +370,25 @@ def main() -> None:
     if not step_health(client):
         sys.exit(1)
 
-    # Step 1: 认证
-    if not args.no_auth:
-        token = step_auth(client, args.username, args.password)
-        if token is None:
-            sys.exit(1)
-        client.set_token(token)
-    else:
-        _hdr("Step 1 · 认证（已跳过 —— 匿名模式）")
-        _warn("以匿名模式运行，所有记忆将存储在公共命名空间")
-
     # ── 多轮 or 单轮 ──────────────────────────────────────────────────────────
     if args.multi_turn:
         run_multi_turn(client, session_id)
     else:
         user_query = args.query
 
-        # Step 2: 搜索
+        # Step 1: 搜索
         search_res = step_search(client, user_query, top_k=args.top_k)
 
-        # Step 3: 合成
+        # Step 2: 合成
         synth_res = step_synthesize(client, user_query, search_res)
 
-        # Step 4: 推理
+        # Step 3: 推理
         reason_res = step_reason(
             client, session_id, user_query, synth_res, append_to_session=True
         )
         _ = reason_res  # 供后续扩展使用
 
-        # Step 5: 固化
+        # Step 4: 固化
         if not args.no_consolidate:
             step_consolidate(
                 client,
@@ -453,7 +397,7 @@ def main() -> None:
                 background=not args.sync_consolidate,
             )
         else:
-            _hdr("Step 5 · 记忆固化（已跳过）")
+            _hdr("Step 4 · 记忆固化（已跳过）")
             _warn("使用 --no-consolidate 跳过了固化步骤")
 
     # ── 总结 ──────────────────────────────────────────────────────────────────

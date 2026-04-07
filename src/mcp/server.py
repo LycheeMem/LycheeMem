@@ -9,22 +9,7 @@ from typing import Any
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from src.auth.auth import decode_access_token
 from src.mcp.handler import LycheeMCPHandler
-
-
-def _resolve_user_id(request: Request) -> str:
-    auth_header = request.headers.get("authorization", "")
-    if not auth_header.startswith("Bearer "):
-        return ""
-    token = auth_header[7:].strip()
-    if not token:
-        return ""
-    try:
-        payload = decode_access_token(token)
-    except Exception:  # noqa: BLE001
-        return ""
-    return str(payload.get("sub") or "")
 
 
 def _touch_session(registry: dict[str, dict[str, Any]], session_id: str) -> None:
@@ -82,7 +67,7 @@ def register_mcp_routes(app: FastAPI, pipeline: Any) -> None:
         if session_id:
             _touch_session(sessions, session_id)
 
-        payload = await handler.handle(body, user_id=_resolve_user_id(request))
+        payload = await handler.handle(body)
         if method == "initialized" and session_id in sessions:
             sessions[session_id]["initialized"] = True
         headers = {"Mcp-Session-Id": session_id} if session_id else {}

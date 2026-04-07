@@ -49,7 +49,6 @@ def create_pipeline(
     warn_threshold = settings.wm_warn_threshold
     block_threshold = settings.wm_block_threshold
     min_recent_turns = settings.min_recent_turns
-    graph_top_k = settings.graph_top_k
     skill_top_k = settings.skill_top_k
     session_store = _create_session_store(settings)
     skill_store = SQLiteSkillStore(
@@ -72,6 +71,7 @@ def create_pipeline(
     semantic_engine = CompactSemanticEngine(
         llm=llm,
         embedder=embedder,
+        session_store=session_store,
         sqlite_db_path=getattr(settings, "compact_memory_db_path", "data/compact_memory.db"),
         vector_db_path=getattr(settings, "compact_vector_db_path", "data/compact_vector"),
         dedup_threshold=getattr(settings, "compact_dedup_threshold", 0.85),
@@ -86,7 +86,6 @@ def create_pipeline(
         embedder=embedder,
         skill_store=skill_store,
         semantic_engine=semantic_engine,
-        graph_top_k=graph_top_k,
         skill_top_k=skill_top_k,
     )
     synthesizer = SynthesizerAgent(llm=llm)

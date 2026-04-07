@@ -1,14 +1,14 @@
 import {
-  ApiOutlined,
-  BulbOutlined,
-  CheckCircleOutlined,
-  ClockCircleOutlined,
-  DownOutlined,
-  ExperimentOutlined,
-  InboxOutlined,
-  RightOutlined,
-  SearchOutlined,
-  SyncOutlined,
+    ApiOutlined,
+    BulbOutlined,
+    CheckCircleOutlined,
+    ClockCircleOutlined,
+    DownOutlined,
+    ExperimentOutlined,
+    InboxOutlined,
+    RightOutlined,
+    SearchOutlined,
+    SyncOutlined,
 } from "@ant-design/icons";
 import { useEffect, useRef, useState } from "react";
 import { fetchConsolidationResult } from "../../api";
@@ -126,12 +126,15 @@ function SearchContent({ search }: { search: PipelineTrace["search_coordinator"]
 function SynthContent({ synth }: { synth: PipelineTrace["synthesizer"] }) {
   // 将 provenance source 翻译为中文
   const sourceLabel: Record<string, string> = {
+    "semantic": "语义记忆",
     "record": "语义记录",
-    "synth": "合成记忆",
-    "compact_semantic": "紧凑记忆库",
-    "graphiti_retrieval": "图谱检索",
-    "graphiti_context": "图谱上下文",
-    "graphiti_community": "图谱社群",
+    "composite": "融合记忆",
+    "synth": "融合记忆",
+    "compact_semantic": "语义记忆",
+    "semantic_retrieval": "语义检索",
+    "graphiti_retrieval": "语义检索（旧）",
+    "graphiti_context": "图谱上下文（旧）",
+    "graphiti_community": "图谱社群（旧）",
   };
   
   return (
@@ -234,8 +237,16 @@ function ConsolidatorContent({
           <span>
             {consolidator.skipped_reason === "no_novelty"
               ? "未检测到新信息"
+              : consolidator.skipped_reason === "no_new_turns"
+              ? "无新增对话轮次"
               : (consolidator.skipped_reason ?? "未知")}
           </span>
+        </div>
+      )}
+      {consolidator.error && (
+        <div className="trace-kv">
+          <span>错误</span>
+          <span>{consolidator.error}</span>
         </div>
       )}
       {consolidator.status === "done" && (
@@ -248,6 +259,12 @@ function ConsolidatorContent({
             <div className="trace-kv">
               <span>写入事实</span>
               <span>{consolidator.facts_added}</span>
+            </div>
+          )}
+          {(consolidator.records_expired ?? 0) > 0 && (
+            <div className="trace-kv">
+              <span>冲突过期</span>
+              <span>{consolidator.records_expired}</span>
             </div>
           )}
           <div className="trace-kv">
@@ -303,7 +320,7 @@ function TraceContent({ trace }: { trace: PipelineTrace }) {
       <TraceStep
         icon={<SearchOutlined />}
         label="检索"
-        summary={`${search.graph_memories.length} 图谱 | ${search.skills.length} 技能`}
+        summary={`${search.graph_memories.length} 语义记忆 | ${search.skills.length} 技能`}
         status="done"
         defaultOpen={search.total_retrieved > 0}
       >
@@ -367,6 +384,7 @@ const RUNNING_STEPS = [
 ];
 
 export default function AgentsTab() {
+  const sessionId = useStore((s) => s.sessionId);
   const currentTrace = useStore((s) => s.currentTrace);
   const isStreaming = useStore((s) => s.isStreaming);
   const completedSteps = useStore((s) => s.completedSteps);
@@ -374,9 +392,13 @@ export default function AgentsTab() {
   const setCurrentTrace = useStore((s) => s.setCurrentTrace);
 
   const currentTraceRef = useRef(currentTrace);
+  const sessionIdRef = useRef(sessionId);
   useEffect(() => {
     currentTraceRef.current = currentTrace;
   }, [currentTrace]);
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
 
   const [consolidatorPoll, setConsolidatorPoll] = useState(0);
 
@@ -399,10 +421,16 @@ export default function AgentsTab() {
     if (!trace || trace.consolidator.status !== "pending") return;
     const delay = consolidatorPoll < 8 ? Math.min(3000 + consolidatorPoll * 1000, 10000) : 10000;
     const timer = setTimeout(async () => {
+      const pollSessionId = sessionIdRef.current;
       try {
-        const result = await fetchConsolidationResult();
+        const result = await fetchConsolidationResult(pollSessionId);
         const latestTrace = currentTraceRef.current;
         if (!latestTrace) return;
+        if (sessionIdRef.current !== pollSessionId) return;
+        if (result.session_id && result.session_id !== pollSessionId) {
+          setConsolidatorPoll((p) => p + 1);
+          return;
+        }
         if (result.status !== "pending") {
           setCurrentTrace({ ...latestTrace, consolidator: result });
         } else {
@@ -413,7 +441,7 @@ export default function AgentsTab() {
       }
     }, delay);
     return () => clearTimeout(timer);
-  }, [consolidatorPoll, setCurrentTrace]);
+  }, [consolidatorPoll, sessionId, setCurrentTrace]);
 
   if (!currentTrace) {
     if (!isStreaming) {
@@ -455,7 +483,7 @@ export default function AgentsTab() {
               autoOpen = true;
             } else if (step.traceKey === "search_coordinator") {
               const search = stepData as PipelineTrace["search_coordinator"];
-              summary = `${search.graph_memories.length} 图谱 | ${search.skills.length} 技能`;
+              summary = `${search.graph_memories.length} 语义记忆 | ${search.skills.length} 技能`;
               content = <SearchContent search={search} />;
               autoOpen = search.total_retrieved > 0;
             } else if (step.traceKey === "synthesizer") {

@@ -76,7 +76,6 @@ class MemoryRecord:
     evidence_turn_range: list[int] = field(default_factory=list)  # [start_turn, end_turn]
     source_session: str = ""
     source_role: str = ""  # "user" | "assistant" | "both" | ""：该 record 主要出自哪一方
-    user_id: str = ""
     created_at: str = ""  # ISO timestamp
     updated_at: str = ""
 
@@ -111,6 +110,7 @@ class CompositeRecord:
 
     # ── 聚合来源 ──
     source_record_ids: list[str] = field(default_factory=list)
+    child_composite_ids: list[str] = field(default_factory=list)  # 直接子 composite，形成层级树
     synthesis_reason: str = ""  # LLM 给出的聚合理由
 
     # ── 继承自 source records 的聚合元数据 ──
@@ -123,7 +123,6 @@ class CompositeRecord:
     affordance_tags: list[str] = field(default_factory=list)
 
     confidence: float = 1.0
-    user_id: str = ""
     created_at: str = ""
     updated_at: str = ""
 
@@ -133,6 +132,27 @@ class CompositeRecord:
     action_success_count: int = 0
     action_fail_count: int = 0
     last_retrieved_at: str = ""
+
+
+@dataclass
+class ActionState:
+    """当前决策状态（Decision State）。
+
+    用于把检索从“只看 query”推进到“结合当前动作意图、约束与执行状态”。
+    该结构会传入 planner，并随 usage log 一并记录，作为后续 usage-aware / RL
+    阶段的状态基座。
+    """
+
+    current_subgoal: str = ""
+    tentative_action: str = ""
+    last_tool_name: str = ""
+    last_tool_result: str = ""
+    missing_slots: list[str] = field(default_factory=list)
+    known_constraints: list[str] = field(default_factory=list)
+    available_tools: list[str] = field(default_factory=list)
+    failure_signal: str = ""
+    token_budget: int = 0
+    recent_context_excerpt: str = ""
 
 
 @dataclass
@@ -151,6 +171,11 @@ class SearchPlan:
     required_constraints: list[str] = field(default_factory=list)  # 当前 action 缺的约束
     required_affordances: list[str] = field(default_factory=list)  # 当前 action 所需的能力/可供性
     missing_slots: list[str] = field(default_factory=list)  # 当前 action 缺的参数/slot
+    tree_retrieval_mode: str = "balanced"  # "root_only" | "balanced" | "descend"
+    tree_expansion_depth: int = 1  # 树下钻深度；0=不下钻
+    include_leaf_records: bool = False  # 是否将叶子 record 纳入最终候选池
+    include_episodic_context: bool = False  # 是否补充原始对话上下文
+    episodic_turn_window: int = 0  # 原始对话窗口大小（按 evidence turn 向两侧扩展）
     depth: int = 5  # 建议检索深度 (top_k)
     reasoning: str = ""  # 规划理由
 
@@ -165,10 +190,10 @@ class UsageLog:
 
     log_id: str
     session_id: str
-    user_id: str
     timestamp: str  # ISO
     query: str
     retrieval_plan: dict[str, Any] = field(default_factory=dict)
+    action_state: dict[str, Any] = field(default_factory=dict)
     retrieved_record_ids: list[str] = field(default_factory=list)  # 被召回的 record IDs
     kept_record_ids: list[str] = field(default_factory=list)  # 被后续融合阶段最终保留的
     final_response_excerpt: str = ""

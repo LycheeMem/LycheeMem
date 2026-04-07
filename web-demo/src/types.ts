@@ -1,11 +1,3 @@
-// ── Auth ──
-export interface AuthUser {
-  user_id: string;
-  username: string;
-  display_name: string;
-  token: string;
-}
-
 // ── Message ──
 export interface MessageMeta {
   memories_retrieved: number;
@@ -26,12 +18,22 @@ export interface GraphNode {
   id: string;
   label: string;
   typeLabel: string;
+  nodeKind?: string;
   properties: Record<string, unknown>;
   // simulation coordinates (set by d3-force)
   x?: number;
   y?: number;
   fx?: number | null;
   fy?: number | null;
+}
+
+export interface GraphTreeNode {
+  id: string;
+  label: string;
+  typeLabel: string;
+  nodeKind: string;
+  properties: Record<string, unknown>;
+  children: GraphTreeNode[];
 }
 
 export interface GraphEdge {
@@ -48,6 +50,7 @@ export interface GraphEdge {
 export interface GraphData {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  treeRoots: GraphTreeNode[];
 }
 
 // ── Agent ──
@@ -196,12 +199,15 @@ export interface ConsolidatorStepTrace {
 }
 
 export interface ConsolidatorTrace {
+  session_id?: string;
   status: "pending" | "done" | "skipped";
   entities_added: number;
   skills_added: number;
   facts_added: number;
+  records_expired: number;
   has_novelty?: boolean;
   skipped_reason?: string;
+  error?: string;
   steps: ConsolidatorStepTrace[];
 }
 

@@ -2,8 +2,8 @@
 
 对多通道召回的候选 MemoryRecord / CompositeRecord 做综合评分：
 
-    Score = α·SemanticRelevance + β·ActionUtility + γ·TemporalFit
-          + δ·Recency + η·EvidenceDensity − λ·TokenCost
+    Score = α·SemanticRelevance + β·ActionUtility + κ·SlotUtility
+          + γ·TemporalFit + δ·Recency + η·EvidenceDensity − λ·TokenCost
 
 所有系数在 0–1 范围内，用户可通过 config 调整。
 
@@ -16,12 +16,23 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from src.memory.semantic.models import (
+    MEMORY_TYPE_CONSTRAINT,
+    MEMORY_TYPE_FAILURE_PATTERN,
+    MEMORY_TYPE_PROCEDURE,
+    MEMORY_TYPE_TOOL_AFFORDANCE,
+    SYNTH_TYPE_CONSTRAINT,
+    SYNTH_TYPE_PATTERN,
+    SYNTH_TYPE_USAGE,
+)
+
 
 @dataclass
 class ScoringWeights:
     """评分权重配置。"""
-    alpha: float = 0.30   # SemanticRelevance
+    alpha: float = 0.25   # SemanticRelevance
     beta: float = 0.25    # ActionUtility
+    kappa: float = 0.15   # SlotUtility
     gamma: float = 0.15   # TemporalFit
     delta: float = 0.10   # Recency
     eta: float = 0.10     # EvidenceDensity
@@ -53,6 +64,8 @@ class MemoryScorer:
         plan_tool_hints: list[str] | None = None,
         plan_required_constraints: list[str] | None = None,
         plan_required_affordances: list[str] | None = None,
+        plan_missing_slots: list[str] | None = None,
+        reflection_context: dict[str, Any] | None = None,
         now: datetime | None = None,
     ) -> list[ScoredCandidate]:
         """对候选列表综合评分并排序。
@@ -83,6 +96,27 @@ class MemoryScorer:
         tool_hints = set(plan_tool_hints or [])
         req_constraints = set(plan_required_constraints or [])
         req_affordances = set(plan_required_affordances or [])
+        reflection_context = reflection_context or {}
+        reflection_constraints = {
+            str(s or "").strip() for s in (reflection_context.get("missing_constraints") or [])
+            if str(s or "").strip()
+        }
+        reflection_affordances = {
+            str(s or "").strip() for s in (reflection_context.get("missing_affordances") or [])
+            if str(s or "").strip()
+        }
+        reflection_slots = [
+            str(s or "").strip() for s in (reflection_context.get("missing_slots") or [])
+            if str(s or "").strip()
+        ]
+        available_tools = {
+            str(s or "").strip() for s in (reflection_context.get("available_tools") or [])
+            if str(s or "").strip()
+        }
+        req_slots = self._merge_unique(
+            [str(s or "").strip() for s in (plan_missing_slots or []) if str(s or "").strip()],
+            reflection_slots,
+        )
 
         scored: list[ScoredCandidate] = []
 
@@ -94,9 +128,21 @@ class MemoryScorer:
             bd["semantic"] = max(0.0, 1.0 - dist)
 
             # 2. ActionUtility: tag 匹配度
-            bd["action_utility"] = self._compute_action_utility(
+            base_action_utility = self._compute_action_utility(
                 c, plan_mode, tool_hints, req_constraints, req_affordances,
             )
+            bd["reflection_fit"] = self._compute_reflection_fit(
+                c,
+                missing_constraints=reflection_constraints,
+                missing_affordances=reflection_affordances,
+                available_tools=available_tools,
+                needs_failure_avoidance=bool(reflection_context.get("needs_failure_avoidance", False)),
+                needs_tool_selection_basis=bool(reflection_context.get("needs_tool_selection_basis", False)),
+            )
+            bd["action_utility"] = min(1.0, base_action_utility + 0.35 * bd["reflection_fit"])
+
+            # 2.5 SlotUtility: 当前动作缺失参数的补全能力
+            bd["slot_utility"] = self._compute_slot_utility(c, req_slots)
 
             # 3. TemporalFit: 时间匹配度（近期的时间引用 → 高分）
             bd["temporal_fit"] = self._compute_temporal_fit(c, now)
@@ -114,6 +160,7 @@ class MemoryScorer:
             final = (
                 self.w.alpha * bd["semantic"]
                 + self.w.beta * bd["action_utility"]
+                + self.w.kappa * bd["slot_utility"]
                 + self.w.gamma * bd["temporal_fit"]
                 + self.w.delta * bd["recency"]
                 + self.w.eta * bd["evidence_density"]
@@ -183,7 +230,15 @@ class MemoryScorer:
 
         # memory_type 加分
         mt = c.get("memory_type", "")
-        action_types = {"procedure", "constraint", "failure_pattern", "tool_affordance"}
+        action_types = {
+            MEMORY_TYPE_PROCEDURE,
+            MEMORY_TYPE_CONSTRAINT,
+            MEMORY_TYPE_FAILURE_PATTERN,
+            MEMORY_TYPE_TOOL_AFFORDANCE,
+            SYNTH_TYPE_PATTERN,
+            SYNTH_TYPE_CONSTRAINT,
+            SYNTH_TYPE_USAGE,
+        }
         if mt in action_types:
             score += 0.5
             parts += 1
@@ -194,6 +249,137 @@ class MemoryScorer:
             parts += 1
 
         return min(1.0, score / max(1, parts))
+
+    @staticmethod
+    def _compute_slot_utility(c: dict[str, Any], missing_slots: list[str]) -> float:
+        """评估候选是否能补齐当前动作缺失的 slot。"""
+        if not missing_slots:
+            return 0.0
+
+        searchable_parts: list[str] = []
+        for field in (
+            c.get("normalized_text", ""),
+            c.get("semantic_text", ""),
+            " ".join(c.get("entities", []) or []),
+            " ".join(c.get("constraint_tags", []) or []),
+            " ".join(c.get("tool_tags", []) or []),
+            " ".join(c.get("affordance_tags", []) or []),
+        ):
+            value = str(field or "").strip().lower()
+            if value:
+                searchable_parts.append(value)
+
+        searchable_text = " \n".join(searchable_parts)
+        if not searchable_text:
+            return 0.0
+
+        hits = 0
+        for slot in missing_slots:
+            slot_text = slot.lower()
+            slot_tokens = [tok for tok in slot_text.replace("/", " ").replace("-", " ").split() if tok]
+            if slot_text in searchable_text:
+                hits += 1
+                continue
+            if slot_tokens and any(tok in searchable_text for tok in slot_tokens):
+                hits += 1
+
+        if hits <= 0:
+            return 0.0
+
+        score = hits / max(1, len(missing_slots))
+        if c.get("memory_type", "") in {
+            MEMORY_TYPE_CONSTRAINT,
+            MEMORY_TYPE_PROCEDURE,
+            MEMORY_TYPE_TOOL_AFFORDANCE,
+            SYNTH_TYPE_CONSTRAINT,
+            SYNTH_TYPE_USAGE,
+        }:
+            score += 0.2
+        return min(1.0, score)
+
+    @staticmethod
+    def _compute_reflection_fit(
+        c: dict[str, Any],
+        *,
+        missing_constraints: set[str],
+        missing_affordances: set[str],
+        available_tools: set[str],
+        needs_failure_avoidance: bool,
+        needs_tool_selection_basis: bool,
+    ) -> float:
+        """根据反思轮暴露的缺口，评估候选对当前缺口的补足能力。"""
+        mt = str(c.get("memory_type", "") or "")
+        c_tools = set(c.get("tool_tags", []) or [])
+        c_constraints = set(c.get("constraint_tags", []) or [])
+        c_affordances = set(c.get("affordance_tags", []) or [])
+        has_failure_tags = bool(c.get("failure_tags"))
+
+        score = 0.0
+        parts = 0
+
+        if needs_failure_avoidance:
+            failure_score = 0.0
+            if mt in {MEMORY_TYPE_FAILURE_PATTERN, SYNTH_TYPE_PATTERN}:
+                failure_score += 0.7
+            elif mt in {MEMORY_TYPE_CONSTRAINT, MEMORY_TYPE_PROCEDURE, SYNTH_TYPE_CONSTRAINT, SYNTH_TYPE_USAGE}:
+                failure_score += 0.35
+            if has_failure_tags:
+                failure_score += 0.5
+            if missing_constraints:
+                overlap = len(c_constraints & missing_constraints)
+                if overlap > 0:
+                    failure_score += 0.3 * (overlap / len(missing_constraints))
+            score += min(1.0, failure_score)
+            parts += 1
+
+        if needs_tool_selection_basis:
+            tool_score = 0.0
+            if mt in {MEMORY_TYPE_TOOL_AFFORDANCE, MEMORY_TYPE_PROCEDURE, SYNTH_TYPE_USAGE, SYNTH_TYPE_PATTERN}:
+                tool_score += 0.6
+            elif mt in {MEMORY_TYPE_CONSTRAINT, SYNTH_TYPE_CONSTRAINT}:
+                tool_score += 0.25
+
+            if available_tools:
+                overlap = len(c_tools & available_tools)
+                if overlap > 0:
+                    tool_score += 0.4 * (overlap / len(available_tools))
+
+            if missing_affordances:
+                overlap = len(c_affordances & missing_affordances)
+                if overlap > 0:
+                    tool_score += 0.5 * (overlap / len(missing_affordances))
+            elif c_affordances:
+                tool_score += 0.15
+
+            score += min(1.0, tool_score)
+            parts += 1
+
+        if missing_constraints and not needs_failure_avoidance:
+            constraint_score = 0.0
+            overlap = len(c_constraints & missing_constraints)
+            if overlap > 0:
+                constraint_score += overlap / len(missing_constraints)
+            if mt in {MEMORY_TYPE_CONSTRAINT, MEMORY_TYPE_PROCEDURE, SYNTH_TYPE_CONSTRAINT, SYNTH_TYPE_USAGE}:
+                constraint_score += 0.25
+            score += min(1.0, constraint_score)
+            parts += 1
+
+        return score / parts if parts > 0 else 0.0
+
+    @staticmethod
+    def _merge_unique(primary: list[str], secondary: list[str]) -> list[str]:
+        seen: set[str] = set()
+        merged: list[str] = []
+        for value in list(primary or []) + list(secondary or []):
+            item = str(value or "").strip()
+            if not item:
+                continue
+            key = item.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+        return merged
 
     @staticmethod
     def _compute_temporal_fit(c: dict[str, Any], now: datetime) -> float:

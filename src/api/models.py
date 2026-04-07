@@ -7,38 +7,6 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-# ─── Auth ───
-
-
-class RegisterRequest(BaseModel):
-    """用户注册请求。"""
-
-    username: str = Field(..., min_length=2, max_length=64)
-    password: str = Field(..., min_length=6, max_length=128)
-    display_name: str | None = None
-
-
-class RegisterResponse(BaseModel):
-    user_id: str
-    username: str
-    display_name: str
-    token: str
-
-
-class LoginRequest(BaseModel):
-    """用户登录请求。"""
-
-    username: str = Field(..., min_length=1)
-    password: str = Field(..., min_length=1)
-
-
-class LoginResponse(BaseModel):
-    user_id: str
-    username: str
-    display_name: str
-    token: str
-
-
 # ─── Chat ───
 
 
@@ -132,6 +100,7 @@ class ConsolidatorTrace(BaseModel):
     entities_added: int = 0
     skills_added: int = 0
     facts_added: int = 0
+    records_expired: int = 0
     has_novelty: bool | None = None
     skipped_reason: str | None = None
     steps: list[ConsolidatorStepTrace] = []
@@ -175,6 +144,7 @@ class GraphEdge(BaseModel):
 class GraphResponse(BaseModel):
     nodes: list[dict[str, Any]]
     edges: list[dict[str, Any]]
+    tree_roots: list[dict[str, Any]] = []
 
 
 class FactEdge(BaseModel):
@@ -274,6 +244,7 @@ class SessionUpdateRequest(BaseModel):
 class MemorySearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=1000)
     top_k: int = Field(default=5, ge=1, le=50)
+    session_id: str | None = Field(default=None, min_length=1, max_length=128)
     include_graph: bool = True
     include_skills: bool = True
 
@@ -281,13 +252,16 @@ class MemorySearchRequest(BaseModel):
 class MemorySearchResponse(BaseModel):
     query: str
     graph_results: list[dict[str, Any]]
+    semantic_results: list[dict[str, Any]]
     skill_results: list[dict[str, Any]]
+    novelty_retrieved_context: str = ""
     total: int
 
 
 class MemorySmartSearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=1000)
     top_k: int = Field(default=5, ge=1, le=50)
+    session_id: str | None = Field(default=None, min_length=1, max_length=128)
     include_graph: bool = True
     include_skills: bool = True
     synthesize: bool = True
@@ -306,6 +280,7 @@ class MemorySynthesizeRequest(BaseModel):
 
     user_query: str = Field(..., min_length=1, max_length=100_000)
     graph_results: list[dict[str, Any]] = Field(default_factory=list)
+    semantic_results: list[dict[str, Any]] = Field(default_factory=list)
     skill_results: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -323,7 +298,9 @@ class MemorySmartSearchResponse(BaseModel):
     query: str
     mode: str = "full"
     graph_results: list[dict[str, Any]]
+    semantic_results: list[dict[str, Any]]
     skill_results: list[dict[str, Any]]
+    novelty_retrieved_context: str = ""
     total: int
     synthesized: bool = False
     background_context: str = ""
@@ -388,7 +365,8 @@ class MemoryConsolidateRequest(BaseModel):
     """记忆固化请求：对当前会话进行记忆萃取，写入图谱与技能库。
 
     传入 retrieved_context 有助于新颖性判断（避免重复固化已有记忆）。
-    retrieved_context 可取自 /memory/synthesize 的 background_context。
+    retrieved_context 应优先取自 search 阶段召回的原始语义记忆片段（pre-synthesis raw context），
+    而不是 /memory/synthesize 的 background_context。
 
     background=True（默认）：在后台线程中异步执行固化，立即返回 status="started"，
         与 Pipeline 内部行为一致，适合生产调用（固化耗时可能超过 60 秒）。
@@ -396,7 +374,7 @@ class MemoryConsolidateRequest(BaseModel):
     """
 
     session_id: str = Field(..., min_length=1, max_length=128)
-    # 本轮检索合成的已有记忆上下文，用于判断对话是否引入了新信息
+    # search 阶段召回的原始已有语义记忆片段，用于判断对话是否引入了新信息
     retrieved_context: str = ""
     # 是否在后台线程中异步执行（默认 True，避免 HTTP 超时）
     background: bool = True

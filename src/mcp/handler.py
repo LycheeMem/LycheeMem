@@ -109,7 +109,7 @@ class LycheeMCPHandler:
     def __init__(self, pipeline: Any):
         self.pipeline = pipeline
 
-    async def handle(self, body: dict[str, Any], *, user_id: str = "") -> dict[str, Any]:
+    async def handle(self, body: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(body, dict):
             return self._err(None, -32600, "Invalid request")
 
@@ -134,7 +134,7 @@ class LycheeMCPHandler:
         if method == "tools/list":
             return self._ok(req_id, {"tools": TOOLS_SCHEMA})
         if method == "tools/call":
-            return await self._dispatch_tool(req_id, body.get("params", {}), user_id=user_id)
+            return await self._dispatch_tool(req_id, body.get("params", {}))
         if method == "ping":
             return self._ok(req_id, {})
         return self._err(req_id, -32601, f"Method not found: {method}")
@@ -143,8 +143,6 @@ class LycheeMCPHandler:
         self,
         req_id: str | int | None,
         params: dict[str, Any],
-        *,
-        user_id: str = "",
     ) -> dict[str, Any]:
         name = params.get("name")
         arguments = params.get("arguments", {}) or {}
@@ -166,19 +164,16 @@ class LycheeMCPHandler:
                 result = run_memory_search(
                     self.pipeline,
                     MemorySearchRequest.model_validate(arguments),
-                    user_id=user_id,
                 ).model_dump()
             elif name == "lychee_memory_smart_search":
                 result = run_memory_smart_search(
                     self.pipeline,
                     MemorySmartSearchRequest.model_validate(arguments),
-                    user_id=user_id,
                 ).model_dump()
             elif name == "lychee_memory_append_turn":
                 result = run_memory_append_turn(
                     self.pipeline,
                     MemoryAppendTurnRequest.model_validate(arguments),
-                    user_id=user_id,
                 ).model_dump()
             elif name == "lychee_memory_synthesize":
                 result = run_memory_synthesize(
@@ -189,7 +184,6 @@ class LycheeMCPHandler:
                 result = run_memory_consolidate(
                     self.pipeline,
                     MemoryConsolidateRequest.model_validate(arguments),
-                    user_id=user_id,
                 ).model_dump()
             else:
                 LOGGER.warning("call.error req_id=%s user_id=%s tool=%s error=%s", req_id, user_id or "-", name, "Unknown tool")

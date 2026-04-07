@@ -20,10 +20,14 @@ TOOLS_SCHEMA = [
                     "default": 5,
                     "description": "每个来源最多返回条数。",
                 },
+                "session_id": {
+                    "type": "string",
+                    "description": "可选，会话 ID；提供后会注入该会话的近期上下文，改进 state-conditioned retrieval。",
+                },
                 "include_graph": {
                     "type": "boolean",
                     "default": True,
-                    "description": "是否检索图谱记忆（实体、关系、事实）。",
+                    "description": "是否检索语义长期记忆（兼容旧字段名 include_graph）。",
                 },
                 "include_skills": {
                     "type": "boolean",
@@ -53,8 +57,8 @@ TOOLS_SCHEMA = [
         "name": "lychee_memory_search",
         "description": (
             "Developer-facing raw retrieval tool. Retrieve relevant information from LycheeMem "
-            "structured long-term memory when you explicitly want the unsynthesized graph_results "
-            "and skill_results payload. For normal agent use, prefer lychee_memory_smart_search."
+            "structured long-term memory when you explicitly want the unsynthesized semantic_results "
+            "(legacy alias: graph_results) and skill_results payload. For normal agent use, prefer lychee_memory_smart_search."
         ),
         "inputSchema": {
             "type": "object",
@@ -68,10 +72,14 @@ TOOLS_SCHEMA = [
                     "default": 5,
                     "description": "Maximum number of results to return per source.",
                 },
+                "session_id": {
+                    "type": "string",
+                    "description": "Optional session ID to inject recent conversation context into retrieval.",
+                },
                 "include_graph": {
                     "type": "boolean",
                     "default": True,
-                    "description": "Whether to include graph memory: entities, relations, and facts.",
+                    "description": "Whether to include semantic memory (legacy field name kept for compatibility).",
                 },
                 "include_skills": {
                     "type": "boolean",
@@ -132,14 +140,18 @@ TOOLS_SCHEMA = [
                 },
                 "graph_results": {
                     "type": "array",
-                    "description": "graph_results returned by lychee_memory_search.",
+                    "description": "Legacy alias for semantic_results returned by lychee_memory_search.",
+                },
+                "semantic_results": {
+                    "type": "array",
+                    "description": "semantic_results returned by lychee_memory_search.",
                 },
                 "skill_results": {
                     "type": "array",
                     "description": "skill_results returned by lychee_memory_search.",
                 },
             },
-            "required": ["user_query", "graph_results", "skill_results"],
+            "required": ["user_query", "skill_results"],
         },
     },
     {
@@ -161,7 +173,7 @@ TOOLS_SCHEMA = [
                 "retrieved_context": {
                     "type": "string",
                     "default": "",
-                    "description": "background_context from the current synthesize step, used for novelty checks.",
+                    "description": "pre-synthesis raw semantic memory context from the current search step, used for novelty checks; do not pass synthesized background_context here.",
                 },
                 "background": {
                     "type": "boolean",

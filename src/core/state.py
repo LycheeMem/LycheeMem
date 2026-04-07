@@ -18,7 +18,6 @@ class PipelineState(TypedDict, total=False):
     # ─── 输入 ───
     user_query: str
     session_id: str
-    user_id: str  # 当前用户 ID（用于多用户隔离）
 
     # ─── 工作记忆管理器输出 ───
     compressed_history: list[dict[str, str]]  # 压缩后的对话上下文
@@ -28,6 +27,12 @@ class PipelineState(TypedDict, total=False):
     # ─── 检索协调器输出 ───
     retrieved_graph_memories: list[dict[str, Any]]
     retrieved_skills: list[dict[str, Any]]
+    novelty_retrieved_context: str  # search 阶段原始语义记忆片段，用于 novelty check
+    retrieval_plan: dict[str, Any]
+    action_state: dict[str, Any]
+    search_mode: str
+    semantic_usage_log_id: str
+    feedback_update: dict[str, Any]
 
     # ─── 整合器输出 ───
     background_context: str  # 融合后的上下文注入字符串

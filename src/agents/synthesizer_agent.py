@@ -10,65 +10,81 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from src.agents.base_agent import BaseAgent
 from src.llm.base import BaseLLM
 
 SYNTHESIS_SYSTEM_PROMPT = """\
-你是严苛的记忆整合与判断器（Memory Synthesizer & Judge）。
-你将收到用户当前的任务需求，以及从不同记忆源（graph / skill）召回的若干原始记忆片段。
+You are a strict Memory Synthesizer and Judge.
+You will receive the user's current task and several raw memory fragments retrieved from different memory sources (`semantic` / `skill`).
 
-你的任务：
-1. 为每一段记忆评估其对当前任务的绝对贡献度；
-2. 将明显无关或价值很低的记忆丢弃；
-3. 将保留下来的高价值记忆去重、融合为一段高密度的 Background Context。
+Your tasks:
+1. Evaluate the absolute contribution of each memory fragment to the current task.
+2. Discard fragments that are clearly irrelevant or low value.
+3. Deduplicate and fuse the retained high-value fragments into a dense `background_context`.
 
-打分与阈值策略：
-- 你可以先在脑中按 0-10 分评估贡献度，然后归一化为 0.0-1.0 写入 `relevance` 字段；
-- 约等价：6/10 ≈ 0.6；
-- 请尽量丢弃 relevance < 0.6 的片段，只保留真正有用的内容。
+Scoring and threshold strategy:
+- You may first score contribution mentally on a 0-10 scale, then normalize it to 0.0-1.0 in the `relevance` field.
+- Rough equivalence: 6/10 ≈ 0.6.
+- Try to discard fragments with relevance < 0.6 and keep only genuinely useful content.
 
-请严格以 JSON 格式回复，结构如下（字段名必须保持一致）：
+Reply strictly in JSON using exactly the following structure and field names:
 {
     "scored_fragments": [
-        {"source": "graph|skill", "index": 0, "relevance": 0.95, "summary": "精炼后的该片段要点"}
+        {"source": "semantic|skill", "index": 0, "relevance": 0.95, "summary": "Condensed key point of this fragment"}
     ],
-    "kept_count": 保留的片段数,
-    "dropped_count": 丢弃的片段数,
-    "background_context": "整合后的背景知识文本（直接可用于注入系统的上文）"
+    "kept_count": number_of_kept_fragments,
+    "dropped_count": number_of_dropped_fragments,
+    "background_context": "Integrated background knowledge text that can be injected directly as system context"
 }
 
-规则：
-- 如果全部片段都不相关，background_context 必须是空字符串；
-- background_context 应是高密度的融合文本，不要简单拼接原文，要进行信息压缩和改写；
-- 保持事实准确，不虚构检索结果中不存在的信息；
-- scored_fragments 按 relevance 降序排列，summary 用简短中文概括该片段的核心信息。
+Rules:
+- If all fragments are irrelevant, `background_context` must be an empty string.
+- `background_context` should be a dense fused text. Do not simply concatenate originals; compress and rewrite the information.
+- Keep facts accurate and do not invent information absent from the retrieved fragments.
+- If fragments include time annotations, explicitly use them and distinguish between memory write time (`created_at`) and event / fact time (`temporal`).
+- During synthesis, do not incorrectly merge facts from different time periods into one tense or conclusion. For constraints, states, failures, and task progress, prioritize the time conditions most relevant to the current problem.
+- Sort `scored_fragments` by `relevance` in descending order. Use `summary` to briefly describe the fragment's core information.
 
-## 示例（仅供参考，不要原样抄写）
+## Example (for reference only, do not copy verbatim)
 
-用户查询：
-    "帮我回顾一下这个项目里和 'user-service 超时' 相关的历史问题，避免我这次排查踩坑。"
+User query:
+    "Review the historical issues in this project related to 'user-service timeout' so I can avoid repeating the same mistakes in this investigation."
 
-来自不同记忆源的片段（由系统预先整理好给你）：
-- [graph] 片段 0：图谱中存在三元组 [user-service, HAS_INCIDENT, 2024-01-15-timeout]，备注为 "上次因为下游 payment-service 慢导致整体超时"。
-- [skill] 片段 1：技能库中有一条技能，其 intent 为 "排查 user-service 超时问题"，包含一份 Markdown 技能文档（步骤、命令、注意事项等）。
+Fragments from different memory sources (already prepared by the system):
+- [semantic] Fragment 0: A historical failure record in semantic memory says, "Last time the overall timeout was caused by a slow downstream payment-service."
+- [skill] Fragment 1: A skill exists in the skill library with the intent "troubleshoot user-service timeout", containing a Markdown skill document with steps, commands, and notes.
 
-期望的 JSON 输出示例：
+Expected JSON output:
 {
     "scored_fragments": [
-        {"source": "skill", "index": 1, "relevance": 0.95, "summary": "历史上专门用于排查 user-service 超时问题的多步排查技能，可直接复用其检查顺序。"},
-        {"source": "graph", "index": 0, "relevance": 0.85, "summary": "图谱记录表明 2024-01-15 的超时主要由下游 payment-service 变慢引起。"}
+        {"source": "skill", "index": 1, "relevance": 0.95, "summary": "A specialized multi-step troubleshooting skill for user-service timeout exists and its checking order can be reused directly."},
+        {"source": "semantic", "index": 0, "relevance": 0.85, "summary": "Historical semantic memory indicates that the timeout on 2024-01-15 was mainly caused by downstream payment-service slowdown."}
     ],
     "kept_count": 2,
     "dropped_count": 0,
-    "background_context": "历史信息显示：user-service 的超时曾与 payment-service 性能问题高度相关，并且你之前已经有一套成熟的排查技能（包含查看网关 QPS、user-service 错误率以及下游依赖状态等步骤）。建议本次排查优先复用该技能的步骤顺序，并重点关注 payment-service 与网关流量情况，以避免重复踩入相同故障模式。"
+    "background_context": "Historical information shows that user-service timeouts were strongly related to payment-service performance issues, and there is already a mature troubleshooting skill that includes checking gateway QPS, user-service error rate, and downstream dependency status. For this investigation, reuse that troubleshooting order first and pay special attention to payment-service and gateway traffic so the same failure pattern is not repeated."
 }
 """
 
 
 class SynthesizerAgent(BaseAgent):
     """整合排序器：将多源检索结果融合为 Background Context。"""
+
+    _SEMANTIC_SOURCE_ALIASES = {
+        "graph": "semantic",
+        "graphiti": "semantic",
+        "graphiti_retrieval": "semantic",
+        "graphiti_context": "semantic",
+        "graphiti_community": "semantic",
+        "compact_semantic": "semantic",
+        "record": "semantic",
+        "composite": "semantic",
+        "semantic": "semantic",
+        "skill": "skill",
+    }
 
     def __init__(self, llm: BaseLLM):
         super().__init__(llm=llm, prompt_template=SYNTHESIS_SYSTEM_PROMPT)
@@ -90,18 +106,7 @@ class SynthesizerAgent(BaseAgent):
         """
         skills = retrieved_skills or []
 
-        # 收集检索阶段 provenance（Graphiti constructor/rerank 信号等），用于 pipeline 端到端溯源。
-        retrieval_provenance: list[dict[str, Any]] = []
-        for mem in retrieved_graph_memories or []:
-            p = mem.get("provenance")
-            if isinstance(p, list):
-                for item in p:
-                    if isinstance(item, dict):
-                        retrieval_provenance.append(item)
-        if len(retrieval_provenance) > 50:
-            retrieval_provenance = retrieval_provenance[:50]
-
-        fragments = self._format_fragments(
+        fragments = self._collect_fragments(
             retrieved_graph_memories or [],
             skills,
         )
@@ -113,14 +118,14 @@ class SynthesizerAgent(BaseAgent):
             return {
                 "background_context": "",
                 "skill_reuse_plan": skill_reuse_plan,
-                "provenance": (
-                    [{"source": "graphiti_retrieval", "items": retrieval_provenance}]
-                    if retrieval_provenance
-                    else []
-                ),
+                "provenance": [],
+                "kept_count": 0,
+                "dropped_count": 0,
+                "input_fragment_count": 0,
             }
 
-        user_content = f"用户查询：{user_query}\n\n检索到的记忆片段：\n{fragments}"
+        fragments_text = self._format_fragments(fragments)
+        user_content = f"User query: {user_query}\n\nRetrieved memory fragments:\n{fragments_text}"
         response = self._call_llm(
             user_content,
             system_content=self.prompt_template,
@@ -129,25 +134,29 @@ class SynthesizerAgent(BaseAgent):
 
         try:
             parsed = self._parse_json(response)
-            provenance = parsed.get("scored_fragments", [])
-            if not isinstance(provenance, list):
-                provenance = []
-            if retrieval_provenance:
-                provenance.append({"source": "graphiti_retrieval", "items": retrieval_provenance})
+            provenance = self._materialize_provenance(
+                parsed.get("scored_fragments", []),
+                fragments,
+            )
+            kept_count = len(provenance)
+            dropped_count = max(0, len(fragments) - kept_count)
             return {
                 "background_context": parsed.get("background_context", ""),
                 "skill_reuse_plan": skill_reuse_plan,
                 "provenance": provenance,
+                "kept_count": kept_count,
+                "dropped_count": dropped_count,
+                "input_fragment_count": len(fragments),
             }
         except (ValueError, KeyError):
+            fallback_provenance = self._fallback_provenance(fragments)
             return {
                 "background_context": response,
                 "skill_reuse_plan": skill_reuse_plan,
-                "provenance": (
-                    [{"source": "graphiti_retrieval", "items": retrieval_provenance}]
-                    if retrieval_provenance
-                    else []
-                ),
+                "provenance": fallback_provenance,
+                "kept_count": len(fallback_provenance),
+                "dropped_count": max(0, len(fragments) - len(fallback_provenance)),
+                "input_fragment_count": len(fragments),
             }
 
     @staticmethod
@@ -169,48 +178,304 @@ class SynthesizerAgent(BaseAgent):
 
     @staticmethod
     def _format_fragments(
-        graph_memories: list[dict[str, Any]],
-        skills: list[dict[str, Any]],
+        fragments: list[dict[str, Any]],
     ) -> str:
         """将不同来源的检索结果格式化为统一文本。"""
         sections = []
 
-        if graph_memories:
-            lines = ["[知识图谱]"]
-            for i, mem in enumerate(graph_memories, 1):
-                anchor = mem.get("anchor", {})
-                subgraph = mem.get("subgraph", {})
-                edges = subgraph.get("edges", [])
-                lines.append(f"  片段{i}: 锚点={json.dumps(anchor, ensure_ascii=False)}")
+        semantic_fragments = [f for f in fragments if f.get("source") == "semantic"]
+        if semantic_fragments:
+            lines = ["[Semantic Memory]"]
+            for frag in semantic_fragments:
+                idx = int(frag.get("index", 0))
+                memory_type = str(frag.get("memory_type", "") or "unknown")
+                semantic_source_type = str(frag.get("semantic_source_type", "") or "semantic")
+                retrieval_score = float(frag.get("retrieval_score", 0.0) or 0.0)
+                text = str(frag.get("display_text") or frag.get("semantic_text") or "").strip()
+                text = text.replace("\r\n", "\n")
+                if len(text) > 800:
+                    text = text[:800] + "…"
 
-                constructed = str(mem.get("constructed_context", "")).strip()
-                if constructed:
-                    preview = constructed.strip().replace("\r\n", "\n")
-                    # 控制长度，避免 prompt 过长
-                    if len(preview) > 1500:
-                        preview = preview[:1500] + "…"
-                    lines.append(f"    构造上下文: {preview}")
+                lines.append(
+                    f"  Fragment {idx}: source={semantic_source_type}, memory_type={memory_type}, retrieval_score={retrieval_score:.3f}"
+                )
+                time_info = SynthesizerAgent._format_fragment_time_info(frag)
+                if time_info:
+                    lines.append(f"    Time: {time_info}")
+                lines.append(f"    Content: {text}")
 
-                if edges:
-                    for edge in edges[:5]:  # 限制数量防止过长
-                        fact = str(edge.get("fact", "")).strip()
-                        if fact:
-                            lines.append(f"    事实: {fact[:300]}")
-                        else:
-                            lines.append(
-                                f"    {edge.get('source')} --[{edge.get('relation', '?')}]--> {edge.get('target')}"
-                            )
-                        evidence = str(edge.get("evidence", "")).strip()
-                        if evidence:
-                            lines.append(f"      证据: {evidence[:200]}")
+                entities = frag.get("entities") or []
+                if entities:
+                    preview = ", ".join(str(e) for e in entities[:8])
+                    lines.append(f"    Entities: {preview}")
             sections.append("\n".join(lines))
 
-        if skills:
-            lines = ["[技能库]"]
-            for i, skill in enumerate(skills, 1):
-                doc = str(skill.get("doc_markdown", ""))
-                doc_preview = doc.replace("\n", " ").strip()[:200]
-                lines.append(f"  技能{i}: 意图={skill.get('intent', '?')}, 文档={doc_preview}")
+        skill_fragments = [f for f in fragments if f.get("source") == "skill"]
+        if skill_fragments:
+            lines = ["[Skill Library]"]
+            for frag in skill_fragments:
+                idx = int(frag.get("index", 0))
+                intent = str(frag.get("intent", "") or "?")
+                doc = str(frag.get("doc_markdown", "") or "")
+                doc_preview = doc.replace("\n", " ").strip()[:240]
+                lines.append(f"  Fragment {idx}: intent={intent}, document={doc_preview}")
             sections.append("\n".join(lines))
 
         return "\n\n".join(sections)
+
+    def _collect_fragments(
+        self,
+        graph_memories: list[dict[str, Any]],
+        skills: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """将 wrapper 结果打平成可供 LLM 打分的独立片段。"""
+        fragments: list[dict[str, Any]] = []
+
+        for mem in graph_memories:
+            anchor = mem.get("anchor", {}) or {}
+            provenance = mem.get("provenance")
+            node_id = str(anchor.get("node_id") or "")
+
+            if node_id == "compact_context" and isinstance(provenance, list) and provenance:
+                for item in provenance:
+                    if not isinstance(item, dict):
+                        continue
+                    semantic_text = str(item.get("semantic_text") or "").strip()
+                    display_text = str(item.get("display_text") or semantic_text).strip()
+                    if not semantic_text:
+                        continue
+                    fragments.append(
+                        {
+                            "source": "semantic",
+                            "semantic_source_type": str(item.get("source") or "record") or "record",
+                            "record_id": str(item.get("record_id") or ""),
+                            "memory_type": str(item.get("memory_type") or ""),
+                            "semantic_text": semantic_text,
+                            "display_text": display_text,
+                            "created_at": str(item.get("created_at") or ""),
+                            "temporal": item.get("temporal") or {},
+                            "episode_refs": list(item.get("episode_refs") or []),
+                            "entities": list(item.get("entities") or []),
+                            "retrieval_score": float(item.get("score") or 0.0),
+                            "score_breakdown": item.get("score_breakdown") or {},
+                        }
+                    )
+                continue
+
+            constructed = str(mem.get("constructed_context") or "").strip()
+            if not constructed:
+                continue
+            fragments.append(
+                {
+                    "source": "semantic",
+                    "semantic_source_type": "context",
+                    "record_id": str(anchor.get("node_id") or "semantic_context"),
+                    "memory_type": str(anchor.get("label") or "context"),
+                    "semantic_text": constructed,
+                    "display_text": constructed,
+                    "entities": [],
+                    "retrieval_score": float(anchor.get("score") or 0.0),
+                    "score_breakdown": {},
+                }
+            )
+
+        for skill in skills:
+            intent = str(skill.get("intent") or "").strip()
+            doc = str(skill.get("doc_markdown") or "").strip()
+            display_text = doc or intent
+            if not display_text:
+                continue
+            fragments.append(
+                {
+                    "source": "skill",
+                    "skill_id": str(skill.get("id") or skill.get("skill_id") or ""),
+                    "intent": intent,
+                    "doc_markdown": doc,
+                    "display_text": display_text,
+                    "retrieval_score": float(skill.get("score") or 0.0),
+                }
+            )
+
+        for idx, frag in enumerate(fragments):
+            frag["index"] = idx
+
+        return fragments
+
+    def _materialize_provenance(
+        self,
+        scored_fragments: Any,
+        fragments: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """将 LLM 评分结果与真实 fragment 元数据对齐。"""
+        if not isinstance(scored_fragments, list):
+            return []
+
+        index_map = {
+            int(f.get("index", -1)): f
+            for f in fragments
+        }
+        provenance: list[dict[str, Any]] = []
+        seen_keys: set[tuple[str, int, str]] = set()
+
+        for item in scored_fragments:
+            if not isinstance(item, dict):
+                continue
+            try:
+                idx = int(item.get("index", -1))
+            except (TypeError, ValueError):
+                continue
+            fragment = index_map.get(idx)
+            if fragment is None:
+                continue
+
+            source = self._normalize_fragment_source(item.get("source"), fragment)
+            summary = str(item.get("summary") or fragment.get("display_text") or "").strip()
+            relevance = float(item.get("relevance") or 0.0)
+            unique_id = str(fragment.get("record_id") or fragment.get("skill_id") or f"fragment:{idx}")
+            dedupe_key = (source, idx, unique_id)
+            if dedupe_key in seen_keys:
+                continue
+            seen_keys.add(dedupe_key)
+
+            provenance.append(
+                self._provenance_from_fragment(
+                    fragment,
+                    source=source,
+                    relevance=relevance,
+                    summary=summary,
+                )
+            )
+
+        provenance.sort(key=lambda x: float(x.get("relevance") or 0.0), reverse=True)
+        return provenance
+
+    def _fallback_provenance(self, fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """LLM 输出异常时，退化为按检索分数展示前几个片段。"""
+        ranked = sorted(
+            fragments,
+            key=lambda f: float(f.get("retrieval_score") or 0.0),
+            reverse=True,
+        )
+        fallback = []
+        for frag in ranked[:8]:
+            fallback.append(
+                self._provenance_from_fragment(
+                    frag,
+                    source=str(frag.get("source") or "semantic"),
+                    relevance=float(frag.get("retrieval_score") or 0.0),
+                    summary=str(frag.get("display_text") or "")[:160],
+                )
+            )
+        return fallback
+
+    def _normalize_fragment_source(
+        self,
+        raw_source: Any,
+        fragment: dict[str, Any],
+    ) -> str:
+        fragment_source = self._SEMANTIC_SOURCE_ALIASES.get(
+            str(fragment.get("source") or "semantic").strip().lower(),
+            "semantic",
+        )
+        value = str(raw_source or "").strip().lower()
+        normalized = self._SEMANTIC_SOURCE_ALIASES.get(value)
+        if normalized and normalized == fragment_source:
+            return normalized
+        return fragment_source
+
+    @staticmethod
+    def _provenance_from_fragment(
+        fragment: dict[str, Any],
+        *,
+        source: str,
+        relevance: float,
+        summary: str,
+    ) -> dict[str, Any]:
+        base = {
+            "source": source,
+            "index": int(fragment.get("index", 0)),
+            "relevance": relevance,
+            "summary": summary,
+        }
+        if source == "skill":
+            base.update(
+                {
+                    "skill_id": str(fragment.get("skill_id") or ""),
+                    "intent": str(fragment.get("intent") or ""),
+                    "score": float(fragment.get("retrieval_score") or 0.0),
+                }
+            )
+            return base
+
+        base.update(
+            {
+                "record_id": str(fragment.get("record_id") or ""),
+                "memory_type": str(fragment.get("memory_type") or ""),
+                "semantic_source_type": str(fragment.get("semantic_source_type") or "semantic"),
+                "score": float(fragment.get("retrieval_score") or 0.0),
+                "score_breakdown": fragment.get("score_breakdown") or {},
+                "semantic_text": str(fragment.get("semantic_text") or ""),
+                "display_text": str(fragment.get("display_text") or fragment.get("semantic_text") or ""),
+                "created_at": str(fragment.get("created_at") or ""),
+                "temporal": fragment.get("temporal") or {},
+                "episode_refs": list(fragment.get("episode_refs") or []),
+                "entities": list(fragment.get("entities") or []),
+            }
+        )
+        return base
+
+    @staticmethod
+    def _format_fragment_time_info(fragment: dict[str, Any]) -> str:
+        parts: list[str] = []
+
+        created_at = SynthesizerAgent._compact_timestamp(fragment.get("created_at"))
+        if created_at:
+            parts.append(f"memory_written={created_at}")
+
+        temporal = fragment.get("temporal") or {}
+        temporal_text = SynthesizerAgent._format_temporal_dict(temporal)
+        if temporal_text:
+            parts.append(f"event_time={temporal_text}")
+
+        episode_refs = fragment.get("episode_refs") or []
+        episode_time_text = SynthesizerAgent._format_episode_time_refs(episode_refs)
+        if episode_time_text:
+            parts.append(f"source_dialogue_time={episode_time_text}")
+
+        return "; ".join(parts)
+
+    @staticmethod
+    def _format_temporal_dict(temporal: Any) -> str:
+        if not isinstance(temporal, dict):
+            return ""
+        parts: list[str] = []
+        for key in sorted(temporal.keys()):
+            value = str(temporal.get(key) or "").strip()
+            if not value:
+                continue
+            parts.append(f"{key}={SynthesizerAgent._compact_timestamp(value)}")
+        return ", ".join(parts)
+
+    @staticmethod
+    def _format_episode_time_refs(episode_refs: Any) -> str:
+        if not isinstance(episode_refs, list):
+            return ""
+        values: list[str] = []
+        seen: set[str] = set()
+        for ref in episode_refs[:4]:
+            if not isinstance(ref, dict):
+                continue
+            created_at = SynthesizerAgent._compact_timestamp(ref.get("created_at"))
+            if not created_at or created_at in seen:
+                continue
+            seen.add(created_at)
+            values.append(created_at)
+        return ", ".join(values)
+
+    @staticmethod
+    def _compact_timestamp(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        text = text.replace(" ", "T")
+        return re.sub(r"\.\d+(?=(?:Z|[+-]\d{2}:?\d{2})?$)", "", text)
