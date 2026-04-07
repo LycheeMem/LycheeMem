@@ -17,12 +17,18 @@ LycheeMem is a compact memory framework for LLM agents. It starts from efficient
 
 <p align="center">
   <a href="https://ik.imagekit.io/wvs0koh4k/99043dc9-b8dd-4e78-ac48-c38da4e7405c.mp4">
-    <img src="./assets/demo-cover.png" width="920" alt="LycheeMem Demo" />
+    <img src="./assets/demo-preview.png" width="920" alt="LycheeMem Demo" />
   </a>
 </p>
 
 <p align="center">
   <strong>Demo:</strong> LycheeMem vs ChatGPT Free on long-horizon memory tasks
+</p>
+
+<p align="center">
+  <a href="https://ik.imagekit.io/wvs0koh4k/99043dc9-b8dd-4e78-ac48-c38da4e7405c.mp4">
+    Watch the full video
+  </a>
 </p>
 
 
