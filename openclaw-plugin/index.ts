@@ -171,7 +171,7 @@ const CONSOLIDATE_SCHEMA = {
 } as const;
 
 function normalizeBaseUrl(url: string): string {
-  return (url || "http://127.0.0.1:8100").replace(/\/+$/, "");
+  return (url || "http://127.0.0.1:8000").replace(/\/+$/, "");
 }
 
 function asString(value: unknown): string | undefined {
@@ -210,39 +210,37 @@ function sanitizeSegment(value: string): string {
 
 function getPluginConfig(api: any): PluginConfig {
   const raw = api?.config?.plugins?.entries?.[PLUGIN_ID]?.config ?? {};
-  const env = typeof process !== "undefined" ? process.env ?? {} : {};
 
   return {
-    baseUrl: normalizeBaseUrl(String(raw.baseUrl ?? env.LYCHEEMEM_BASE_URL ?? "http://127.0.0.1:8100")),
-    transport: String(raw.transport ?? env.LYCHEEMEM_TRANSPORT ?? "mcp").trim().toLowerCase() === "http" ? "http" : "mcp",
-    timeout: Number(raw.timeout ?? env.LYCHEEMEM_TIMEOUT ?? 120),
-    apiToken: String(raw.apiToken ?? env.LYCHEEMEM_API_TOKEN ?? ""),
+    baseUrl: normalizeBaseUrl(String(raw.baseUrl ?? "http://127.0.0.1:8000")),
+    transport: String(raw.transport ?? "mcp").trim().toLowerCase() === "http" ? "http" : "mcp",
+    timeout: Number(raw.timeout ?? 120),
+    apiToken: String(raw.apiToken ?? ""),
     enableHostLifecycle: asBoolean(
-      raw.enableHostLifecycle ?? env.LYCHEEMEM_ENABLE_HOST_LIFECYCLE,
+      raw.enableHostLifecycle,
       true
     ),
     enablePromptPresence: asBoolean(
-      raw.enablePromptPresence ?? env.LYCHEEMEM_ENABLE_PROMPT_PRESENCE,
+      raw.enablePromptPresence,
       true
     ),
     enableAutoAppendTurns: asBoolean(
-      raw.enableAutoAppendTurns ?? env.LYCHEEMEM_ENABLE_AUTO_APPEND_TURNS,
+      raw.enableAutoAppendTurns,
       true
     ),
     enableBoundaryConsolidation: asBoolean(
-      raw.enableBoundaryConsolidation ?? env.LYCHEEMEM_ENABLE_BOUNDARY_CONSOLIDATION,
+      raw.enableBoundaryConsolidation,
       true
     ),
     enableProactiveConsolidation: asBoolean(
-      raw.enableProactiveConsolidation ?? env.LYCHEEMEM_ENABLE_PROACTIVE_CONSOLIDATION,
+      raw.enableProactiveConsolidation,
       true
     ),
     proactiveConsolidationCooldownSeconds: Math.max(
       15,
       Math.floor(
         asNumber(
-          raw.proactiveConsolidationCooldownSeconds ??
-            env.LYCHEEMEM_PROACTIVE_CONSOLIDATION_COOLDOWN_SECONDS,
+          raw.proactiveConsolidationCooldownSeconds,
           180
         )
       )

@@ -25,12 +25,7 @@ Get the LycheeMem plugin connected to OpenClaw in under 5 minutes.
 Confirm the following before proceeding:
 
 - OpenClaw is installed and the `openclaw` command is available
-- The LycheeMem backend is running (default: `http://127.0.0.1:8100`)
-
-**Check backend health:**
-```bash
-curl http://127.0.0.1:8100/health
-```
+- You know the local path of the LycheeMem repository
 
 > **Current auth model:** the merged LycheeMem backend is currently running in a no-auth / single-tenant mode. The OpenClaw plugin therefore does not need a login flow or Bearer token for normal local use. If you later restore authenticated multi-user deployments, the optional `apiToken` field remains available for backward compatibility.
 
@@ -48,6 +43,16 @@ Install:
 openclaw plugins install "$LYCHEEMEM_REPO/openclaw-plugin"
 ```
 
+If newer OpenClaw builds complain about `HOOK.md missing`, that usually means the
+local directory was not recognized as a plugin package. This repository now
+ships a plugin `package.json` with `openclaw.extensions`, which newer OpenClaw
+expects during local installs.
+
+Newer OpenClaw builds may also block plugin installation if the plugin reads
+environment variables and also performs network requests. This plugin now uses
+the OpenClaw plugin config as the canonical source of settings during install
+and runtime, which is the recommended path for current OpenClaw releases.
+
 Verify installation:
 ```bash
 openclaw plugins list
@@ -57,18 +62,81 @@ openclaw skills check
 
 ---
 
-## 2. Configure the plugin
+## 2. Enable agent tools and confirm the skill
 
-### Option A: Dashboard
+The plugin can be installed correctly and still remain invisible to the model if the current agent is not allowed to use the tools or the skill is disabled.
 
-Go to the left sidebar and open the config area. Scroll to the bottom, open **Plugins**, then find the LycheeMem plugin entry:
+### Option A: OpenClaw page
 
-- `Thin OpenClaw adapter for LycheeMem structured memory tools. (plugin: lycheemem-tools)`
-- Open **LycheeMem Tools Config**
-- Open the **advanced** section if needed
+In the left sidebar:
+
+1. Open **Agents**
+2. Select the agent you are using, usually `main`
+3. Open **Tools**
+4. Enable the LycheeMem tools you want the model to use
+5. Save
+6. Open **Skills**
+7. Confirm `lycheemem` is enabled for the current agent
+8. Save again if needed
+
+Recommended minimum tool set:
+- `lychee_memory_smart_search`
+- `lychee_memory_consolidate`
+- `lychee_memory_append_turn`
+
+Optional but useful:
+- `lychee_memory_search`
+- `lychee_memory_synthesize`
+
+### Option B: `~/.openclaw/openclaw.json`
+
+```json
+{
+  "agents": {
+    "list": [
+      {
+        "id": "main",
+        "tools": {
+          "alsoAllow": [
+            "lychee_memory_smart_search",
+            "lychee_memory_consolidate",
+            "lychee_memory_append_turn",
+            "lychee_memory_search",
+            "lychee_memory_synthesize"
+          ]
+        }
+      }
+    ]
+  },
+  "skills": {
+    "entries": {
+      "lycheemem": {
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+---
+
+## 3. Configure the plugin in Automation -> Plugins
+
+### Option A: OpenClaw page
+
+In the left sidebar:
+
+1. Open **Automation**
+2. Open **Plugins**
+3. Find the LycheeMem entry:
+   `Thin OpenClaw adapter for LycheeMem structured memory tools. (plugin: lycheemem-tools)`
+4. Open **LycheeMem Tools Config**
+5. Expand **advanced** if needed
+6. Fill in the connection fields and switches below
+7. Save
 
 Fill in at minimum:
-- **LycheeMem Base URL** = `http://127.0.0.1:8100`
+- **LycheeMem Base URL** = `http://127.0.0.1:8000`
 - **Transport** = `mcp`
 - **API Token (Optional)** = leave empty for the current no-auth backend
 
@@ -76,7 +144,7 @@ Make sure these plugin-level switches are enabled:
 - **Enable LycheeMem Tools**
 - **Plugin Hook Policy**
 
-Recommended switches (all on):
+Recommended switches:
 - **Enable Host Lifecycle** = `true`
 - **Inject Prompt Presence** = `true`
 - **Auto Append Turns** = `true`
@@ -102,8 +170,9 @@ Recommended default:
       "lycheemem-tools": {
         "enabled": true,
         "config": {
-          "baseUrl": "http://127.0.0.1:8100",
+          "baseUrl": "http://127.0.0.1:8000",
           "transport": "mcp",
+          "apiToken": "",
           "enableHostLifecycle": true,
           "enablePromptPresence": true,
           "enableAutoAppendTurns": true,
@@ -117,54 +186,7 @@ Recommended default:
 }
 ```
 
-### Option C: Agent tools
-
-The plugin and skill can be installed correctly and still remain invisible to the model if the agent tool allowlist is not enabled.
-
-In the left sidebar:
-
-1. Open **Agents**
-2. Select the agent you are using, usually `main`
-3. Open **Tools**
-4. Enable the LycheeMem tools you want the model to use
-
-Recommended minimum set:
-- `lychee_memory_smart_search`
-- `lychee_memory_consolidate`
-- `lychee_memory_append_turn`
-
-Optional but useful:
-- `lychee_memory_search`
-- `lychee_memory_synthesize`
-
-If you prefer editing `~/.openclaw/openclaw.json` directly, the agent section should allow the same tools:
-
-```json
-{
-  "agents": {
-    "list": [
-      {
-        "id": "main",
-        "tools": {
-          "alsoAllow": [
-            "lychee_memory_smart_search",
-            "lychee_memory_consolidate",
-            "lychee_memory_append_turn",
-            "lychee_memory_search",
-            "lychee_memory_synthesize"
-          ]
-        }
-      }
-    ]
-  }
-}
-```
-
----
-
-## 3. Restart the gateway
-
-Restart the gateway to apply changes:
+Restart the gateway after saving plugin config:
 ```bash
 openclaw gateway restart
 ```
@@ -172,7 +194,27 @@ openclaw gateway restart
 
 ---
 
-## 4. Verification
+## 4. Ensure the LycheeMem backend is running before use
+
+Before testing real conversations, make sure the LycheeMem server is already up and reachable from OpenClaw.
+
+Default local endpoint:
+- `http://127.0.0.1:8000`
+
+Health check:
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Expected:
+- the server responds successfully
+- the URL configured in **Automation -> Plugins -> LycheeMem Tools Config** matches the real backend address
+
+If you are on WSL, bind the server to `0.0.0.0:8000` if needed, but access it from OpenClaw with `http://127.0.0.1:8000` or `http://localhost:8000`, not `http://0.0.0.0:8000`.
+
+---
+
+## Verification
 
 ### Verify the skill is mounted
 ```bash
@@ -183,12 +225,13 @@ openclaw skills check
 
 Also confirm:
 - the skill is enabled
-- the plugin entry `lycheemem-tools` is enabled
-- the agent tools page shows the LycheeMem tools as enabled for the current agent
+- the current agent has LycheeMem tools enabled under **Agents -> Tools**
+- the plugin entry `lycheemem-tools` is enabled under **Automation -> Plugins**
 
 ### Verify plugin config is loaded
 
-In the dashboard, reopen:
+In the OpenClaw page, reopen:
+- **Automation**
 - **Plugins**
 - `Thin OpenClaw adapter for LycheeMem structured memory tools. (plugin: lycheemem-tools)`
 - **LycheeMem Tools Config**
@@ -237,10 +280,12 @@ openclaw skills check
 If the skill shows `Ready` but the model still does not use it, the gateway has likely not been restarted or the current session is using a stale prompt. 
 
 Also verify:
-- the plugin entry `lycheemem-tools` is enabled
+- the current agent has LycheeMem tools enabled under **Agents -> Tools**
+- `lycheemem` is enabled under **Agents -> Skills**
+- the plugin entry `lycheemem-tools` is enabled under **Automation -> Plugins**
 - **Enable LycheeMem Tools** is on
 - **Plugin Hook Policy** is on
-- the current agent has LycheeMem tools enabled under **Agents -> Tools**
+- the backend at `http://127.0.0.1:8000` is actually reachable
 
 **Solution:**
 1. Restart the gateway
@@ -252,8 +297,7 @@ Turn mirroring is handled automatically by hooks in this version. If the model c
 ### No consolidate after `/new`
 Check:
 1. `enableBoundaryConsolidation` is `true`
-2. The token is valid
-3. The gateway process was actually restarted
+2. The gateway process was actually restarted
 
 ---
 
