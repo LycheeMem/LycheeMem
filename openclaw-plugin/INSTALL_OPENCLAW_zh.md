@@ -26,46 +26,11 @@
 
 - 已安装 OpenClaw，且可执行 `openclaw`
 - LycheeMem 后端已启动（默认地址 `http://127.0.0.1:8000`）
-- 已准备好 LycheeMem Bearer Token（见下方获取方式）
 
 **检查后端健康状态：**
 ```bash
 curl http://127.0.0.1:8000/health
 ```
-
-### 获取 Bearer Token
-
-LycheeMem 使用 JWT 认证。首次使用需注册账号，之后通过登录获取 token。
-
-#### 注册（首次）
-```bash
-curl -s -X POST http://127.0.0.1:8000/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"username": "your_username", "password": "your_password"}' \
-  | python3 -m json.tool
-```
-*响应示例：*
-```json
-{
-  "user_id": "...",
-  "username": "your_username",
-  "display_name": "your_username",
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-}
-```
-
-#### 登录（已有账号）
-```bash
-curl -s -X POST http://127.0.0.1:8000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username": "your_username", "password": "your_password"}' \
-  | python3 -m json.tool
-```
-*响应结构与注册相同，取 `token` 字段的值即可。*
-
-> **注意：** Token 默认有效期 7 天。过期后需重新登录获取新 token。
-
----
 
 ## 1. 安装插件
 
@@ -118,7 +83,7 @@ openclaw skills check
         "config": {
           "baseUrl": "http://127.0.0.1:8000",
           "transport": "mcp",
-          "apiToken": "YOUR_LYCHEEMEM_BEARER_TOKEN",
+          "apiToken": "None",
           "enableHostLifecycle": true,
           "enablePromptPresence": true,
           "enableAutoAppendTurns": true,
