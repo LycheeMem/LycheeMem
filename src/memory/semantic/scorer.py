@@ -18,7 +18,10 @@ from typing import Any
 
 from src.memory.semantic.models import (
     MEMORY_TYPE_CONSTRAINT,
+    MEMORY_TYPE_EVENT,
+    MEMORY_TYPE_FACT,
     MEMORY_TYPE_FAILURE_PATTERN,
+    MEMORY_TYPE_PREFERENCE,
     MEMORY_TYPE_PROCEDURE,
     MEMORY_TYPE_TOOL_AFFORDANCE,
     SYNTH_TYPE_CONSTRAINT,
@@ -196,7 +199,15 @@ class MemoryScorer:
         对于 answer 模式，action_utility 权重较低，但仍考虑约束匹配。
         """
         if plan_mode == "answer":
-            # answer 模式下 action_utility 贡献较小
+            # answer 模式：根据记忆类型评估个人记忆 QA 的相关性
+            # 事件/事实/偏好类型对个人记忆回答最有价値；合成接近完整知识
+            mt = c.get("memory_type", "")
+            episodic_types = {MEMORY_TYPE_FACT, MEMORY_TYPE_EVENT, MEMORY_TYPE_PREFERENCE}
+            if mt in episodic_types:
+                return 0.6
+            # composite records covering multiple episodic records also score high
+            if c.get("source") == "composite":
+                return 0.5
             return 0.2
 
         score = 0.0

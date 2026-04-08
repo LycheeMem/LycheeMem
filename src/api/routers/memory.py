@@ -769,6 +769,7 @@ async def memory_reason(
         background_context=req.background_context,
         skill_reuse_plan=req.skill_reuse_plan,
         retrieved_skills=req.retrieved_skills,
+        reference_time=req.reference_time,
     )
 
     if req.append_to_session:

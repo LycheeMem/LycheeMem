@@ -6,6 +6,18 @@
     <img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python Version">
     <img src="https://img.shields.io/badge/LangGraph-000?style=flat&logo=langchain" alt="LangGraph">
     <img src="https://img.shields.io/badge/litellm-000?style=flat&logo=python" alt="litellm">
+    <a href="https://lancedb.com/">
+      <img src="https://img.shields.io/badge/LanceDB-vector%20database-0ea5e9?style=flat" alt="LanceDB">
+    </a>
+    <a href="https://lycheemem.github.io/">
+      <img src="https://img.shields.io/badge/Homepage-lycheemem.github.io-2ea44f?style=flat&logo=github&logoColor=white" alt="Homepage">
+    </a>
+    <a href="https://pypi.org/project/lycheemem/">
+      <img src="https://img.shields.io/pypi/v/lycheemem?style=flat&logo=pypi&logoColor=white&label=PyPI&color=3775A9" alt="PyPI">
+    </a>
+    <a href="https://github.com/HITsz-TMG">
+      <img src="https://img.shields.io/badge/HITsz--TMG-24292f?style=flat&logo=github&logoColor=white" alt="HITsz-TMG">
+    </a>
   </p>
   <p>
     <a href="README_zh.md">中文</a> | English
@@ -14,8 +26,6 @@
 
 
 LycheeMem is a compact memory framework for LLM agents. It starts from efficient conversational memory—through structured organization, lightweight consolidation, and adaptive retrieval—and gradually extends toward action-aware, usage-aware memory for more capable agentic systems.
-
-[**Demo**: LycheeMem vs ChatGPT Free on long-horizon memory tasks, click to watch the video](https://ik.imagekit.io/wvs0koh4k/99043dc9-b8dd-4e78-ac48-c38da4e7405c.mp4)
 
 ---
 
@@ -44,12 +54,12 @@ LycheeMem is a compact memory framework for LLM agents. It starts from efficient
 <a id="news"></a>
 
 ## 🔥 News
-- [04/03/2026] The project now supports installation via `pip install lycheemem`. You can easily start the service from anywhere using `lycheemem-cli`!
-- [03/30/2026] We evaluated LycheeMem on PinchBench with the OpenClaw plugin: compared to OpenClaw's native memory, it achieved an ~6% score improvement, while reducing token consumption by ~71% and cost by ~55%!
-- [03/28/2026] Semantic memory has been upgraded to Compact Semantic Memory (SQLite + LanceDB), no Neo4j required. See [/quick-start](#quick-start) for details.
-- [03/27/2026] OpenClaw Plugin is now available at [/openclaw-plugin](#openclaw-plugin) ! [Setup guide →](openclaw-plugin/INSTALL_OPENCLAW.md)
-- [03/26/2026] MCP support is available at [/mcp](#mcp) !
-- [03/23/2026] LycheeMem is now open source: [GitHub Repository →](https://github.com/LycheeMem/LycheeMem)
+- **[04/03/2026]** The project now supports installation via `pip install lycheemem`. You can easily start the service from anywhere using `lycheemem-cli`!
+- **[03/30/2026]** We evaluated LycheeMem on PinchBench with the OpenClaw plugin: compared to OpenClaw's native memory, it achieved an ~6% score improvement, while reducing token consumption by ~71% and cost by ~55%!
+- **[03/28/2026]** Semantic memory has been upgraded to Compact Semantic Memory (SQLite + LanceDB), no Neo4j required. See [/quick-start](#quick-start) for details.
+- **[03/27/2026]** OpenClaw Plugin is now available at [/openclaw-plugin](#openclaw-plugin) ! [Setup guide →](openclaw-plugin/INSTALL_OPENCLAW.md)
+- **[03/26/2026]** MCP support is available at [/mcp](#mcp) !
+- **[03/23/2026]** LycheeMem is now open source: [GitHub Repository →](https://github.com/LycheeMem/LycheeMem)
 
 ---
 

@@ -459,7 +459,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
             # FTS on synthesized
             synth_fts = self._sqlite.fulltext_search_synthesized(
-                sq, limit=10,
+                sq, limit=recall_limit,
             )
             for r in synth_fts:
                 sid = r.get("composite_id", "")
@@ -490,7 +490,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
             # 向量 on synthesized
             synth_vec = self._vector.search_synthesized(
-                sq, column="vector", limit=10,
+                sq, column="vector", limit=recall_limit,
             )
             for r in synth_vec:
                 sid = r.get("composite_id", "")
@@ -576,7 +576,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             if slot_query.strip():
                 synth_slot_results = self._sqlite.fulltext_search_synthesized(
                     slot_query,
-                    limit=10,
+                    limit=recall_limit,
                 )
                 for r in synth_slot_results:
                     sid = r.get("composite_id", "")
@@ -770,6 +770,55 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             focus_terms.extend(["主题", "课题"])
         if _contains_any("截止", "日期", "时间", "什么时候", "deadline", "due"):
             focus_terms.extend(["截止", "日期", "时间"])
+
+        # English personal memory query patterns (Locomo-style episodic Q&A)
+        if _contains_any("when did", "when was", "when were", "what date", "what year", "which year",
+                          "what month", "how long ago"):
+            focus_terms.extend(["date", "year", "month", "when"])
+        if _contains_any("where did", "where was", "where were", "which city", "which place",
+                          "which country", "which location", "what city", "what country"):
+            focus_terms.extend(["location", "place", "city", "country"])
+        if _contains_any("how long", "how many years", "how many months", "how many days",
+                          "how many weeks", "duration", "for how long"):
+            focus_terms.extend(["duration", "period", "years", "months"])
+        if _contains_any("how many", "how much", "how often", "how frequently", "number of",
+                          "count of", "times"):
+            focus_terms.extend(["number", "count", "times", "frequency"])
+        if _contains_any("what sport", "what sports", "what activity", "what activities",
+                          "what hobby", "what hobbies", "what game", "what instrument",
+                          "what exercise", "what subject", "what class", "what course"):
+            focus_terms.extend(["sport", "activity", "hobby", "game", "instrument"])
+        if _contains_any("what was her", "what was his", "what was their", "what was the name",
+                          "what is the name", "what were her", "what were his"):
+            focus_terms.extend(["name"])
+        if _contains_any("what did", "what does", "what do", "what has"):
+            focus_terms.extend(["did", "does"])
+        if _contains_any("who is", "who was", "who did", "who does", "who has",
+                          "which person", "which people"):
+            focus_terms.extend(["who", "person", "name"])
+        if _contains_any("what type", "what kind", "what sort", "what genre"):
+            focus_terms.extend(["type", "kind"])
+        if _contains_any("first time", "last time", "most recent", "earliest", "latest",
+                          "first ever", "previously", "used to", "at the time"):
+            focus_terms.extend(["first", "last", "previous"])
+        if _contains_any("job", "work", "career", "profession", "occupation",
+                          "role", "position", "employment"):
+            focus_terms.extend(["job", "work", "career", "profession"])
+        if _contains_any("live", "lived", "living", "reside", "resided", "stay", "stayed",
+                          "move", "moved", "relocate"):
+            focus_terms.extend(["lived", "residence", "home"])
+        if _contains_any("study", "studied", "school", "college", "university",
+                          "degree", "major", "graduate"):
+            focus_terms.extend(["study", "school", "degree"])
+        if _contains_any("travel", "traveled", "trip", "visit", "visited", "vacation",
+                          "holiday", "journey"):
+            focus_terms.extend(["travel", "trip", "visit"])
+        if _contains_any("relationship", "partner", "spouse", "married", "marriage",
+                          "divorce", "dating", "boyfriend", "girlfriend", "significant other"):
+            focus_terms.extend(["relationship", "partner", "married"])
+        if _contains_any("health", "medical", "illness", "disease", "surgery",
+                          "hospital", "doctor", "diagnosis", "condition"):
+            focus_terms.extend(["health", "medical", "illness"])
 
         focus_terms = CompactSemanticEngine._merge_unique(focus_terms, plan.missing_slots)
         focus_terms = CompactSemanticEngine._merge_unique(focus_terms, action_state.missing_slots)

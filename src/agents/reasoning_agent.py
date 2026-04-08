@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import datetime
 from collections.abc import AsyncIterator
 from typing import Any
 

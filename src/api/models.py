@@ -329,6 +329,9 @@ class MemoryReasonRequest(BaseModel):
     retrieved_skills: list[dict[str, Any]] = Field(default_factory=list)
     # 是否将本轮 user/assistant 轮次写回会话（供后续 /memory/consolidate 使用）
     append_to_session: bool = True
+    # 可选参考时间（ISO 8601 字符串），用于帮助推理器正确解析相对时间表达式。
+    # 例如 Locomo 评测中对话发生在 2022-2023 年，注入此字段可避免 LLM 使用系统当前时间。
+    reference_time: str | None = None
 
 
 class MemoryReasonResponse(BaseModel):
