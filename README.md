@@ -233,7 +233,7 @@ Generic config example:
 {
   "mcpServers": {
     "lycheemem": {
-      "url": "http://localhost:8000/mcp",
+      "url": "http://localhost:8000/mcp"
     }
   }
 }
