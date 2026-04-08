@@ -255,7 +255,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             supplement_affordances = supplement.get("required_affordances", [])
             supplement_slots = supplement.get("missing_slots", [])
 
-            if not any(
+            has_supplement = any(
                 [
                     supplement_semantic_queries,
                     supplement_pragmatic_queries,
@@ -264,8 +264,15 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                     supplement_affordances,
                     supplement_slots,
                 ]
-            ):
-                break
+            )
+            if not has_supplement:
+                if reflection_round == 0:
+                    # 第一轮补充生成器无新内容，无法继续做补充检索，放弃后续轮次
+                    break
+                # round 1+：即便补充生成器无新内容，仍必须强制进行情节上下文扩展检索；
+                # 降级：复用原始 plan 的查询作为 fallback，避免召回时查询列表为空
+                supplement_semantic_queries = list(plan.semantic_queries)
+                supplement_pragmatic_queries = list(plan.pragmatic_queries)
 
             # 用补充查询做额外召回（补充 plan 也必须继承新的 action 缺口）
             supplement_plan = SearchPlan(
@@ -325,6 +332,19 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 ),
                 focus_terms=focus_terms,
             )
+
+            # round 1+：对原始对话 turns 直接做向量检索（不依赖 MemoryRecord 锚点）
+            # 可找回尚未被提炼成记忆记录、或提炼质量不佳的对话内容
+            if reflection_round >= 1:
+                raw_turn_hits = self._search_raw_turns_direct(
+                    query=query,
+                    session_id=session_id,
+                    top_k=extra_top_k,
+                )
+                extra_candidates = extra_candidates + [
+                    c for c in raw_turn_hits
+                    if c.get("id", "") not in seen_ids
+                ]
 
             plan = SearchPlan(
                 mode=plan.mode,
@@ -756,72 +776,18 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         plan: SearchPlan,
         action_state: ActionState,
     ) -> list[str]:
-        text = str(query or "").strip().lower()
-        focus_terms: list[str] = []
+        """Focus terms 全部来自 planner LLM 输出的 missing_slots。
 
-        def _contains_any(*keywords: str) -> bool:
-            return any(keyword in text for keyword in keywords)
+        planner prompt 已明确要求：
+        - answer 模式下填充人名、实体词、属性关键词（个人记忆 QA 场景）
+        - action/mixed 模式下填充可执行性缺失参数
 
-        if _contains_any("分工", "负责", "职责", "安排", "谁做", "assignment", "owner", "responsible"):
-            focus_terms.extend(["分工", "负责", "职责", "安排"])
-        if _contains_any("成员", "组员", "小组", "团队", "team member"):
-            focus_terms.extend(["成员", "组员"])
-        if _contains_any("主题", "课题", "topic"):
-            focus_terms.extend(["主题", "课题"])
-        if _contains_any("截止", "日期", "时间", "什么时候", "deadline", "due"):
-            focus_terms.extend(["截止", "日期", "时间"])
-
-        # English personal memory query patterns (Locomo-style episodic Q&A)
-        if _contains_any("when did", "when was", "when were", "what date", "what year", "which year",
-                          "what month", "how long ago"):
-            focus_terms.extend(["date", "year", "month", "when"])
-        if _contains_any("where did", "where was", "where were", "which city", "which place",
-                          "which country", "which location", "what city", "what country"):
-            focus_terms.extend(["location", "place", "city", "country"])
-        if _contains_any("how long", "how many years", "how many months", "how many days",
-                          "how many weeks", "duration", "for how long"):
-            focus_terms.extend(["duration", "period", "years", "months"])
-        if _contains_any("how many", "how much", "how often", "how frequently", "number of",
-                          "count of", "times"):
-            focus_terms.extend(["number", "count", "times", "frequency"])
-        if _contains_any("what sport", "what sports", "what activity", "what activities",
-                          "what hobby", "what hobbies", "what game", "what instrument",
-                          "what exercise", "what subject", "what class", "what course"):
-            focus_terms.extend(["sport", "activity", "hobby", "game", "instrument"])
-        if _contains_any("what was her", "what was his", "what was their", "what was the name",
-                          "what is the name", "what were her", "what were his"):
-            focus_terms.extend(["name"])
-        if _contains_any("what did", "what does", "what do", "what has"):
-            focus_terms.extend(["did", "does"])
-        if _contains_any("who is", "who was", "who did", "who does", "who has",
-                          "which person", "which people"):
-            focus_terms.extend(["who", "person", "name"])
-        if _contains_any("what type", "what kind", "what sort", "what genre"):
-            focus_terms.extend(["type", "kind"])
-        if _contains_any("first time", "last time", "most recent", "earliest", "latest",
-                          "first ever", "previously", "used to", "at the time"):
-            focus_terms.extend(["first", "last", "previous"])
-        if _contains_any("job", "work", "career", "profession", "occupation",
-                          "role", "position", "employment"):
-            focus_terms.extend(["job", "work", "career", "profession"])
-        if _contains_any("live", "lived", "living", "reside", "resided", "stay", "stayed",
-                          "move", "moved", "relocate"):
-            focus_terms.extend(["lived", "residence", "home"])
-        if _contains_any("study", "studied", "school", "college", "university",
-                          "degree", "major", "graduate"):
-            focus_terms.extend(["study", "school", "degree"])
-        if _contains_any("travel", "traveled", "trip", "visit", "visited", "vacation",
-                          "holiday", "journey"):
-            focus_terms.extend(["travel", "trip", "visit"])
-        if _contains_any("relationship", "partner", "spouse", "married", "marriage",
-                          "divorce", "dating", "boyfriend", "girlfriend", "significant other"):
-            focus_terms.extend(["relationship", "partner", "married"])
-        if _contains_any("health", "medical", "illness", "disease", "surgery",
-                          "hospital", "doctor", "diagnosis", "condition"):
-            focus_terms.extend(["health", "medical", "illness"])
-
-        focus_terms = CompactSemanticEngine._merge_unique(focus_terms, plan.missing_slots)
-        focus_terms = CompactSemanticEngine._merge_unique(focus_terms, action_state.missing_slots)
+        不在这里做硬编码关键词匹配，避免通用词干扰检索妚声。
+        """
+        focus_terms = CompactSemanticEngine._merge_unique(
+            list(plan.missing_slots),
+            list(action_state.missing_slots),
+        )
         return focus_terms
 
     def _select_final_candidates(
@@ -2212,6 +2178,108 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             # incoming 有值则覆盖（不管 existing 是否有值）；否则保留 existing
             base[k] = iv if iv else ev
         return base
+
+    def _search_raw_turns_direct(
+        self,
+        query: str,
+        session_id: str | None,
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        """在原始对话 turns 上直接进行向量检索，返回语义最相关的 turn 候选列表。
+
+        不依赖 MemoryRecord 作为中介锚点，可以召回尚未被提炼成记忆记录、
+        或提炼质量不足的对话内容。反思循环 round 1+ 作为 fallback 通道使用。
+        """
+        if self._session_store is None or not str(query or "").strip():
+            return []
+
+        # 1. 收集候选 turns
+        raw_pool: list[tuple[str, int, dict[str, Any]]] = []
+        if session_id:
+            try:
+                all_turns = self._session_store.get_turns(session_id)
+            except Exception:
+                return []
+            for idx, turn in enumerate(all_turns):
+                content = str(turn.get("content", "")).strip()
+                if content and not turn.get("deleted", False):
+                    raw_pool.append((session_id, idx, turn))
+        else:
+            if not hasattr(self._session_store, "list_sessions"):
+                return []
+            try:
+                sessions = self._session_store.list_sessions(offset=0, limit=200)
+            except Exception:
+                return []
+            for sess_info in sessions:
+                sid = str(sess_info.get("session_id", "")).strip()
+                if not sid:
+                    continue
+                try:
+                    all_turns = self._session_store.get_turns(sid)
+                except Exception:
+                    continue
+                for idx, turn in enumerate(all_turns):
+                    content = str(turn.get("content", "")).strip()
+                    if content and not turn.get("deleted", False):
+                        raw_pool.append((sid, idx, turn))
+
+        if not raw_pool:
+            return []
+
+        # 2. 批量嵌入：[query] + [all turn texts]
+        turn_texts = [str(t.get("content", "")) for _, _, t in raw_pool]
+        try:
+            all_vecs = self._embedder.embed([query] + turn_texts)
+        except Exception:
+            return []
+
+        query_vec = all_vecs[0]
+        turn_vecs = all_vecs[1:]
+
+        # 3. 余弦相似度排序，取 top_k
+        scored_turns: list[tuple[float, str, int, dict[str, Any]]] = []
+        for (sid, idx, turn), vec in zip(raw_pool, turn_vecs):
+            sim = self._cosine_similarity(query_vec, vec)
+            scored_turns.append((sim, sid, idx, turn))
+        scored_turns.sort(key=lambda x: x[0], reverse=True)
+        scored_turns = scored_turns[:top_k]
+
+        # 4. 构造候选 dict（与 MemoryRecord 候选格式兼容）
+        results: list[dict[str, Any]] = []
+        for sim, sid, idx, turn in scored_turns:
+            ep_id = self._make_episode_id(sid, idx)
+            content = str(turn.get("content", "")).strip()
+            role = str(turn.get("role", "unknown"))
+            display = f"[{role}]: {content}"
+            results.append({
+                "id": ep_id,
+                "source": "episode",
+                "memory_type": "raw_turn",
+                "semantic_text": display,
+                "normalized_text": content,
+                "display_text": display,
+                "semantic_distance": max(0.0, 1.0 - sim),
+                "source_session": sid,
+                "evidence_turn_range": [idx],
+                "entities": [],
+                "tags": [],
+                "tool_tags": [],
+                "constraint_tags": [],
+                "task_tags": [],
+                "failure_tags": [],
+                "affordance_tags": [],
+                "temporal": {},
+                "created_at": str(turn.get("created_at", "")),
+                "retrieval_count": 0,
+                "retrieval_hit_count": 0,
+                "action_success_count": 0,
+                "action_fail_count": 0,
+                "source_record_ids": [],
+                "tree_parent_id": "",
+                "tree_depth": 0,
+            })
+        return results
 
     def _enrich_candidates_with_episodic_context(
         self,

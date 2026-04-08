@@ -801,7 +801,14 @@ You need to determine:
    For pure factual queries (`answer` mode), this may be empty. For `action` / `mixed` mode, fill it whenever possible.
 
 8. **Missing slots (`missing_slots`)**: Key parameters / information that may still be missing for the current task.
-    These slots should be parameters that can directly determine whether the next action is executable.
+   - For `action` / `mixed` mode: parameters that directly determine whether the next action is executable (e.g., target namespace, image version).
+   - For `answer` mode on **episodic / personal memory queries**: the specific **named entities, person names, attributes, and topic keywords** that the ideal matching memory record would need to contain to answer the question. This is critical — do NOT leave `missing_slots` empty for personal memory questions.
+     Examples:
+       - "What sport did Emily play in college?" → `["Emily", "sport", "college"]`
+       - "When did Caroline start working at her current job?" → `["Caroline", "job", "work"]`
+       - "How many siblings does Melanie have?" → `["Melanie", "siblings", "family"]`
+       - "Where did the user go on vacation last summer?" → `["vacation", "travel", "summer"]`
+     Rule: extract the person name (if mentioned), the subject attribute, and the context noun. This drives targeted entity-level retrieval rather than generic keyword matching.
 
 9. **Tree retrieval strategy (`tree_retrieval_mode` / `tree_expansion_depth` / `include_leaf_records`)**:
    Decide whether, after matching a composite, the system should keep only the high-level summary or continue descending into child composites / leaf records.
@@ -935,6 +942,56 @@ Expected output:
     "include_episodic_context": true,
     "episodic_turn_window": 1,
     "depth": 12
+}
+
+## Example 4: `answer` mode (personal / episodic memory query — entity-first)
+
+<USER_QUERY>What sport did Emily play in college?</USER_QUERY>
+<RECENT_CONTEXT>(none)</RECENT_CONTEXT>
+<ACTION_STATE>{"current_subgoal":"","tentative_action":"","missing_slots":[],"known_constraints":[],"available_tools":[],"failure_signal":"","token_budget":0}</ACTION_STATE>
+
+Expected output:
+{
+    "reasoning": "Pure episodic personal memory question. The ideal matching record must mention Emily, her sport activity, and the college context. Filing missing_slots with the key named entities and attribute nouns drives precise entity-level retrieval. Using balanced tree mode with leaf records enabled to surface the specific episodic detail.",
+    "mode": "answer",
+    "semantic_queries": ["Emily sport college", "Emily athletic activity university"],
+    "pragmatic_queries": [],
+    "temporal_filter": null,
+    "tool_hints": [],
+    "required_constraints": [],
+    "required_affordances": [],
+    "missing_slots": ["Emily", "sport", "college"],
+    "tree_retrieval_mode": "balanced",
+    "tree_expansion_depth": 1,
+    "include_leaf_records": true,
+    "include_episodic_context": false,
+    "episodic_turn_window": 0,
+    "depth": 8
+}
+
+## Example 5: `answer` mode (temporal personal memory — quantitative)
+
+<USER_QUERY>How many siblings does Melanie have?</USER_QUERY>
+<RECENT_CONTEXT>(none)</RECENT_CONTEXT>
+<ACTION_STATE>{"current_subgoal":"","tentative_action":"","missing_slots":[],"known_constraints":[],"available_tools":[],"failure_signal":"","token_budget":0}</ACTION_STATE>
+
+Expected output:
+{
+    "reasoning": "Factual personal memory question about a specific person's family. missing_slots should name the person and attribute to target retrieval at the right entity.",
+    "mode": "answer",
+    "semantic_queries": ["Melanie siblings family", "Melanie brothers sisters"],
+    "pragmatic_queries": [],
+    "temporal_filter": null,
+    "tool_hints": [],
+    "required_constraints": [],
+    "required_affordances": [],
+    "missing_slots": ["Melanie", "siblings", "family"],
+    "tree_retrieval_mode": "balanced",
+    "tree_expansion_depth": 1,
+    "include_leaf_records": true,
+    "include_episodic_context": false,
+    "episodic_turn_window": 0,
+    "depth": 5
 }
 """
 
