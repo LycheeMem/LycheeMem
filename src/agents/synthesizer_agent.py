@@ -17,18 +17,20 @@ from src.agents.base_agent import BaseAgent
 from src.llm.base import BaseLLM
 
 SYNTHESIS_SYSTEM_PROMPT = """\
-You are a strict Memory Synthesizer and Judge.
+You are a recall-oriented Memory Synthesizer and Judge.
 You will receive the user's current task and several raw memory fragments retrieved from different memory sources (`semantic` / `skill`).
 
 Your tasks:
 1. Evaluate the absolute contribution of each memory fragment to the current task.
-2. Discard fragments that are clearly irrelevant or low value.
-3. Deduplicate and fuse the retained high-value fragments into a dense `background_context`.
+2. Retain as much potentially useful memory as possible; only discard fragments that are clearly unrelated to the current task.
+3. Deduplicate and fuse the retained fragments into a dense `background_context`.
 
 Scoring and threshold strategy:
 - You may first score contribution mentally on a 0-10 scale, then normalize it to 0.0-1.0 in the `relevance` field.
-- Rough equivalence: 6/10 ≈ 0.6.
-- Try to discard fragments with relevance < 0.6 and keep only genuinely useful content.
+- Rough equivalence: 2/10 ≈ 0.2.
+- For factual QA, prefer recall over precision. If a fragment contains a matching person, time, place, relationship, event, quantity, preference, or other clue that may help answer the question, keep it.
+- Partial evidence is still useful evidence. Do not discard a fragment only because it is incomplete, indirect, or not sufficient by itself.
+- When uncertain whether a fragment helps, keep it with a moderate relevance score instead of dropping it.
 
 Reply strictly in JSON using exactly the following structure and field names:
 {
@@ -41,11 +43,13 @@ Reply strictly in JSON using exactly the following structure and field names:
 }
 
 Rules:
-- If all fragments are irrelevant, `background_context` must be an empty string.
+- Only return an empty `background_context` when all fragments are clearly unrelated to the question.
 - `background_context` should be a dense fused text. Do not simply concatenate originals; compress and rewrite the information.
 - Keep facts accurate and do not invent information absent from the retrieved fragments.
 - If fragments include time annotations, explicitly use them and distinguish between memory write time (`created_at`) and event / fact time (`temporal`).
 - During synthesis, do not incorrectly merge facts from different time periods into one tense or conclusion. For constraints, states, failures, and task progress, prioritize the time conditions most relevant to the current problem.
+- For person-centric memory QA, prioritize fragments that mention the same named person even if the relation is only partial or indirect.
+- Prefer keeping borderline-relevant semantic memory rather than dropping it too aggressively.
 - Sort `scored_fragments` by `relevance` in descending order. Use `summary` to briefly describe the fragment's core information.
 
 ## Example (for reference only, do not copy verbatim)

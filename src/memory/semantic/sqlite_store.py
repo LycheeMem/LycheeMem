@@ -450,12 +450,16 @@ class SQLiteSemanticStore:
         同时对 created_at（写入时刻）做回退匹配，取两者的 UNION，保证不遗漏。
         """
         params: list[Any] = []
-        expired_clause = "" if include_expired else "AND expired = 0 "
+        filter_clauses: list[str] = []
+        if not include_expired:
+            filter_clauses.append("expired = 0")
 
         # 事件时间子查询：JSON_EXTRACT 读取 temporal 字段中的时间值
         # t_valid_from / t_valid_to 均存储为 ISO 字符串，可直接做字符串比较
         event_time_clauses: list[str] = []
+        event_params: list[Any] = []
         write_time_clauses: list[str] = []
+        write_params: list[Any] = []
 
         if since:
             # 事件结束时间 >= since（事件在查询区间内仍有效）
@@ -465,9 +469,9 @@ class SQLiteSemanticStore:
                 "(JSON_EXTRACT(temporal, '$.t_valid_to') = '' AND "
                 " JSON_EXTRACT(temporal, '$.t_valid_from') >= ?))"
             )
-            params.extend([since, since])
+            event_params.extend([since, since])
             write_time_clauses.append("created_at >= ?")
-            params.append(since)
+            write_params.append(since)
         if until:
             # 事件开始时间 <= until（事件在查询区间内尚未结束）
             event_time_clauses.append(
@@ -475,24 +479,29 @@ class SQLiteSemanticStore:
                 "(JSON_EXTRACT(temporal, '$.t_valid_from') = '' AND "
                 " JSON_EXTRACT(temporal, '$.t_valid_to') <= ?))"
             )
-            params.extend([until, until])
+            event_params.extend([until, until])
             write_time_clauses.append("created_at <= ?")
-            params.append(until)
+            write_params.append(until)
 
         if event_time_clauses and write_time_clauses:
             # UNION：事件时间命中 OR 写入时间命中
-            event_where = " AND ".join(event_time_clauses)
-            write_where = " AND ".join(write_time_clauses)
+            event_where_parts = [*filter_clauses, *event_time_clauses]
+            write_where_parts = [*filter_clauses, *write_time_clauses]
+            event_where = " AND ".join(event_where_parts)
+            write_where = " AND ".join(write_where_parts)
             sql = (
-                f"SELECT * FROM memory_records WHERE {expired_clause} ({event_where}) "
+                f"SELECT * FROM memory_records WHERE {event_where} "
                 f"UNION "
-                f"SELECT * FROM memory_records WHERE {expired_clause} ({write_where}) "
+                f"SELECT * FROM memory_records WHERE {write_where} "
                 f"ORDER BY created_at DESC LIMIT ?"
             )
+            params.extend(event_params)
+            params.extend(write_params)
             params.append(limit)
         else:
             # 没有时间约束，退化为全量查询
-            sql = f"SELECT * FROM memory_records WHERE 1=1 {expired_clause}ORDER BY created_at DESC LIMIT ?"
+            where_sql = " AND ".join(filter_clauses) if filter_clauses else "1=1"
+            sql = f"SELECT * FROM memory_records WHERE {where_sql} ORDER BY created_at DESC LIMIT ?"
             params.append(limit)
 
         rows = self._conn.execute(sql, params).fetchall()

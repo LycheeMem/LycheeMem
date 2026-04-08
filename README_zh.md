@@ -203,7 +203,6 @@ openclaw gateway restart
 LycheeMem 还通过 `http://localhost:8000/mcp` 暴露了 MCP 端点。
 
 - 可用工具：`lychee_memory_smart_search`, `lychee_memory_search`, `lychee_memory_append_turn`, `lychee_memory_synthesize`, `lychee_memory_consolidate`
-- 如果需要每个用户的内存隔离，请使用 `Authorization: Bearer <token>`
 - `lychee_memory_consolidate` 适用于已经通过 `/chat`、`/memory/reason` 或 `lychee_memory_append_turn` 写入/镜像过轮次的会话
 
 ### MCP 传输
@@ -211,16 +210,6 @@ LycheeMem 还通过 `http://localhost:8000/mcp` 暴露了 MCP 端点。
 - `POST /mcp` 处理 JSON-RPC 请求
 - `GET /mcp` 暴露一些 MCP 客户端使用的 SSE 流
 - 服务器在 `initialize` 期间返回 `Mcp-Session-Id`；在后续请求中重用该 header
-
-### 身份验证
-
-如果你需要每个用户的隔离记忆，请先从 `/auth/register` 或 `/auth/login` 获取 JWT token，然后发送：
-
-```text
-Authorization: Bearer <token>
-```
-
-如果没有 token，请求将以空的 `user_id` 运行，因此匿名流量共享相同的命名空间。
 
 ### 客户端配置
 
@@ -236,10 +225,7 @@ http://localhost:8000/mcp
 {
   "mcpServers": {
     "lycheemem": {
-      "url": "http://localhost:8000/mcp",
-      "headers": {
-        "Authorization": "Bearer <token>"
-      }
+      "url": "http://localhost:8000/mcp"
     }
   }
 }
@@ -258,7 +244,6 @@ Initialize 示例：
 ```bash
 curl -i -X POST http://localhost:8000/mcp \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <token>" \
   -d '{
     "jsonrpc": "2.0",
     "id": 1,
@@ -279,7 +264,6 @@ curl -i -X POST http://localhost:8000/mcp \
 ```bash
 curl -X POST http://localhost:8000/mcp \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <token>" \
   -H "Mcp-Session-Id: <session-id>" \
   -d '{
     "jsonrpc": "2.0",

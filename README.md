@@ -201,7 +201,6 @@ See the full setup guide: [openclaw-plugin/INSTALL_OPENCLAW.md](openclaw-plugin/
 LycheeMem also exposes an HTTP MCP endpoint at `http://localhost:8000/mcp`.
 
 - Available tools: `lychee_memory_smart_search`, `lychee_memory_search`, `lychee_memory_append_turn`, `lychee_memory_synthesize`, `lychee_memory_consolidate`
-- Use `Authorization: Bearer <token>` if you want per-user memory isolation
 - `lychee_memory_consolidate` works for sessions that already contain mirrored turns from `/chat`, `/memory/reason`, or `lychee_memory_append_turn`
 
 ### MCP Transport
@@ -209,16 +208,6 @@ LycheeMem also exposes an HTTP MCP endpoint at `http://localhost:8000/mcp`.
 - `POST /mcp` handles JSON-RPC requests
 - `GET /mcp` exposes the SSE stream used by some MCP clients
 - The server returns `Mcp-Session-Id` during `initialize`; reuse that header on later requests
-
-### Authentication
-
-If you want isolated memory per user, first obtain a JWT token from `/auth/register` or `/auth/login`, then send:
-
-```text
-Authorization: Bearer <token>
-```
-
-Without a token, requests run with an empty `user_id`, so anonymous traffic shares the same namespace.
 
 ### Client Configuration
 
@@ -235,9 +224,6 @@ Generic config example:
   "mcpServers": {
     "lycheemem": {
       "url": "http://localhost:8000/mcp",
-      "headers": {
-        "Authorization": "Bearer <token>"
-      }
     }
   }
 }
@@ -256,7 +242,6 @@ Initialize example:
 ```bash
 curl -i -X POST http://localhost:8000/mcp \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <token>" \
   -d '{
     "jsonrpc": "2.0",
     "id": 1,
@@ -277,7 +262,6 @@ Tool call example:
 ```bash
 curl -X POST http://localhost:8000/mcp \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <token>" \
   -H "Mcp-Session-Id: <session-id>" \
   -d '{
     "jsonrpc": "2.0",
