@@ -47,9 +47,10 @@ class ReasoningAgent(BaseAgent):
         background_context: str = "",
         skill_reuse_plan: list[dict] | None = None,
         retrieved_skills: list[dict] | None = None,
+        reference_time: str | None = None,
         **kwargs,
     ) -> dict[str, Any]:
-        messages = self._build_messages(user_query, compressed_history, background_context, skill_reuse_plan, retrieved_skills)
+        messages = self._build_messages(user_query, compressed_history, background_context, skill_reuse_plan, retrieved_skills, reference_time=reference_time)
         response = self.llm.generate(messages)
         return {"final_response": response}
 
@@ -60,9 +61,10 @@ class ReasoningAgent(BaseAgent):
         background_context: str = "",
         skill_reuse_plan: list[dict] | None = None,
         retrieved_skills: list[dict] | None = None,
+        reference_time: str | None = None,
     ) -> AsyncIterator[str]:
         """流式生成最终回复，逐 token yield。"""
-        messages = self._build_messages(user_query, compressed_history, background_context, skill_reuse_plan, retrieved_skills)
+        messages = self._build_messages(user_query, compressed_history, background_context, skill_reuse_plan, retrieved_skills, reference_time=reference_time)
         async for token in self.llm.astream_generate(messages):
             yield token
 
@@ -73,6 +75,8 @@ class ReasoningAgent(BaseAgent):
         background_context: str = "",
         skill_reuse_plan: list[dict] | None = None,
         retrieved_skills: list[dict] | None = None,
+        *,
+        reference_time: str | None = None,
     ) -> list[dict[str, str]]:
         """构建发送给 LLM 的消息列表（供 run 和 astream 共用）。"""
         # ── 从 compressed_history 中分离 system 摘要与对话轮次 ──
@@ -113,7 +117,7 @@ class ReasoningAgent(BaseAgent):
             skill_plan_section=skill_plan_section,
         )
 
-        system_prompt = self._append_time_basis(system_prompt)
+        system_prompt = self._append_time_basis(system_prompt, now=self._parse_reference_time(reference_time))
 
         messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
 
@@ -124,6 +128,27 @@ class ReasoningAgent(BaseAgent):
             messages.append({"role": "user", "content": user_query})
 
         return messages
+
+    @staticmethod
+    def _parse_reference_time(reference_time: str | None) -> datetime.datetime | None:
+        """将 reference_time 字符串解析为 datetime 对象。
+
+        接受 ISO 8601 格式，例如 "2023-12-31" 或 "2023-12-31T23:59:59Z"。
+        解析失败时返回 None（上层回退到系统时间）。
+        """
+        if not reference_time:
+            return None
+        raw = str(reference_time).strip()
+        for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S",
+                    "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                dt = datetime.datetime.strptime(raw[:len(fmt) + 5], fmt)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=datetime.timezone.utc)
+                return dt
+            except ValueError:
+                continue
+        return None
 
     @staticmethod
     def _format_retrieved_skills(skills: list[dict] | None) -> str:

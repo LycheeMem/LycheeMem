@@ -1,6 +1,6 @@
 <div align="center">
   <img src="assets/logo.png" alt="LycheeMem Logo" width="200">
-  <h1>LycheeMem</h1>
+  <h1>LycheeMem: Lightweight Long-Term Memory for LLM Agents</h1>
   <p>
     <img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License">
     <img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python Version">
