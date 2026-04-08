@@ -75,21 +75,7 @@ class LiteLLMEmbedder(BaseEmbedder):
         if isinstance(item, dict):
             return item["embedding"]
         return item.embedding
-    
-    def cal_time(func):
-        """装饰器：计算 embed/embed_query 方法的执行时间，单位秒。"""
-        import time
 
-        def wrapper(*args, **kwargs):
-            start_time = time.perf_counter()
-            result = func(*args, **kwargs)
-            elapsed = time.perf_counter() - start_time
-            print(f"{func.__name__} executed in {elapsed:.4f} seconds")
-            return result
-
-        return wrapper
-
-    @cal_time
     def embed(self, texts: list[str]) -> list[list[float]]:
         """批量生成 embedding（文档侧）。"""
         resp = litellm.embedding(
@@ -99,7 +85,6 @@ class LiteLLMEmbedder(BaseEmbedder):
         )
         return [self._extract_embedding(item) for item in resp.data]
 
-    @cal_time
     def embed_query(self, text: str) -> list[float]:
         """单条查询 embedding（查询侧）。"""
         resp = litellm.embedding(

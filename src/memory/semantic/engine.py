@@ -2227,8 +2227,8 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         if not batch:
             return 0
 
-        # 3. 分批写入（每批 64 条，避免单次 embed 过多）
-        _CHUNK = 64
+        # 3. 分批写入（每批 8 条，符合部分 embedding API 的批量限制）
+        _CHUNK = 8
         total = 0
         for i in range(0, len(batch), _CHUNK):
             chunk = batch[i : i + _CHUNK]

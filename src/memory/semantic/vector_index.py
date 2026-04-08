@@ -355,8 +355,12 @@ class LanceVectorIndex:
         if texts_to_embed:
             if self._embedder is None:
                 raise RuntimeError("LanceVectorIndex: embedder 未设置且未提供向量")
-            embedded = self._embedder.embed(texts_to_embed)
-            for idx, vec in zip(embed_indices, embedded):
+            # 分批嵌入，避免超出 API 单批限制（部分 provider 上限 10）
+            _EMBED_CHUNK = 8
+            all_embedded: list[list[float]] = []
+            for _i in range(0, len(texts_to_embed), _EMBED_CHUNK):
+                all_embedded.extend(self._embedder.embed(texts_to_embed[_i : _i + _EMBED_CHUNK]))
+            for idx, vec in zip(embed_indices, all_embedded):
                 turns[idx]["vector"] = vec
 
         table = self._db.open_table(self.EPISODE_TABLE)
