@@ -71,16 +71,16 @@ LycheeMem is part of the **3rd-generation Lychee (立知) large model series**, 
 
 We welcome you to explore our related works:
 
-- **LycheeMemory**: a unified framework for implicit long-term memory and explicit working memory collaboration in large language models  
+- **LycheeMemory (ACL 2026, CCF-A)**: a unified framework for implicit long-term memory and explicit working memory collaboration in large language models  
   [![arXiv](https://img.shields.io/badge/arXiv-2602.08382-B31B1B?logo=arxiv&logoColor=fff)](https://arxiv.org/abs/2602.08382) [![GitHub](https://img.shields.io/badge/GitHub-LycheeMemory-181717?logo=github&logoColor=fff)](https://github.com/owoakuma/LycheeMemory) [![Hugging Face](https://img.shields.io/badge/Hugging%20Face-LycheeMemory--7B-FFD21E?logo=huggingface)](https://huggingface.co/lerverson/LycheeMemory-7B)
 
 - **LycheeMem (this project)**: long-term memory infrastructure for LLM-based agents  
   [![Project Page](https://img.shields.io/badge/Project_Page-LycheeMem-blue?logo=google-chrome&logoColor=fff)](https://lycheemem.github.io) [![GitHub](https://img.shields.io/badge/GitHub-LycheeMem-181717?logo=github&logoColor=fff)](https://github.com/LycheeMem/LycheeMem)
 
-- **LycheeDecode**: selective recall from massive KV-cache context memory  
+- **LycheeDecode (ICLR 2026, CCF-A)**: selective recall from massive KV-cache context memory  
   [![Project Page](https://img.shields.io/badge/Project_Page-lycheedecode-blue?logo=google-chrome&logoColor=fff)](https://lg9077.github.io/lycheedecode) [![arXiv](https://img.shields.io/badge/arXiv-2602.04541-B31B1B?logo=arxiv&logoColor=fff)](https://arxiv.org/abs/2602.04541) [![GitHub](https://img.shields.io/badge/GitHub-LycheeDecode-181717?logo=github&logoColor=fff)](https://github.com/HITsz-TMG/TMGNLP/tree/main/LycheeDecode)
 
-- **LycheeCluster**: structured organization and hierarchical indexing for context memory  
+- **LycheeCluster (ACL 2026, CCF-A)**: structured organization and hierarchical indexing for context memory  
   [![arXiv](https://img.shields.io/badge/arXiv-2603.08453-B31B1B?logo=arxiv&logoColor=fff)](https://arxiv.org/abs/2603.08453)
 
 ---
