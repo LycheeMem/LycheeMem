@@ -42,11 +42,26 @@ def _make_composite_schema(dim: int) -> pa.Schema:
     ])
 
 
+def _make_episode_turn_schema(dim: int) -> pa.Schema:
+    """构建 episode_turns 表 schema：原始对话 turn 的向量索引。"""
+    vec_type = pa.list_(pa.float32(), dim) if dim > 0 else pa.list_(pa.float32())
+    return pa.schema([
+        pa.field("episode_id", pa.utf8()),
+        pa.field("session_id", pa.utf8()),
+        pa.field("turn_index", pa.int32()),
+        pa.field("role", pa.utf8()),
+        pa.field("content", pa.utf8()),
+        pa.field("vector", vec_type),
+        pa.field("created_at", pa.utf8()),
+    ])
+
+
 class LanceVectorIndex:
-    """基于 LanceDB 的向量索引，ANN 检索 MemoryRecord / CompositeRecord。"""
+    """基于 LanceDB 的向量索引，ANN 检索 MemoryRecord / CompositeRecord / 原始 Turn。"""
 
     MEMORY_TABLE = "memory_records"
     SYNTH_TABLE = "composite_records"
+    EPISODE_TABLE = "episode_turns"
 
     def __init__(
         self,
@@ -78,11 +93,13 @@ class LanceVectorIndex:
         """
         target_mr = _make_record_schema(self._embedding_dim)
         target_cr = _make_composite_schema(self._embedding_dim)
+        target_ep = _make_episode_turn_schema(self._embedding_dim)
         existing = set(self._db.table_names())
 
         for table_name, schema in [
             (self.MEMORY_TABLE, target_mr),
             (self.SYNTH_TABLE, target_cr),
+            (self.EPISODE_TABLE, target_ep),
         ]:
             if table_name not in existing:
                 self._db.create_table(table_name, schema=schema)
@@ -315,9 +332,116 @@ class LanceVectorIndex:
     # 批量删除
     # ──────────────────────────────────────
 
+    # ──────────────────────────────────────
+    # Episode Turn 向量写入 / 检索
+    # ──────────────────────────────────────
+
+    def upsert_turns_batch(self, turns: list[dict[str, Any]]) -> None:
+        """批量写入原始对话 turn 的向量。
+
+        每条 turn 需要: episode_id, session_id, turn_index, role, content
+        可选: vector (float list), created_at
+        """
+        if not turns:
+            return
+
+        texts_to_embed: list[str] = []
+        embed_indices: list[int] = []
+        for i, t in enumerate(turns):
+            if "vector" not in t or t["vector"] is None:
+                embed_indices.append(i)
+                texts_to_embed.append(str(t.get("content", "")))
+
+        if texts_to_embed:
+            if self._embedder is None:
+                raise RuntimeError("LanceVectorIndex: embedder 未设置且未提供向量")
+            # 分批嵌入，避免超出 API 单批限制（部分 provider 上限 10）
+            _EMBED_CHUNK = 8
+            all_embedded: list[list[float]] = []
+            for _i in range(0, len(texts_to_embed), _EMBED_CHUNK):
+                all_embedded.extend(self._embedder.embed(texts_to_embed[_i : _i + _EMBED_CHUNK]))
+            for idx, vec in zip(embed_indices, all_embedded):
+                turns[idx]["vector"] = vec
+
+        table = self._db.open_table(self.EPISODE_TABLE)
+        for t in turns:
+            ep_id = self._escape_sql(str(t.get("episode_id", "")))
+            try:
+                table.delete(f"episode_id = '{ep_id}'")
+            except Exception:
+                pass
+
+        rows = [
+            {
+                "episode_id": str(t.get("episode_id", "")),
+                "session_id": str(t.get("session_id", "")),
+                "turn_index": int(t.get("turn_index", 0)),
+                "role": str(t.get("role", "")),
+                "content": str(t.get("content", "")),
+                "vector": t["vector"],
+                "created_at": str(t.get("created_at", "")),
+            }
+            for t in turns
+        ]
+        table.add(rows)
+
+    def search_turns(
+        self,
+        query_text: str,
+        *,
+        limit: int = 20,
+        query_vector: list[float] | None = None,
+        session_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """对原始对话 turn 做 ANN 向量检索。"""
+        if query_vector is None:
+            if self._embedder is None:
+                raise RuntimeError("LanceVectorIndex: embedder 未设置且未提供查询向量")
+            query_vector = self._embedder.embed_query(query_text)
+
+        table = self._db.open_table(self.EPISODE_TABLE)
+        filters: list[str] = []
+        if session_id:
+            filters.append(f"session_id = '{self._escape_sql(session_id)}'")
+        where = " AND ".join(filters) if filters else None
+
+        try:
+            q = table.search(query_vector, vector_column_name="vector").limit(limit)
+            if where:
+                q = q.where(where)
+            results = q.to_list()
+        except Exception:
+            return []
+
+        return [
+            {
+                "episode_id": r.get("episode_id", ""),
+                "session_id": r.get("session_id", ""),
+                "turn_index": r.get("turn_index", 0),
+                "role": r.get("role", ""),
+                "content": r.get("content", ""),
+                "created_at": r.get("created_at", ""),
+                "_distance": r.get("_distance", 999.0),
+            }
+            for r in results
+        ]
+
+    def get_all_episode_ids(self) -> set[str]:
+        """返回 episode_turns 表中已索引的全部 episode_id 集合（用于增量补全）。"""
+        try:
+            table = self._db.open_table(self.EPISODE_TABLE)
+            results = table.search().select(["episode_id"]).limit(10_000_000).to_list()
+            return {str(r.get("episode_id", "")) for r in results if r.get("episode_id")}
+        except Exception:
+            return set()
+
+    # ──────────────────────────────────────
+    # 批量删除
+    # ──────────────────────────────────────
+
     def delete_all(self) -> None:
         """删除全部向量数据。"""
-        for tname in [self.MEMORY_TABLE, self.SYNTH_TABLE]:
+        for tname in [self.MEMORY_TABLE, self.SYNTH_TABLE, self.EPISODE_TABLE]:
             try:
                 table = self._db.open_table(tname)
                 table.delete("1 = 1")

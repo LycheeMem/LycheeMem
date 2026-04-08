@@ -67,9 +67,9 @@
       "placeholder": "120"
     },
     "apiToken": {
-      "label": "API Token",
+      "label": "API Token (Optional)",
       "sensitive": true,
-      "placeholder": "Bearer token for authenticated LycheeMem access"
+      "placeholder": "Leave empty for the current no-auth backend"
     },
     "enableHostLifecycle": {
       "label": "Enable Host Lifecycle",

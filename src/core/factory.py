@@ -79,6 +79,8 @@ def create_pipeline(
         synthesis_similarity=getattr(settings, "compact_synthesis_similarity", 0.75),
         embedding_dim=getattr(settings, "embedding_dim", 1536),
     )
+    # 启动时补全尚未向量化的原始对话 turns（增量，已索引的跳过）
+    semantic_engine.index_unvectorized_turns()
 
     wm_manager = WMManager(session_store=session_store, compressor=compressor)
     search_coordinator = SearchCoordinator(

@@ -2179,78 +2179,100 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             base[k] = iv if iv else ev
         return base
 
+    def index_unvectorized_turns(self) -> int:
+        """将 session_store 中尚未向量化的 turns 写入 episode_turns 向量索引。
+
+        在引擎启动后调用一次，对历史数据补全索引；后续每次对话写入新 turn 后
+        也可增量调用。返回本次新索引的 turn 数量。
+        """
+        if self._session_store is None:
+            return 0
+        if not hasattr(self._session_store, "list_sessions"):
+            return 0
+
+        # 1. 获取已索引的 episode_ids（增量判断）
+        indexed_ids: set[str] = self._vector.get_all_episode_ids()
+
+        # 2. 遍历所有 session，收集未索引 turns
+        batch: list[dict[str, Any]] = []
+        try:
+            sessions = self._session_store.list_sessions(offset=0, limit=100_000)
+        except Exception:
+            return 0
+
+        for sess_info in sessions:
+            sid = str(sess_info.get("session_id", "")).strip()
+            if not sid:
+                continue
+            try:
+                all_turns = self._session_store.get_turns(sid)
+            except Exception:
+                continue
+            for idx, turn in enumerate(all_turns):
+                ep_id = self._make_episode_id(sid, idx)
+                if ep_id in indexed_ids:
+                    continue
+                content = str(turn.get("content", "")).strip()
+                if not content or turn.get("deleted", False):
+                    continue
+                batch.append({
+                    "episode_id": ep_id,
+                    "session_id": sid,
+                    "turn_index": idx,
+                    "role": str(turn.get("role", "unknown")),
+                    "content": content,
+                    "created_at": str(turn.get("created_at", "")),
+                })
+
+        if not batch:
+            return 0
+
+        # 3. 分批写入（每批 8 条，符合部分 embedding API 的批量限制）
+        _CHUNK = 8
+        total = 0
+        for i in range(0, len(batch), _CHUNK):
+            chunk = batch[i : i + _CHUNK]
+            try:
+                self._vector.upsert_turns_batch(chunk)
+                total += len(chunk)
+            except Exception:
+                pass  # 局部失败继续下一批
+
+        return total
+
     def _search_raw_turns_direct(
         self,
         query: str,
         session_id: str | None,
         top_k: int,
     ) -> list[dict[str, Any]]:
-        """在原始对话 turns 上直接进行向量检索，返回语义最相关的 turn 候选列表。
+        """在 episode_turns 向量索引中直接检索原始对话 turns。
 
         不依赖 MemoryRecord 作为中介锚点，可以召回尚未被提炼成记忆记录、
         或提炼质量不足的对话内容。反思循环 round 1+ 作为 fallback 通道使用。
         """
-        if self._session_store is None or not str(query or "").strip():
+        if not str(query or "").strip():
             return []
 
-        # 1. 收集候选 turns
-        raw_pool: list[tuple[str, int, dict[str, Any]]] = []
-        if session_id:
-            try:
-                all_turns = self._session_store.get_turns(session_id)
-            except Exception:
-                return []
-            for idx, turn in enumerate(all_turns):
-                content = str(turn.get("content", "")).strip()
-                if content and not turn.get("deleted", False):
-                    raw_pool.append((session_id, idx, turn))
-        else:
-            if not hasattr(self._session_store, "list_sessions"):
-                return []
-            try:
-                sessions = self._session_store.list_sessions(offset=0, limit=200)
-            except Exception:
-                return []
-            for sess_info in sessions:
-                sid = str(sess_info.get("session_id", "")).strip()
-                if not sid:
-                    continue
-                try:
-                    all_turns = self._session_store.get_turns(sid)
-                except Exception:
-                    continue
-                for idx, turn in enumerate(all_turns):
-                    content = str(turn.get("content", "")).strip()
-                    if content and not turn.get("deleted", False):
-                        raw_pool.append((sid, idx, turn))
-
-        if not raw_pool:
-            return []
-
-        # 2. 批量嵌入：[query] + [all turn texts]
-        turn_texts = [str(t.get("content", "")) for _, _, t in raw_pool]
         try:
-            all_vecs = self._embedder.embed([query] + turn_texts)
+            hits = self._vector.search_turns(
+                query,
+                limit=top_k,
+                session_id=session_id,
+            )
         except Exception:
             return []
 
-        query_vec = all_vecs[0]
-        turn_vecs = all_vecs[1:]
-
-        # 3. 余弦相似度排序，取 top_k
-        scored_turns: list[tuple[float, str, int, dict[str, Any]]] = []
-        for (sid, idx, turn), vec in zip(raw_pool, turn_vecs):
-            sim = self._cosine_similarity(query_vec, vec)
-            scored_turns.append((sim, sid, idx, turn))
-        scored_turns.sort(key=lambda x: x[0], reverse=True)
-        scored_turns = scored_turns[:top_k]
-
-        # 4. 构造候选 dict（与 MemoryRecord 候选格式兼容）
         results: list[dict[str, Any]] = []
-        for sim, sid, idx, turn in scored_turns:
-            ep_id = self._make_episode_id(sid, idx)
-            content = str(turn.get("content", "")).strip()
-            role = str(turn.get("role", "unknown"))
+        for hit in hits:
+            ep_id = str(hit.get("episode_id", ""))
+            sid = str(hit.get("session_id", ""))
+            idx = int(hit.get("turn_index", 0))
+            content = str(hit.get("content", "")).strip()
+            role = str(hit.get("role", "unknown"))
+            distance = float(hit.get("_distance", 1.0))
+            if not content:
+                continue
             display = f"[{role}]: {content}"
             results.append({
                 "id": ep_id,
@@ -2259,7 +2281,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 "semantic_text": display,
                 "normalized_text": content,
                 "display_text": display,
-                "semantic_distance": max(0.0, 1.0 - sim),
+                "semantic_distance": min(1.0, max(0.0, distance)),
                 "source_session": sid,
                 "evidence_turn_range": [idx],
                 "entities": [],
@@ -2270,7 +2292,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 "failure_tags": [],
                 "affordance_tags": [],
                 "temporal": {},
-                "created_at": str(turn.get("created_at", "")),
+                "created_at": str(hit.get("created_at", "")),
                 "retrieval_count": 0,
                 "retrieval_hit_count": 0,
                 "action_success_count": 0,
