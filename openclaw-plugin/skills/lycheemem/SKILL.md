@@ -1,87 +1,126 @@
 ---
 name: lycheemem
-description: Teach OpenClaw when to use LycheeMem structured memory tools for long-term recall, retrieval compression, and background consolidation.
+description: Forceful operating rules for using LycheeMem as the primary structured long-term memory path inside OpenClaw.
 requires:
   config:
     - plugins.entries.lycheemem-tools.enabled
 ---
 
-# LycheeMem OpenClaw Plugin
+# LycheeMem
 
-## Purpose
+## Mission
 
-This plugin is a thin adapter between OpenClaw and LycheeMem. It does not replace `memory-core`, does not claim `plugins.slots.memory`, and does not duplicate LycheeMem algorithms.
+Use LycheeMem as the default structured long-term memory layer.
 
-Collaboration model with OpenClaw:
+When the answer depends on prior conversations, historical facts, entity relationships, project background, preferences, procedures, or timeline reconstruction, prefer LycheeMem first.
 
-- OpenClaw remains the host for the main reasoning loop, current-turn coordination, workspace guidance, and short-range conversational continuity.
-- LycheeMem serves as the external structured long-term memory layer for cross-session recall, historical project background, entity relationships, and reusable procedures.
-- Treat OpenClaw memory and LycheeMem as complementary layers, not competing memory owners.
+Do not wait for the user to explicitly say `lycheemem`, `memory`, or `smart_search`.
 
-Default plugin tool exposure:
+## Default Priority
 
-- `lychee_memory_smart_search` (primary recall path, default `mode=compact`)
-- `lychee_memory_search` (developer raw retrieval)
-- `lychee_memory_append_turn`
-- `lychee_memory_synthesize` (developer debugging)
-- `lychee_memory_consolidate`
+For long-horizon recall, use this order:
 
-## Use It For
+1. `lychee_memory_smart_search`
+2. answer using the returned `background_context` or retrieval payload
+3. `lychee_memory_consolidate` when important durable knowledge was added or clarified
 
-- Historical facts the user mentioned earlier
-- Long-running project context across sessions
-- Entity and relationship recall
-- Reusing procedural skills or workflows from prior work
-- Compressing verbose retrieval results into a shorter `background_context` when needed
+Treat `lychee_memory_smart_search` as the primary recall tool.
 
-## Do Not Use It For
+Treat `lychee_memory_search` and `lychee_memory_synthesize` as debugging tools, not the normal path.
 
-- Workspace rules already covered by `MEMORY.md` or `memory/*.md`
-- Stable preferences already maintained in `memory-core`
-- Replacing OpenClaw's built-in memory owner
-- Re-answering the current turn with a second memory system when OpenClaw already has enough local context
+## When Smart Search Is Expected
 
-## Coordination Rules
+Call `lychee_memory_smart_search` by default before answering if any of the following is true:
 
-- Prefer OpenClaw's built-in memory and workspace context for same-session continuity, immediate local preferences, and repository-bound instructions.
-- Prefer LycheeMem when the user is asking for longer-horizon context such as "上次这个项目怎么做的", "这个项目长期背景是什么", or "之前沉淀过哪些规则/关系/流程".
-- Do not perform duplicate recall for the same question by calling both OpenClaw memory search and LycheeMem retrieval in the same turn unless the user explicitly wants a comparison.
-- When LycheeMem returns a useful `background_context`, treat it as supplemental long-term context injected into OpenClaw's reasoning loop, not as a replacement for host memory.
-- When OpenClaw already has enough local context to answer well, avoid unnecessary LycheeMem calls.
+- the user asks about earlier dialogue, prior sessions, or historical context
+- the user asks who/when/where/why/how about a person, relationship, event, preference, or decision that was not stated in the current message
+- the answer requires reconstructing a timeline or resolving relative dates such as "昨天", "上周", "之前", "上次"
+- the answer is about project standards, long-term project background, reusable workflows, or previously agreed rules
+- the conversation is benchmark-like, memory-evaluation-like, or asks factual questions about prior dialogue turns
+- there is any serious chance that host-local memory is incomplete, stale, or missing
 
-## Trigger Guidance
+In short: if the question is not answerable from the current message alone, try `lychee_memory_smart_search` first.
 
-- Prefer `lychee_memory_smart_search` for recall questions such as "上次怎么处理的", "用户之前提过什么", "这个项目长期背景是什么". Treat it as the default recall path.
-- Let `lychee_memory_smart_search` use `mode=compact` by default so the agent receives a concise synthesized `background_context`.
-- Use `lychee_memory_search` only during development or debugging when you explicitly want the raw retrieval payload.
-- When this plugin runs inside OpenClaw with host lifecycle integration enabled, assume the host usually mirrors natural-language user and assistant turns into LycheeMem automatically.
-- In that host-integrated mode, do not manually call `lychee_memory_append_turn` from the model during normal operation, because it would duplicate the host-managed transcript mirror.
-- If host lifecycle integration is unavailable, disabled, or you are debugging a non-standard flow, call `lychee_memory_append_turn` manually after each completed dialogue turn so the transcript can later be consolidated.
-- Do not append raw tool invocations, tool arguments, tool outputs, scratchpad text, or other orchestration-only traces unless the user explicitly wants those artifacts stored as memory.
-- Use `lychee_memory_synthesize` only after `lychee_memory_search`, and only for development or debugging when you want to inspect search and synthesis separately.
-- Do not call OpenClaw `memory-core` search and `lychee_memory_search` for the same recall problem in the same turn.
-- When this plugin runs inside OpenClaw with host lifecycle integration enabled, assume `/new`, `/reset`, and `/stop` boundaries may trigger `lychee_memory_consolidate` automatically with `background=true`.
-- Important long-term signals such as explicit memory requests, defaults, stable preferences, rules, and project standards may also trigger proactive background consolidation before the next reset boundary.
-- Use `lychee_memory_consolidate` manually at wrap-up when host automation is unavailable, disabled, or you are debugging explicit persistence behavior.
-- Even in host-integrated mode, it is acceptable for the model to call `lychee_memory_consolidate` when it intentionally wants to persist important new long-term knowledge early. The model should still avoid manual `lychee_memory_append_turn` in that case.
-- Prefer `background=true` for `lychee_memory_consolidate` during normal agent operation so consolidation does not block the main reply.
+Use `mode=full` by default.
 
-## Recommended Pattern
+## When Not To Skip Smart Search
 
-The intended pattern is:
+Do not skip `lychee_memory_smart_search` merely because:
 
-1. let OpenClaw evaluate whether its local memory, workspace instructions, and current-turn context are already sufficient
-2. if longer-horizon recall is needed, call `lychee_memory_smart_search` with its default `mode=compact`
-3. inject the returned `background_context` into the main reasoning context as supplemental long-term memory
-4. answer in OpenClaw's normal reasoning loop
-5. let the host lifecycle adapter mirror the natural-language user turn and assistant turn automatically when available; otherwise call `lychee_memory_append_turn` manually using the same `session_id`
-6. do not append tool-call metadata or raw tool outputs by default
-7. let host lifecycle boundaries trigger background consolidation when available, and allow proactive consolidation when the turn clearly introduces durable long-term knowledge; otherwise call `lychee_memory_consolidate` manually only if new memory-worthy information appeared in the mirrored natural-language turns
-8. in host-integrated mode, if you choose to call `lychee_memory_consolidate` manually, do not precede it with extra model-driven `lychee_memory_append_turn` calls unless you are explicitly debugging transcript mirroring
+- OpenClaw has some local workspace context
+- you vaguely remember the answer
+- `MEMORY.md` or `memory/*.md` might contain something related
+- the user did not explicitly request a memory lookup
 
-Developer debugging path:
+If the question is a factual recall question about prior dialogue, skipping `lychee_memory_smart_search` should be the exception, not the default.
+
+## How To Use The Result
+
+- Prefer the returned `background_context` when present
+- use the retrieval result as supplemental long-term evidence
+- if LycheeMem returns useful memory, answer from it directly instead of improvising from uncertain host memory
+- if LycheeMem returns insufficient evidence, say so clearly instead of hallucinating
+
+Do not call OpenClaw native memory search and LycheeMem retrieval for the same recall question unless the user explicitly wants comparison.
+
+## Consolidation Rules
+
+Use `lychee_memory_consolidate` more aggressively than before.
+
+Call `lychee_memory_consolidate` with `background=true` when any of the following is true:
+
+- the turn introduced a durable new fact, preference, rule, identity detail, relationship, or project standard
+- a transcript/session/chunk of conversation was just ingested and should become long-term memory
+- the user explicitly asked to remember, store, retain, or save something
+- the conversation resolved an ambiguity and produced a stable final answer worth preserving
+- a benchmark or evaluation workflow is intentionally feeding conversations into long-term memory
+
+When in doubt, prefer one timely background consolidation over waiting too long and losing the memory.
+
+## Append Turn Rules
+
+If host lifecycle integration is enabled and working, assume natural-language user and assistant turns are usually mirrored automatically.
+
+In that case:
+
+- do not manually duplicate `lychee_memory_append_turn`
+- but you may still call `lychee_memory_consolidate` after important memory-worthy turns
+
+If host lifecycle integration is unavailable, disabled, or clearly not working:
+
+- call `lychee_memory_append_turn` after each completed natural-language user turn and assistant turn
+- then call `lychee_memory_consolidate` when important durable knowledge appeared
+
+Do not append raw tool invocations, tool arguments, scratchpad, or raw tool outputs unless explicitly requested.
+
+## Benchmark And Evaluation Guidance
+
+In benchmark, QA, or dialogue-memory evaluation settings:
+
+- assume factual recall questions should usually trigger `lychee_memory_smart_search`
+- do not rely only on host-local memory for answers about prior dialogue
+- after ingesting a conversation session or transcript chunk, prefer timely `lychee_memory_consolidate(background=true)` so later QA can retrieve the result
+
+For benchmark-style recall, the intended pattern is:
+
+1. ingest or mirror the conversation
+2. consolidate important memory in the background
+3. on each factual recall question, call `lychee_memory_smart_search`
+4. answer from retrieved long-term memory
+
+## Normal Operating Pattern
+
+1. decide whether the question depends on prior dialogue or long-term memory
+2. if yes, call `lychee_memory_smart_search` first
+3. answer from the returned context
+4. if the turn introduced durable new memory, call `lychee_memory_consolidate(background=true)`
+
+## Debugging Path
+
+Only during development or debugging:
+
 1. call `lychee_memory_search`
-2. inspect the raw retrieval payload
-3. call `lychee_memory_synthesize` if you want to inspect compression behavior separately
+2. inspect raw retrieval
+3. call `lychee_memory_synthesize` if separate synthesis inspection is needed
 
-This keeps OpenClaw in charge of the main reasoning loop while LycheeMem stays focused on long-term structured memory retrieval and persistence.
+Outside debugging, prefer `lychee_memory_smart_search`.

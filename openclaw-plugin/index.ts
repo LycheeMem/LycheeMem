@@ -89,10 +89,15 @@ const SMART_SEARCH_SCHEMA = {
       default: true,
       description: "Whether to automatically synthesize a compressed background_context."
     },
+    include_provenance: {
+      type: "boolean",
+      default: false,
+      description: "Whether to include verbose provenance details in the tool result."
+    },
     mode: {
       type: "string",
-      default: "compact",
-      description: "Return mode: compact is the recommended default for agents, raw returns only retrieval results, and full returns both raw and synthesized output."
+      default: "full",
+      description: "Return mode: full is the recommended default for agents, raw returns only retrieval results, and compact returns only synthesized output."
     }
   },
   required: ["query"]
@@ -205,39 +210,37 @@ function sanitizeSegment(value: string): string {
 
 function getPluginConfig(api: any): PluginConfig {
   const raw = api?.config?.plugins?.entries?.[PLUGIN_ID]?.config ?? {};
-  const env = typeof process !== "undefined" ? process.env ?? {} : {};
 
   return {
-    baseUrl: normalizeBaseUrl(String(raw.baseUrl ?? env.LYCHEEMEM_BASE_URL ?? "http://127.0.0.1:8000")),
-    transport: String(raw.transport ?? env.LYCHEEMEM_TRANSPORT ?? "mcp").trim().toLowerCase() === "http" ? "http" : "mcp",
-    timeout: Number(raw.timeout ?? env.LYCHEEMEM_TIMEOUT ?? 120),
-    apiToken: String(raw.apiToken ?? env.LYCHEEMEM_API_TOKEN ?? ""),
+    baseUrl: normalizeBaseUrl(String(raw.baseUrl ?? "http://127.0.0.1:8000")),
+    transport: String(raw.transport ?? "mcp").trim().toLowerCase() === "http" ? "http" : "mcp",
+    timeout: Number(raw.timeout ?? 120),
+    apiToken: String(raw.apiToken ?? ""),
     enableHostLifecycle: asBoolean(
-      raw.enableHostLifecycle ?? env.LYCHEEMEM_ENABLE_HOST_LIFECYCLE,
+      raw.enableHostLifecycle,
       true
     ),
     enablePromptPresence: asBoolean(
-      raw.enablePromptPresence ?? env.LYCHEEMEM_ENABLE_PROMPT_PRESENCE,
+      raw.enablePromptPresence,
       true
     ),
     enableAutoAppendTurns: asBoolean(
-      raw.enableAutoAppendTurns ?? env.LYCHEEMEM_ENABLE_AUTO_APPEND_TURNS,
+      raw.enableAutoAppendTurns,
       true
     ),
     enableBoundaryConsolidation: asBoolean(
-      raw.enableBoundaryConsolidation ?? env.LYCHEEMEM_ENABLE_BOUNDARY_CONSOLIDATION,
+      raw.enableBoundaryConsolidation,
       true
     ),
     enableProactiveConsolidation: asBoolean(
-      raw.enableProactiveConsolidation ?? env.LYCHEEMEM_ENABLE_PROACTIVE_CONSOLIDATION,
+      raw.enableProactiveConsolidation,
       true
     ),
     proactiveConsolidationCooldownSeconds: Math.max(
       15,
       Math.floor(
         asNumber(
-          raw.proactiveConsolidationCooldownSeconds ??
-            env.LYCHEEMEM_PROACTIVE_CONSOLIDATION_COOLDOWN_SECONDS,
+          raw.proactiveConsolidationCooldownSeconds,
           180
         )
       )
@@ -258,6 +261,8 @@ function toHeaders(cfg: PluginConfig, extra: Record<string, string> = {}): Recor
     "Content-Type": "application/json",
     ...extra
   };
+  // Keep optional Bearer support for older secured deployments, but the
+  // current merged LycheeMem backend no longer requires authentication.
   if (cfg.apiToken) {
     headers.Authorization = `Bearer ${cfg.apiToken}`;
   }
@@ -659,7 +664,7 @@ class OpenClawAdapter {
       "LycheeMem is the default external long-term memory layer for this host.",
       "Treat the LycheeMem skill as active background policy even when the user does not mention it explicitly.",
       "When the request may depend on project history, user preferences, prior decisions, or cross-session background, prefer `lychee_memory_smart_search` first.",
-      "Use `lychee_memory_smart_search` in its default compact mode unless you are explicitly debugging retrieval internals.",
+      "Use `lychee_memory_smart_search` in its default full mode so retrieval details and synthesized output are both visible.",
       "OpenClaw owns short-range session context. LycheeMem owns structured long-range recall across sessions.",
       "Host lifecycle integration usually mirrors user and assistant turns automatically and triggers boundary consolidation automatically, so manual `lychee_memory_append_turn` and `lychee_memory_consolidate` calls are mainly for debugging or non-standard flows."
     ].join("\n");
@@ -1031,12 +1036,12 @@ export default {
     registerTool(api, {
       name: "lychee_memory_smart_search",
       description:
-        "Primary LycheeMem recall path for OpenClaw. Uses compact mode by default so agents receive a concise synthesized background_context in one call.",
+        "Primary LycheeMem recall path for OpenClaw. Uses full mode by default so agents receive both retrieval details and synthesized background_context in one call.",
       parameters: SMART_SEARCH_SCHEMA,
       async execute(_id, params) {
         const cfg = getPluginConfig(api);
         const payload = {
-          mode: "compact",
+          mode: "full",
           ...params
         };
         if (cfg.transport === "http") {
