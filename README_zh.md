@@ -146,6 +146,7 @@ lycheemem-cli
 ```
 
 *(如果你是使用拉取源码方式安装的，也可以执行 `python main.py` 启动)*
+```
 python main.py
 ```
 
