@@ -3,7 +3,7 @@
   <h1>LycheeMem: Lightweight Long-Term Memory for LLM Agents</h1>
   <p>
     <img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License">
-    <img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python Version">
+    <img src="https://img.shields.io/badge/python-3.9+-blue.svg" alt="Python Version">
     <img src="https://img.shields.io/badge/LangGraph-000?style=flat&logo=langchain" alt="LangGraph">
     <img src="https://img.shields.io/badge/litellm-000?style=flat&logo=python" alt="litellm">
     <a href="https://lancedb.com/">
