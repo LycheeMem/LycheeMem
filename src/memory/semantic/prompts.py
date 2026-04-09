@@ -1180,3 +1180,91 @@ Expected output:
     "missing_slots": []
 }
 """
+
+
+# ---------------------------------------------------------------------------
+# Module 3 (continued): Composite-level relevance filter (Phase 1 of retrieval)
+# ---------------------------------------------------------------------------
+
+COMPOSITE_FILTER_SYSTEM = """\
+You are a Memory Relevance Filter for a personal AI assistant.
+
+Your task: Given a user query and a list of CompositeRecord summaries (mid-level memory abstractions), \
+decide which composite records are relevant to answering the query, and which of those need their \
+underlying leaf MemoryRecords expanded for additional detail.
+
+You will receive:
+- <USER_QUERY>: The user's current query
+- <RECENT_CONTEXT>: Recent conversation context (optional)
+- <MEMORY_SUMMARIES>: A numbered list of composite memory summaries, each with an id, type, summary, and entities
+
+Selection rules:
+1. Select a composite if ANY part of it could help answer the query (err toward selecting over missing).
+2. Mark a composite as needs_detail if its summary is relevant but the composite-level text is too \
+   abstract to fully answer the query — e.g., it mentions a topic but the specific values, steps, \
+   names, or dates are likely only in the leaf records.
+3. If the composite summary is self-sufficient for the query, do NOT mark it as needs_detail.
+4. needs_detail must always be a subset of selected_ids.
+5. Completely unrelated composites must NOT appear in selected_ids.
+
+Output Format (strict JSON, no code blocks):
+{
+    "selected_ids": ["id_1", "id_2"],
+    "needs_detail": ["id_2"],
+    "reasoning": "Brief explanation of selection decisions"
+}
+
+---
+
+## Example 1
+
+<USER_QUERY>What deployment steps did I use for the DataFlow service?</USER_QUERY>
+<MEMORY_SUMMARIES>
+id=abc123
+  type: procedure
+  summary: User deployed DataFlow service to production using Helm and Kubernetes in Feb 2026.
+  entities: [DataFlow, Helm, Kubernetes, production]
+---
+id=def456
+  type: event
+  summary: Team meeting on Q1 roadmap planning.
+  entities: [team, roadmap, Q1]
+---
+id=ghi789
+  type: procedure
+  summary: Redis cluster configuration steps and troubleshooting notes.
+  entities: [Redis, cluster, configuration]
+</MEMORY_SUMMARIES>
+
+Expected output:
+{
+    "selected_ids": ["abc123"],
+    "needs_detail": ["abc123"],
+    "reasoning": "abc123 is relevant (DataFlow deployment). Marking needs_detail because the summary \
+mentions Helm/Kubernetes but specific commands and steps are likely in leaf records. def456 is \
+about a team meeting, unrelated. ghi789 is about Redis, not DataFlow."
+}
+
+## Example 2
+
+<USER_QUERY>Does Emily play any sports?</USER_QUERY>
+<MEMORY_SUMMARIES>
+id=p001
+  type: personal_info
+  summary: Emily is a college student who plays basketball on the university team and enjoys hiking.
+  entities: [Emily, basketball, university, hiking]
+---
+id=p002
+  type: event
+  summary: User attended a conference on machine learning in March.
+  entities: [conference, machine learning, March]
+</MEMORY_SUMMARIES>
+
+Expected output:
+{
+    "selected_ids": ["p001"],
+    "needs_detail": [],
+    "reasoning": "p001 directly answers that Emily plays basketball and hikes — the composite \
+summary is self-sufficient, no leaf expansion needed. p002 is unrelated."
+}
+"""

@@ -140,14 +140,17 @@ TOOLS_SCHEMA = [
                 },
                 "graph_results": {
                     "type": "array",
+                    "items": {},
                     "description": "Legacy alias for semantic_results returned by lychee_memory_search.",
                 },
                 "semantic_results": {
                     "type": "array",
+                    "items": {},
                     "description": "semantic_results returned by lychee_memory_search.",
                 },
                 "skill_results": {
                     "type": "array",
+                    "items": {},
                     "description": "skill_results returned by lychee_memory_search.",
                 },
             },

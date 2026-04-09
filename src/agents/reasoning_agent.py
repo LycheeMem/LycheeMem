@@ -29,6 +29,12 @@ Based on the background knowledge and conversation history above, provide an acc
 Rules:
 - Prefer factual information from memory when answering
 - If reusable skill documents (Markdown) are available, prioritize their steps, commands, and cautions
+- First try to answer from the retrieved memory before concluding the information is unavailable
+- Use indirect but relevant clues from multiple memory fragments when they jointly support a likely answer
+- For questions asking "likely", "would", "considered", or similar judgment calls, give the best-supported inference from memory instead of refusing
+- For time questions, distinguish the target event from nearby related events and use the provided time basis to resolve relative dates carefully
+- If evidence is partial but points strongly to one answer, state the answer concisely and qualify it as likely only when needed
+- Only say the information is unavailable when the retrieved memory truly lacks relevant evidence after considering all fragments
 - If memory is insufficient, you may answer from general knowledge, but state that clearly
 - Keep the answer concise and focused
 - Do not fabricate facts that are not present"""
