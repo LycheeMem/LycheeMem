@@ -54,6 +54,7 @@ LycheeMem is a compact memory framework for LLM agents. It starts from efficient
 <a id="news"></a>
 
 ## 🔥 News
+- **[04/10/2026]** Semantic memory retrieval upgraded to Action-Aware hierarchical retrieval: CompositeRecords serve as the primary retrieval unit, with LLM-driven holistic relevance judgement conditioned on the current query and ActionState, on-demand expansion along the memory tree to atomic MemoryRecords, and a reflection-based supplementary recall loop to cover residual coverage gaps.
 - **[04/03/2026]** The project now supports installation via `pip install lycheemem`. You can easily start the service from anywhere using `lycheemem-cli`!
 - **[03/30/2026]** We evaluated LycheeMem on PinchBench with the OpenClaw plugin: compared to OpenClaw's native memory, it achieved an ~6% score improvement, while reducing token consumption by ~71% and cost by ~55%!
 - **[03/28/2026]** Semantic memory has been upgraded to Compact Semantic Memory (SQLite + LanceDB), no Neo4j required. See [/quick-start](#quick-start) for details.
@@ -329,7 +330,7 @@ LycheeMem organizes memory into three complementary stores:
           <li>7 MemoryRecord types</li>
           <li>Conflict-aware Record Fusion</li>
           <li>Hierarchical memory tree</li>
-          <li>Action-grounded retrieval planning</li>
+          <li>Action-aware hierarchical retrieval</li>
           <li>Usage feedback loop + RL-ready statistics</li>
         </ul>
       </td>
@@ -397,47 +398,25 @@ Triggered online after each consolidation:
 4. On synthesis, the engine writes a new `CompositeRecord` to SQLite + LanceDB.
 5. Additional hierarchy rounds can synthesize `record -> composite` and `composite -> composite`, persisting `child_composite_ids` so the memory tree can keep growing upward.
 
-##### Module 3: Action-Grounded Retrieval Planning
+##### Module 3: Action-Aware Hierarchical Retrieval
 
-Before retrieval, `ActionAwareRetrievalPlanner` analyses the **user query + recent context + ActionState** and emits a `SearchPlan`:
+Retrieval is organised around the hierarchical memory tree, using CompositeRecords as the primary retrieval unit. The current query, recent context, and ActionState jointly condition holistic relevance judgement at the composite level; matched composites are expanded down the memory tree to atomic MemoryRecords on demand; and a reflection loop driven by adequacy assessment covers any residual information gaps.
 
-- `mode`: `answer` (factual Q&A) / `action` (needs execution) / `mixed`
-- `semantic_queries`: content-facing search terms
-- `pragmatic_queries`: action/tool/constraint-facing search terms
-- `tool_hints`: tools likely needed for this request
-- `required_constraints`: constraints that must be respected
-- `required_affordances`: capabilities the retrieved memory should provide
-- `missing_slots`: parameters / slots that are absent
-- `tree_retrieval_mode` / `tree_expansion_depth` / `include_leaf_records`: whether retrieval should stay at high-level composites (`root_only`) or descend into child composites / direct leaf records (`balanced` / `descend`)
+**Composite-Level Relevance Judgement**
 
-`ActionState` can carry fields such as `current_subgoal`, `tentative_action`, `known_constraints`, `available_tools`, `failure_signal`, and a recent-context excerpt. The planner merges this state with the LLM-produced plan so retrieval is conditioned on the current decision state rather than the query alone.
+Retrieval first operates at the CompositeRecord level. The retrieval engine presents the full set of CompositeRecords — each with its type, summary, and entities — alongside the current query and recent context to the LLM, which performs a holistic semantic relevance assessment. Each composite is either selected as relevant to the query or excluded; among those selected, the LLM additionally flags candidates whose composite-level summary is too abstract to fully answer the query and therefore warrant expansion to their underlying atomic records. Unlike threshold-based vector recall, this judgement operates directly in the semantic space and can surface associations that do not align well in the embedding space.
 
-The plan drives multi-channel recall:
+**Memory Tree Expansion**
 
-1. **FTS channel** — SQLite FTS5 keyword recall over `MemoryRecord` + `CompositeRecord`
-2. **Semantic vector channel** — LanceDB ANN over `semantic_text` embeddings
-3. **Normalised vector channel** — LanceDB ANN over `normalized_text` embeddings (for pragmatic queries)
-4. **Tag filter channel** — exact filter by `tool_hints` / `required_constraints` / `required_affordances`
-5. **Temporal channel** — filter by `SearchPlan.temporal_filter` time window
-6. **Slot-hint supplementation** — when `missing_slots` is non-empty, extra FTS/tag recall is triggered to find records that can fill missing parameters
+For composites flagged as requiring expansion, the retrieval engine recursively traverses `source_record_ids` and `child_composite_ids` down the memory tree to retrieve the corresponding atomic `MemoryRecord`s. This preserves the broad semantic overview provided by high-level composites while enabling precise access to fine-grained evidence when the query demands it, balancing retrieval efficiency with detail coverage.
 
-After base recall, retrieval can also expand along the **memory tree**. `root_only` keeps high-level composite summaries, `balanced` descends one level when tree hints match, and `descend` pulls child composites plus direct leaf records when the current action needs finer-grained detail.
+**Reflection-Based Supplementary Recall**
 
-##### Module 4: Multi-Dimensional Scorer
+After the initial candidate set is formed, the engine assesses the adequacy of the current context. When a coverage gap is detected, multi-channel supplementary recall is activated: FTS full-text and vector channels (both `semantic_text` and `normalized_text` paths) extend coverage at the `MemoryRecord` level, and a direct vector recall over the episode turns index recovers dialogue content not yet distilled into `MemoryRecord`s. The reflection loop runs for a bounded number of rounds, continuing only while information gaps remain.
 
-Candidates from all channels are de-duplicated and ranked by `MemoryScorer` using a weighted linear combination. Final top-k selection is **composite-first**: covering parent composites are preferred, covered child records are folded away unless they add unique value, and near-duplicate fragments are suppressed.
+##### Module 4: Candidate Aggregation and Context Enrichment
 
-$$\text{Score} = \alpha \cdot S_\text{sem} + \beta \cdot S_\text{action} + \kappa \cdot S_\text{slot} + \gamma \cdot S_\text{temporal} + \delta \cdot S_\text{recency} + \eta \cdot S_\text{evidence} - \lambda \cdot C_\text{token}$$
-
-| Weight | Meaning | Default |
-|--------|---------|---------|
-| α | SemanticRelevance (vector distance -> similarity) | 0.25 |
-| β | ActionUtility (tag match score, mode-aware) | 0.25 |
-| κ | SlotUtility (whether the memory helps fill missing action slots) | 0.15 |
-| γ | TemporalFit (temporal reference match) | 0.15 |
-| δ | Recency (memory freshness) | 0.10 |
-| η | EvidenceDensity (evidence span density) | 0.10 |
-| λ | TokenCost penalty (text length penalty) | 0.10 |
+After all phases complete, candidates are aggregated and ranked by source tier for top-k selection: composites selected by the composite-level relevance judgement receive the highest priority, followed by atomic MemoryRecords from tree expansion, with supplementary recall results ranked last. All candidates are then enriched with **episodic context** — original dialogue excerpts from the session store are retrieved and appended to each candidate's display text, providing the downstream SynthesizerAgent with fully sourced, contextualised background.
 
 ### 🛠️ Procedural Memory — Skill Store
 
@@ -496,7 +475,7 @@ Rule-based agent (no LLM prompt). Appends the user turn to the session log, coun
 
 ### Stage 2 — SearchCoordinator
 
-`SearchCoordinator` first builds `recent_context` from compressed summaries + raw recent turns, then derives an `ActionState` from the current query, constraints, recent failures, token budget, and recent tool use. `ActionAwareRetrievalPlanner` uses that state to produce a `SearchPlan` containing `mode`, `semantic_queries`, `pragmatic_queries`, `tool_hints`, `required_affordances`, `missing_slots`, tree-traversal strategy, and more. Multi-channel recall (FTS, semantic vector, normalised vector, tag/affordance filter, temporal filter, slot-hint supplementation, plus tree expansion when needed) then queries SQLite + LanceDB. This stage returns raw semantic fragments, skill hits, retrieval provenance, and a dedicated `novelty_retrieved_context` built from **pre-synthesis** semantic fragments for later novelty checking; it does **not** build the final `background_context` yet. Skill retrieval is mode-aware (`answer` / `action` / `mixed`) and uses HyDE against the skill store only when it is likely to help.
+`SearchCoordinator` first builds `recent_context` from compressed summaries and raw recent turns, then derives an `ActionState` from the current query, constraints, recent failure signals, token budget, and recent tool use. Semantic memory retrieval proceeds through the Action-Aware hierarchical retrieval pipeline: the full set of CompositeRecords is first assessed holistically for relevance conditioned on the query and ActionState, with relevant candidates selected and detail-requiring entries flagged for tree expansion; the memory tree is then recursively traversed to surface the corresponding atomic MemoryRecords; finally, an adequacy assessment determines whether supplementary FTS, vector, and raw episode turn recall is needed to close any remaining coverage gaps. This stage returns raw semantic fragments, skill hits, retrieval provenance, and a dedicated `novelty_retrieved_context` built from **pre-synthesis** semantic fragments for later novelty checking; it does **not** build the final `background_context` yet. Skill retrieval is mode-aware (`answer` / `action` / `mixed`) and uses HyDE against the skill store only when it is likely to help.
 
 When a new user turn arrives, `SearchCoordinator` also tries to apply lightweight feedback to the most recent unresolved action/mixed retrieval log, so the next turn can mark the prior memory usage as success / fail / correction.
 
