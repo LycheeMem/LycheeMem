@@ -42,6 +42,7 @@ from src.memory.semantic.models import (
 )
 from src.memory.semantic.planner import ActionAwareSearchPlanner
 from src.memory.semantic.prompts import (
+    COMPOSITE_FILTER_SYSTEM,
     NOVELTY_CHECK_SYSTEM,
     RETRIEVAL_ADEQUACY_CHECK_SYSTEM,
     RETRIEVAL_ADDITIONAL_QUERIES_SYSTEM,
@@ -141,7 +142,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         return False
 
     # ════════════════════════════════════════════════════════════════
-    # search() — 检索管线
+    # search() — 三阶段 LLM 驱动检索管线
     # ════════════════════════════════════════════════════════════════
 
     def search(
@@ -155,280 +156,167 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         action_state: dict[str, Any] | None = None,
         retrieval_plan: dict[str, Any] | None = None,
     ) -> SemanticSearchResult:
-        """多通道检索 + 反思循环 + 打分 + 格式化。
+        """三阶段 LLM 驱动检索（已替换旧的多通道打分管线）。
 
-        通道：
-        1. FTS（BM25 全文）— semantic_queries 驱动
-        2. 向量（semantic vector）— semantic_queries 驱动
-        3. 向量（normalized/pragmatic vector）— pragmatic_queries 驱动
-        4. Tag 过滤 — tool_hints / required_constraints 驱动
-        5. 时间范围 — temporal_filter 驱动
-
-        召回后去重 → Scorer 打分 → 反思循环（充分性检查 + 补充召回）→ 取 top_k → 格式化。
+        Phase 1: LLM 过滤全量 CompositeRecord（分块，每块 20 条）
+        Phase 2: 对标记为 needs_detail 的 composite 下钻到叶子 MemoryRecord
+        Phase 3: 反思循环 — LLM 判断当前记忆是否充分；若不充分则 FTS + 向量
+                 检索补充 MemoryRecord + 原始对话 turns
         """
-        # Step 1: 确定检索计划
         action_state_obj = self._dict_to_action_state(action_state)
+        top_k = max(1, int(top_k or 5))
 
         if retrieval_plan:
             plan = self._dict_to_plan(retrieval_plan)
         else:
-            plan = self._planner.plan(
-                query,
-                recent_context=recent_context,
-                action_state=action_state_obj,
+            plan = SearchPlan(
+                mode="answer",
+                semantic_queries=[query],
+                pragmatic_queries=[],
+                depth=top_k,
+                include_episodic_context=True,
             )
 
-        top_k = max(1, int(top_k or plan.depth or 5))
-        resolved_action_state = self._merge_action_state_with_plan(action_state_obj, plan)
-        focus_terms = self._derive_query_focus_terms(
-            query=query,
-            plan=plan,
-            action_state=resolved_action_state,
-        )
-        plan = self._normalize_tree_retrieval_plan(
-            plan,
-            resolved_action_state,
-            focus_terms=focus_terms,
-        )
-        scoring_slots = self._merge_unique(plan.missing_slots, focus_terms)
-
-        # Step 2: 初始多通道召回
+        selected_candidates: list[ScoredCandidate] = []
         seen_ids: set[str] = set()
-        raw_candidates = self._multi_channel_recall(
-            plan=plan,
-            query=query,
-            query_embedding=query_embedding,
-            top_k=top_k,
-            record_type_bias=self._derive_record_type_bias(
-                plan=plan,
-                action_state=resolved_action_state,
-            ),
-            synth_type_bias=self._derive_synth_type_bias(
-                plan=plan,
-                action_state=resolved_action_state,
-            ),
-            focus_terms=focus_terms,
-        )
-        for c in raw_candidates:
-            seen_ids.add(c.get("id", ""))
 
-        # Step 3: 初始打分
-        scored = self._scorer.score_candidates(
-            raw_candidates,
-            plan_mode=plan.mode,
-            plan_tool_hints=plan.tool_hints,
-            plan_required_constraints=plan.required_constraints,
-            plan_required_affordances=plan.required_affordances,
-            plan_missing_slots=scoring_slots,
-        ) if raw_candidates else []
+        # ─── Phase 1: LLM 过滤 CompositeRecord ───────────────────
+        all_composites = self._sqlite.list_synthesized()
+        needs_detail_ids: set[str] = set()
 
-        # Step 4: 反思循环（最多 max_reflection_rounds 轮）
-        for reflection_round in range(self._max_reflection_rounds):
-            current_top = scored[:top_k]
-            self._enrich_candidates_with_episodic_context(
-                current_top,
-                plan=plan,
-                focus_terms=focus_terms,
+        if all_composites:
+            _CHUNK = 20
+            for i in range(0, len(all_composites), _CHUNK):
+                chunk = all_composites[i : i + _CHUNK]
+                sel_ids, det_ids = self._llm_filter_composites(
+                    query=query,
+                    recent_context=recent_context,
+                    composites=chunk,
+                )
+                for composite in chunk:
+                    cid = composite.composite_id
+                    if cid in sel_ids and cid not in seen_ids:
+                        seen_ids.add(cid)
+                        data = self._synth_to_candidate(composite)
+                        selected_candidates.append(ScoredCandidate(
+                            id=cid,
+                            source="composite",
+                            final_score=1.0,
+                            score_breakdown={"llm_selected": 1.0},
+                            data=data,
+                        ))
+                    if cid in det_ids:
+                        needs_detail_ids.add(cid)
+
+        # ─── Phase 2: 下钻叶子 MemoryRecord ──────────────────────
+        for composite_id in list(needs_detail_ids):
+            leaf_ids = self._collect_leaf_record_ids(composite_id)
+            records = self._sqlite.get_records_by_ids(leaf_ids)
+            for record in records:
+                if record.expired:
+                    continue
+                rid = record.record_id
+                if rid in seen_ids:
+                    continue
+                seen_ids.add(rid)
+                data = self._record_to_candidate(record)
+                selected_candidates.append(ScoredCandidate(
+                    id=rid,
+                    source="record",
+                    final_score=0.9,
+                    score_breakdown={"tree_descent": 1.0},
+                    data=data,
+                ))
+
+        # ─── Phase 3: 反思循环 ────────────────────────────────────
+        for _round in range(self._max_reflection_rounds):
+            context_preview = (
+                self._format_context(selected_candidates) or "(no retrieved results)"
             )
-            context_preview = self._format_context(current_top) or "(no retrieved results)"
-
             adequacy = self._check_adequacy(
                 query,
                 context_preview,
                 plan=plan,
-                action_state=resolved_action_state,
+                action_state=action_state_obj,
             )
             if adequacy["is_sufficient"]:
                 break
 
-            supplement = self._generate_additional_queries(
-                query,
-                context_preview,
-                adequacy=adequacy,
-                plan=plan,
-                action_state=resolved_action_state,
-            )
-            supplement_semantic_queries = supplement.get("semantic_queries", [])
-            supplement_pragmatic_queries = supplement.get("pragmatic_queries", [])
-            supplement_tool_hints = supplement.get("tool_hints", [])
-            supplement_constraints = supplement.get("required_constraints", [])
-            supplement_affordances = supplement.get("required_affordances", [])
-            supplement_slots = supplement.get("missing_slots", [])
-
-            has_supplement = any(
-                [
-                    supplement_semantic_queries,
-                    supplement_pragmatic_queries,
-                    supplement_tool_hints,
-                    supplement_constraints,
-                    supplement_affordances,
-                    supplement_slots,
-                ]
-            )
-            if not has_supplement:
-                if reflection_round == 0:
-                    # 第一轮补充生成器无新内容，无法继续做补充检索，放弃后续轮次
-                    break
-                # round 1+：即便补充生成器无新内容，仍必须强制进行情节上下文扩展检索；
-                # 降级：复用原始 plan 的查询作为 fallback，避免召回时查询列表为空
-                supplement_semantic_queries = list(plan.semantic_queries)
-                supplement_pragmatic_queries = list(plan.pragmatic_queries)
-
-            # 用补充查询做额外召回（补充 plan 也必须继承新的 action 缺口）
-            supplement_plan = SearchPlan(
-                mode=plan.mode,
-                semantic_queries=supplement_semantic_queries,
-                pragmatic_queries=supplement_pragmatic_queries,
-                tool_hints=self._merge_unique(plan.tool_hints, supplement_tool_hints),
-                required_constraints=self._merge_unique(plan.required_constraints, supplement_constraints),
-                required_affordances=self._merge_unique(plan.required_affordances, supplement_affordances),
-                missing_slots=self._merge_unique(plan.missing_slots, supplement_slots),
-                tree_retrieval_mode=plan.tree_retrieval_mode,
-                tree_expansion_depth=plan.tree_expansion_depth,
-                include_leaf_records=plan.include_leaf_records,
-                include_episodic_context=plan.include_episodic_context,
-                episodic_turn_window=plan.episodic_turn_window,
-                depth=top_k,
-            )
-            supplement_plan = self._normalize_tree_retrieval_plan(
-                supplement_plan,
-                resolved_action_state,
-                focus_terms=focus_terms,
-                adequacy=adequacy,
-            )
-
-            # 逐轮扩大检索范围和召回数量
-            # 第二次检索（round 0）：适度扩大召回量
-            # 第三次检索（round 1+）：强制启用原始对话情节上下文，显著增大召回量
-            if reflection_round == 0:
-                extra_top_k = max(top_k + 5, int(top_k * 1.5))
-            else:
-                extra_top_k = max(top_k * 2, top_k + 10)
-                supplement_plan.include_episodic_context = True
-                supplement_plan.episodic_turn_window = max(
-                    3, int(supplement_plan.episodic_turn_window or 0) + 2,
-                )
-                supplement_plan.include_leaf_records = True
-                if supplement_plan.tree_retrieval_mode == "root_only":
-                    supplement_plan.tree_retrieval_mode = "balanced"
-                supplement_plan.tree_expansion_depth = max(
-                    2, int(supplement_plan.tree_expansion_depth or 1) + 1,
-                )
-
-            extra_candidates = self._multi_channel_recall(
-                plan=supplement_plan,
+            # Fallback: FTS + 语义向量 + 实用向量检索 MemoryRecord + 原始 turns
+            fallback_candidates = self._fallback_record_search(
                 query=query,
-                query_embedding=None,
-                top_k=extra_top_k,
-                record_type_bias=self._derive_record_type_bias(
-                    plan=supplement_plan,
-                    action_state=resolved_action_state,
-                    adequacy=adequacy,
-                ),
-                synth_type_bias=self._derive_synth_type_bias(
-                    plan=supplement_plan,
-                    action_state=resolved_action_state,
-                    adequacy=adequacy,
-                ),
-                focus_terms=focus_terms,
+                top_k=max(top_k, 10),
             )
-
-            # round 1+：对原始对话 turns 直接做向量检索（不依赖 MemoryRecord 锚点）
-            # 可找回尚未被提炼成记忆记录、或提炼质量不佳的对话内容
-            if reflection_round >= 1:
-                raw_turn_hits = self._search_raw_turns_direct(
-                    query=query,
-                    session_id=session_id,
-                    top_k=extra_top_k,
-                )
-                extra_candidates = extra_candidates + [
-                    c for c in raw_turn_hits
-                    if c.get("id", "") not in seen_ids
-                ]
-
-            plan = SearchPlan(
-                mode=plan.mode,
-                semantic_queries=self._merge_unique(plan.semantic_queries, supplement_semantic_queries),
-                pragmatic_queries=self._merge_unique(plan.pragmatic_queries, supplement_pragmatic_queries),
-                temporal_filter=plan.temporal_filter,
-                tool_hints=list(supplement_plan.tool_hints),
-                required_constraints=list(supplement_plan.required_constraints),
-                required_affordances=list(supplement_plan.required_affordances),
-                missing_slots=list(supplement_plan.missing_slots),
-                tree_retrieval_mode=supplement_plan.tree_retrieval_mode,
-                tree_expansion_depth=supplement_plan.tree_expansion_depth,
-                include_leaf_records=supplement_plan.include_leaf_records,
-                include_episodic_context=supplement_plan.include_episodic_context,
-                episodic_turn_window=supplement_plan.episodic_turn_window,
-                depth=max(plan.depth, top_k),
-                reasoning=plan.reasoning,
+            raw_turn_candidates = self._search_raw_turns_direct(
+                query=query,
+                session_id=session_id,
+                top_k=max(top_k, 10),
             )
-            resolved_action_state = self._merge_action_state_with_plan(resolved_action_state, plan)
-            plan = self._normalize_tree_retrieval_plan(
-                plan,
-                resolved_action_state,
-                focus_terms=focus_terms,
-                adequacy=adequacy,
-            )
-            scoring_slots = self._merge_unique(plan.missing_slots, focus_terms)
-            reflection_scoring_context = self._build_reflection_scoring_context(
-                adequacy=adequacy,
-                action_state=resolved_action_state,
-            )
+            new_added = 0
+            for cdata in fallback_candidates:
+                cid = str(cdata.get("id", ""))
+                if not cid or cid in seen_ids:
+                    continue
+                seen_ids.add(cid)
+                selected_candidates.append(ScoredCandidate(
+                    id=cid,
+                    source=cdata.get("source", "record"),
+                    final_score=0.7,
+                    score_breakdown={"fallback_search": 1.0},
+                    data=cdata,
+                ))
+                new_added += 1
 
-            # 去重合并
-            new_candidates = [
-                c for c in extra_candidates
-                if c.get("id", "") not in seen_ids
-            ]
-            for c in new_candidates:
-                seen_ids.add(c.get("id", ""))
+            for cdata in raw_turn_candidates:
+                cid = str(cdata.get("id", ""))
+                if not cid or cid in seen_ids:
+                    continue
+                seen_ids.add(cid)
+                selected_candidates.append(ScoredCandidate(
+                    id=cid,
+                    source="episode",
+                    final_score=0.65,
+                    score_breakdown={"fallback_raw_turn": 1.0},
+                    data=cdata,
+                ))
+                new_added += 1
 
-            raw_candidates = raw_candidates + new_candidates
-            scored = self._scorer.score_candidates(
-                raw_candidates,
-                plan_mode=plan.mode,
-                plan_tool_hints=plan.tool_hints,
-                plan_required_constraints=plan.required_constraints,
-                plan_required_affordances=plan.required_affordances,
-                plan_missing_slots=scoring_slots,
-                reflection_context=reflection_scoring_context,
-            )
+            if not new_added:
+                break
 
-            if not new_candidates:
-                continue
-
-        # Step 5: 取 top_k
-        top = self._select_final_candidates(
-            scored,
-            top_k=top_k,
-            focus_terms=focus_terms,
-            tree_retrieval_mode=plan.tree_retrieval_mode,
-            include_leaf_records=plan.include_leaf_records,
-        )
+        # 情节上下文增强
+        plan.include_episodic_context = True
         self._enrich_candidates_with_episodic_context(
-            top,
+            selected_candidates,
             plan=plan,
-            focus_terms=focus_terms,
+            focus_terms=[],
         )
 
-        # Step 6: 记录使用日志
+        # 按 final_score 降序排列，取 top_k
+        selected_candidates.sort(key=lambda c: c.final_score, reverse=True)
+        top = selected_candidates[:top_k]
+
+        # 记录使用日志
         log_id = self._log_usage(
             query=query,
             session_id=session_id or "",
             plan=plan,
-            action_state=resolved_action_state,
-            retrieved_ids=[s.id for s in scored],
-            kept_ids=[s.id for s in top],
+            action_state=action_state_obj,
+            retrieved_ids=[c.id for c in selected_candidates],
+            kept_ids=[c.id for c in top],
         )
 
-        # Step 7: 更新 retrieval_count
-        all_retrieved_ids = [s.id for s in scored]
-        kept_ids = [s.id for s in top]
-        self._sqlite.increment_retrieval_count(all_retrieved_ids)
-        self._sqlite.increment_hit_count(kept_ids)
+        # 更新统计（仅对 SQLite 中存储的 record / composite）
+        sqlite_ids = [
+            c.id for c in selected_candidates
+            if c.source in {"record", "composite"}
+        ]
+        self._sqlite.increment_retrieval_count(sqlite_ids)
+        self._sqlite.increment_hit_count([
+            c.id for c in top if c.source in {"record", "composite"}
+        ])
 
-        # Step 8: 格式化
+        # 格式化
         context = self._format_context(top)
         provenance = self._build_provenance(top)
 
@@ -436,10 +324,156 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             context=context,
             provenance=provenance,
             retrieval_plan=self._plan_to_dict(plan),
-            action_state=self._action_state_to_dict(resolved_action_state),
+            action_state=self._action_state_to_dict(action_state_obj),
             usage_log_id=log_id,
             mode=plan.mode,
         )
+
+    def _llm_filter_composites(
+        self,
+        *,
+        query: str,
+        recent_context: str,
+        composites: list[CompositeRecord],
+    ) -> tuple[set[str], set[str]]:
+        """LLM 过滤一批 CompositeRecord，返回 (selected_ids, needs_detail_ids)。
+
+        LLM 根据 query 判断哪些 composite 相关（selected_ids），
+        以及哪些需要展开到叶子 MemoryRecord（needs_detail_ids ⊆ selected_ids）。
+        解析失败时保守返回空集，避免影响后续流程。
+        """
+        if not composites:
+            return set(), set()
+
+        lines: list[str] = []
+        for composite in composites:
+            entities_str = ", ".join(composite.entities[:6]) if composite.entities else "-"
+            summary = str(composite.normalized_text or composite.semantic_text or "").strip()
+            if len(summary) > 300:
+                summary = summary[:300] + "…"
+            lines.append(
+                f"id={composite.composite_id}\n"
+                f"  type: {composite.memory_type}\n"
+                f"  summary: {summary}\n"
+                f"  entities: [{entities_str}]"
+            )
+
+        composites_text = "\n---\n".join(lines)
+        user_content = f"<USER_QUERY>\n{query}\n</USER_QUERY>\n\n"
+        if recent_context:
+            user_content += f"<RECENT_CONTEXT>\n{recent_context}\n</RECENT_CONTEXT>\n\n"
+        user_content += f"<MEMORY_SUMMARIES>\n{composites_text}\n</MEMORY_SUMMARIES>"
+
+        response = self._llm.generate([
+            {"role": "system", "content": COMPOSITE_FILTER_SYSTEM},
+            {"role": "user", "content": user_content},
+        ])
+
+        try:
+            raw = response.strip()
+            # 剥除可能存在的 markdown 代码块标记
+            if raw.startswith("```"):
+                parts = raw.split("```")
+                # parts[1] is the content between first and second ```
+                raw = parts[1].lstrip("json").strip() if len(parts) >= 3 else parts[-1].strip()
+            parsed = json.loads(raw)
+            selected_ids = {
+                str(v or "").strip()
+                for v in (parsed.get("selected_ids") or [])
+                if str(v or "").strip()
+            }
+            needs_detail_ids = {
+                str(v or "").strip()
+                for v in (parsed.get("needs_detail") or [])
+                if str(v or "").strip()
+            } & selected_ids  # needs_detail 必须是 selected 的子集
+            return selected_ids, needs_detail_ids
+        except (json.JSONDecodeError, ValueError):
+            return set(), set()
+
+    def _collect_leaf_record_ids(self, composite_id: str) -> list[str]:
+        """递归收集从给定 CompositeRecord 向下到叶子的全部 MemoryRecord ID。
+
+        遍历 source_record_ids（直接叶子）和 child_composite_ids（子 composite 树）。
+        使用 BFS 防止循环引用。
+        """
+        leaf_ids: set[str] = set()
+        visited: set[str] = set()
+        queue = [composite_id]
+        while queue:
+            cid = queue.pop()
+            if cid in visited:
+                continue
+            visited.add(cid)
+            composite = self._sqlite.get_synthesized(cid)
+            if composite is None:
+                continue
+            for record_id in (composite.source_record_ids or []):
+                rid = str(record_id or "").strip()
+                if rid:
+                    leaf_ids.add(rid)
+            for child_id in (composite.child_composite_ids or []):
+                child_id = str(child_id or "").strip()
+                if child_id and child_id not in visited:
+                    queue.append(child_id)
+        return list(leaf_ids)
+
+    def _fallback_record_search(
+        self,
+        query: str,
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        """反思 fallback：FTS + 语义向量 + 实用向量召回 MemoryRecord。
+
+        用于反思循环中当前记忆不充分时的补充检索。
+        """
+        seen_ids: set[str] = set()
+        candidates: list[dict[str, Any]] = []
+        limit = max(top_k * 2, 20)
+
+        # FTS（BM25 全文检索）
+        for r in self._sqlite.fulltext_search(query, limit=limit):
+            uid = str(r.get("record_id", "") or "").strip()
+            if uid and uid not in seen_ids:
+                seen_ids.add(uid)
+                full = self._sqlite.get_record(uid)
+                if full:
+                    c = self._record_to_candidate(full)
+                    c["semantic_distance"] = 1.0 - min(
+                        1.0, abs(float(r.get("fts_score", 0))) / 20.0
+                    )
+                    candidates.append(c)
+
+        # 语义向量检索
+        try:
+            for r in self._vector.search(query, column="vector", limit=limit):
+                uid = str(r.get("record_id", "") or "").strip()
+                if uid and uid not in seen_ids:
+                    seen_ids.add(uid)
+                    full = self._sqlite.get_record(uid)
+                    if full:
+                        c = self._record_to_candidate(full)
+                        c["semantic_distance"] = float(r.get("_distance", 1.0))
+                        candidates.append(c)
+        except Exception:
+            pass
+
+        # 实用向量检索（normalized_vector）
+        try:
+            for r in self._vector.search(query, column="normalized_vector", limit=limit):
+                uid = str(r.get("record_id", "") or "").strip()
+                if uid and uid not in seen_ids:
+                    seen_ids.add(uid)
+                    full = self._sqlite.get_record(uid)
+                    if full:
+                        c = self._record_to_candidate(full)
+                        c["semantic_distance"] = float(r.get("_distance", 1.0))
+                        candidates.append(c)
+        except Exception:
+            pass
+
+        return candidates
+
 
     def _multi_channel_recall(
         self,
