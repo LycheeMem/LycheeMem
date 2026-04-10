@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from starlette.concurrency import run_in_threadpool
 
 from src.api.dependencies import get_pipeline
 from src.api.models import (
@@ -685,68 +686,11 @@ def run_memory_consolidate(
     )
 
 
-# ── Memory: Search ──
-
-
-@router.post("/memory/search", response_model=MemorySearchResponse)
-async def memory_search(req: MemorySearchRequest, pipeline=Depends(get_pipeline)):
-    """统一记忆检索：同时查询图谱和技能库。"""
-    return run_memory_search(pipeline, req)
-
-
-@router.post("/memory/smart-search", response_model=MemorySmartSearchResponse)
-async def memory_smart_search(
-    req: MemorySmartSearchRequest,
-    pipeline=Depends(get_pipeline),
-):
-    """实验性 one-shot 检索包装器：search，可选自动 synthesize。"""
-    return run_memory_smart_search(pipeline, req)
-
-
-# ── Memory: Synthesize ──
-
-
-@router.post("/memory/synthesize", response_model=MemorySynthesizeResponse)
-async def memory_synthesize(
-    req: MemorySynthesizeRequest,
-    pipeline=Depends(get_pipeline),
-):
-    """对多源检索结果进行 LLM-as-Judge 评分与融合，生成 background_context。
-
-    典型用法：衔接 POST /memory/search 的响应，将 graph_results / skill_results 传入。
-    输出的 background_context 和 skill_reuse_plan 可直接传给 POST /memory/reason。
-    """
-    return run_memory_synthesize(pipeline, req)
-
-
-# ── Memory: Append Turn ──
-
-
-@router.post("/memory/append-turn", response_model=MemoryAppendTurnResponse)
-async def memory_append_turn(
-    req: MemoryAppendTurnRequest,
-    pipeline=Depends(get_pipeline),
-):
-    """追加单条外部宿主对话轮次，为后续 consolidate 提供 transcript bridge。"""
-    return run_memory_append_turn(pipeline, req)
-
-
-# ── Memory: Reason ──
-
-
-@router.post("/memory/reason", response_model=MemoryReasonResponse)
-async def memory_reason(
+def _run_memory_reason(
+    pipeline,
     req: MemoryReasonRequest,
-    pipeline=Depends(get_pipeline),
-):
-    """基于合成上下文对用户查询进行最终推理，生成 assistant 回答。
-
-    当 append_to_session=True（默认）时：
-    - 将用户问题追加到会话（含 token 预算检查与按需压缩），作为下一轮历史
-    - 将 assistant 回答追加到会话，供后续 POST /memory/consolidate 使用
-
-    当 append_to_session=False 时：仅读取历史，不写入会话。
-    """
+) -> MemoryReasonResponse:
+    """在线程池中执行推理，避免阻塞 FastAPI 事件循环。"""
     wm = pipeline.wm_manager
 
     if req.append_to_session:
@@ -785,6 +729,71 @@ async def memory_reason(
     )
 
 
+# ── Memory: Search ──
+
+
+@router.post("/memory/search", response_model=MemorySearchResponse)
+async def memory_search(req: MemorySearchRequest, pipeline=Depends(get_pipeline)):
+    """统一记忆检索：同时查询图谱和技能库。"""
+    return await run_in_threadpool(run_memory_search, pipeline, req)
+
+
+@router.post("/memory/smart-search", response_model=MemorySmartSearchResponse)
+async def memory_smart_search(
+    req: MemorySmartSearchRequest,
+    pipeline=Depends(get_pipeline),
+):
+    """实验性 one-shot 检索包装器：search，可选自动 synthesize。"""
+    return await run_in_threadpool(run_memory_smart_search, pipeline, req)
+
+
+# ── Memory: Synthesize ──
+
+
+@router.post("/memory/synthesize", response_model=MemorySynthesizeResponse)
+async def memory_synthesize(
+    req: MemorySynthesizeRequest,
+    pipeline=Depends(get_pipeline),
+):
+    """对多源检索结果进行 LLM-as-Judge 评分与融合，生成 background_context。
+
+    典型用法：衔接 POST /memory/search 的响应，将 graph_results / skill_results 传入。
+    输出的 background_context 和 skill_reuse_plan 可直接传给 POST /memory/reason。
+    """
+    return await run_in_threadpool(run_memory_synthesize, pipeline, req)
+
+
+# ── Memory: Append Turn ──
+
+
+@router.post("/memory/append-turn", response_model=MemoryAppendTurnResponse)
+async def memory_append_turn(
+    req: MemoryAppendTurnRequest,
+    pipeline=Depends(get_pipeline),
+):
+    """追加单条外部宿主对话轮次，为后续 consolidate 提供 transcript bridge。"""
+    return await run_in_threadpool(run_memory_append_turn, pipeline, req)
+
+
+# ── Memory: Reason ──
+
+
+@router.post("/memory/reason", response_model=MemoryReasonResponse)
+async def memory_reason(
+    req: MemoryReasonRequest,
+    pipeline=Depends(get_pipeline),
+):
+    """基于合成上下文对用户查询进行最终推理，生成 assistant 回答。
+
+    当 append_to_session=True（默认）时：
+    - 将用户问题追加到会话（含 token 预算检查与按需压缩），作为下一轮历史
+    - 将 assistant 回答追加到会话，供后续 POST /memory/consolidate 使用
+
+    当 append_to_session=False 时：仅读取历史，不写入会话。
+    """
+    return await run_in_threadpool(_run_memory_reason, pipeline, req)
+
+
 # ── Memory: Consolidate ──
 
 
@@ -803,7 +812,7 @@ async def memory_consolidate(
         与 Pipeline 内部行为一致，适合生产调用（固化耗时通常超过 60 秒）。
     background=False：同步等待完成后返回详细结果，适合调试/验证。
     """
-    return run_memory_consolidate(pipeline, req)
+    return await run_in_threadpool(run_memory_consolidate, pipeline, req)
 
 
 # ── Memory: Graph ──
