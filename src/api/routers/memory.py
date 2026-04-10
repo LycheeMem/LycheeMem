@@ -20,7 +20,6 @@ from src.api.models import (
     MemorySearchRequest,
     MemorySearchResponse,
     MemorySmartSearchRequest,
-    MemorySmartSearchResponse,
     MemorySynthesizeRequest,
     MemorySynthesizeResponse,
     SkillsResponse,
@@ -520,8 +519,33 @@ def run_memory_synthesize(
 def run_memory_smart_search(
     pipeline,
     req: MemorySmartSearchRequest,
-) -> MemorySmartSearchResponse:
+) -> dict[str, Any]:
     """执行 one-shot 检索；可选自动 synthesize，便于宿主快速试验效果。"""
+    def _trim_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        if req.response_level == "full":
+            return payload
+
+        if req.response_level == "minimal":
+            return {
+                "query": payload["query"],
+                "mode": payload["mode"],
+                "background_context": payload.get("background_context", ""),
+                "total": payload["total"],
+            }
+
+        compact_payload: dict[str, Any] = {
+            "query": payload["query"],
+            "mode": payload["mode"],
+            "background_context": payload.get("background_context", ""),
+            "total": payload["total"],
+            "kept_count": payload.get("kept_count", 0),
+            "dropped_count": payload.get("dropped_count", 0),
+        }
+        skill_reuse_plan = payload.get("skill_reuse_plan")
+        if skill_reuse_plan:
+            compact_payload["skill_reuse_plan"] = skill_reuse_plan
+        return compact_payload
+
     search_result = run_memory_search(
         pipeline,
         MemorySearchRequest(
@@ -534,28 +558,28 @@ def run_memory_smart_search(
     )
 
     if not req.synthesize:
-        return MemorySmartSearchResponse(
-            query=search_result.query,
-            mode=req.mode,
-            graph_results=search_result.graph_results,
-            semantic_results=search_result.semantic_results,
-            skill_results=search_result.skill_results,
-            novelty_retrieved_context=search_result.novelty_retrieved_context,
-            total=search_result.total,
-            synthesized=False,
-        )
+        return _trim_payload({
+            "query": search_result.query,
+            "mode": req.mode,
+            "graph_results": search_result.graph_results,
+            "semantic_results": search_result.semantic_results,
+            "skill_results": search_result.skill_results,
+            "novelty_retrieved_context": search_result.novelty_retrieved_context,
+            "total": search_result.total,
+            "synthesized": False,
+        })
 
     if req.mode == "raw":
-        return MemorySmartSearchResponse(
-            query=search_result.query,
-            mode=req.mode,
-            graph_results=search_result.graph_results,
-            semantic_results=search_result.semantic_results,
-            skill_results=search_result.skill_results,
-            novelty_retrieved_context=search_result.novelty_retrieved_context,
-            total=search_result.total,
-            synthesized=False,
-        )
+        return _trim_payload({
+            "query": search_result.query,
+            "mode": req.mode,
+            "graph_results": search_result.graph_results,
+            "semantic_results": search_result.semantic_results,
+            "skill_results": search_result.skill_results,
+            "novelty_retrieved_context": search_result.novelty_retrieved_context,
+            "total": search_result.total,
+            "synthesized": False,
+        })
 
     synth_result = run_memory_synthesize(
         pipeline,
@@ -566,38 +590,27 @@ def run_memory_smart_search(
             skill_results=search_result.skill_results,
         ),
     )
+    payload: dict[str, Any] = {
+        "query": search_result.query,
+        "mode": req.mode,
+        "graph_results": search_result.graph_results,
+        "semantic_results": search_result.semantic_results,
+        "skill_results": search_result.skill_results,
+        "novelty_retrieved_context": search_result.novelty_retrieved_context,
+        "total": search_result.total,
+        "synthesized": True,
+        "background_context": synth_result.background_context,
+        "skill_reuse_plan": synth_result.skill_reuse_plan,
+        "provenance": synth_result.provenance,
+        "kept_count": synth_result.kept_count,
+        "dropped_count": synth_result.dropped_count,
+    }
     if req.mode == "compact":
-        return MemorySmartSearchResponse(
-            query=search_result.query,
-            mode=req.mode,
-            graph_results=[],
-            semantic_results=[],
-            skill_results=[],
-            novelty_retrieved_context=search_result.novelty_retrieved_context,
-            total=search_result.total,
-            synthesized=True,
-            background_context=synth_result.background_context,
-            skill_reuse_plan=synth_result.skill_reuse_plan,
-            provenance=synth_result.provenance,
-            kept_count=synth_result.kept_count,
-            dropped_count=synth_result.dropped_count,
-        )
+        payload["graph_results"] = []
+        payload["semantic_results"] = []
+        payload["skill_results"] = []
 
-    return MemorySmartSearchResponse(
-        query=search_result.query,
-        mode=req.mode,
-        graph_results=search_result.graph_results,
-        semantic_results=search_result.semantic_results,
-        skill_results=search_result.skill_results,
-        novelty_retrieved_context=search_result.novelty_retrieved_context,
-        total=search_result.total,
-        synthesized=True,
-        background_context=synth_result.background_context,
-        skill_reuse_plan=synth_result.skill_reuse_plan,
-        provenance=synth_result.provenance,
-        kept_count=synth_result.kept_count,
-        dropped_count=synth_result.dropped_count,
-    )
+    return _trim_payload(payload)
 
 
 def run_memory_append_turn(
@@ -694,7 +707,7 @@ async def memory_search(req: MemorySearchRequest, pipeline=Depends(get_pipeline)
     return run_memory_search(pipeline, req)
 
 
-@router.post("/memory/smart-search", response_model=MemorySmartSearchResponse)
+@router.post("/memory/smart-search")
 async def memory_smart_search(
     req: MemorySmartSearchRequest,
     pipeline=Depends(get_pipeline),
@@ -959,5 +972,3 @@ async def delete_skill(skill_id: str, pipeline=Depends(get_pipeline)):
     skill_store = pipeline.search_coordinator.skill_store
     skill_store.delete([skill_id])
     return DeleteResponse(message=f"Skill '{skill_id}' deleted.")
-
-

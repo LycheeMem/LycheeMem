@@ -12,7 +12,7 @@ Collaboration model with OpenClaw:
 
 Default plugin tool exposure:
 
-- `lychee_memory_smart_search` (primary recall path, default `mode=full`)
+- `lychee_memory_smart_search` (primary recall path, default lean response)
 - `lychee_memory_search` (developer raw retrieval)
 - `lychee_memory_append_turn`
 - `lychee_memory_synthesize` (developer debugging)
@@ -44,7 +44,7 @@ Default plugin tool exposure:
 ## Trigger Guidance
 
 - Prefer `lychee_memory_smart_search` for recall questions such as "上次怎么处理的", "用户之前提过什么", "这个项目长期背景是什么". Treat it as the default recall path.
-- Let `lychee_memory_smart_search` use `mode=full` by default so the agent receives both retrieval details and synthesized `background_context`.
+- Let `lychee_memory_smart_search` use full search mode internally but prefer a lean default response so the agent mainly receives synthesized `background_context`.
 - Use `lychee_memory_search` only during development or debugging when you explicitly want the raw retrieval payload.
 - When this plugin runs inside OpenClaw with host lifecycle integration enabled, assume the host usually mirrors natural-language user and assistant turns into LycheeMem automatically.
 - In that host-integrated mode, do not manually call `lychee_memory_append_turn` from the model during normal operation, because it would duplicate the host-managed transcript mirror.
@@ -62,7 +62,7 @@ Default plugin tool exposure:
 The intended pattern is:
 
 1. let OpenClaw evaluate whether its local memory, workspace instructions, and current-turn context are already sufficient
-2. if longer-horizon recall is needed, call `lychee_memory_smart_search` with its default `mode=full`
+2. if longer-horizon recall is needed, call `lychee_memory_smart_search` with its default lean response
 3. inject the returned `background_context` into the main reasoning context as supplemental long-term memory
 4. answer in OpenClaw's normal reasoning loop
 5. let the host lifecycle adapter mirror the natural-language user turn and assistant turn automatically when available; otherwise call `lychee_memory_append_turn` manually using the same `session_id`

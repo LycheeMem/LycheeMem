@@ -5,8 +5,8 @@ TOOLS_SCHEMA = [
         "name": "lychee_memory_smart_search",
         "description": (
             "Primary recall path for agents. Performs LycheeMem search with optional automatic "
-            "synthesis in one tool call. Use full mode by default so agents can inspect both "
-            "retrieval details and synthesized output in a single response."
+            "synthesis in one tool call. Prefer response_level=minimal for normal agent use to "
+            "reduce token-heavy JSON payloads, and switch to full only for debugging."
         ),
         "inputSchema": {
             "type": "object",
@@ -48,6 +48,11 @@ TOOLS_SCHEMA = [
                     "type": "string",
                     "default": "full",
                     "description": "返回模式：raw 仅返回原始检索结果；full 返回原始结果和 synthesize 结果；compact 仅返回压缩后的结果。",
+                },
+                "response_level": {
+                    "type": "string",
+                    "default": "minimal",
+                    "description": "返回层级：minimal 仅返回 query/mode/background_context/total；compact 返回轻量调试字段；full 返回完整检索明细。",
                 },
             },
             "required": ["query"],

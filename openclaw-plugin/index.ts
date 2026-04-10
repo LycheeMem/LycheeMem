@@ -94,10 +94,15 @@ const SMART_SEARCH_SCHEMA = {
       default: false,
       description: "Whether to include verbose provenance details in the tool result."
     },
+    response_level: {
+      type: "string",
+      default: "minimal",
+      description: "Output trimming level: minimal keeps only the synthesized background_context payload, compact keeps lightweight metadata, and full keeps the full retrieval payload."
+    },
     mode: {
       type: "string",
       default: "full",
-      description: "Return mode: full is the recommended default for agents, raw returns only retrieval results, and compact returns only synthesized output."
+      description: "Search mode: full runs retrieval plus synthesis, raw returns only retrieval results, and compact suppresses raw retrieval arrays after synthesis."
     }
   },
   required: ["query"]
@@ -664,7 +669,7 @@ class OpenClawAdapter {
       "LycheeMem is the default external long-term memory layer for this host.",
       "Treat the LycheeMem skill as active background policy even when the user does not mention it explicitly.",
       "When the request may depend on project history, user preferences, prior decisions, or cross-session background, prefer `lychee_memory_smart_search` first.",
-      "Use `lychee_memory_smart_search` in its default full mode so retrieval details and synthesized output are both visible.",
+      "Use `lychee_memory_smart_search` with lean output by default so the model mainly sees synthesized `background_context` instead of token-heavy retrieval JSON.",
       "OpenClaw owns short-range session context. LycheeMem owns structured long-range recall across sessions.",
       "Host lifecycle integration usually mirrors user and assistant turns automatically and triggers boundary consolidation automatically, so manual `lychee_memory_append_turn` and `lychee_memory_consolidate` calls are mainly for debugging or non-standard flows."
     ].join("\n");
@@ -1036,12 +1041,13 @@ export default {
     registerTool(api, {
       name: "lychee_memory_smart_search",
       description:
-        "Primary LycheeMem recall path for OpenClaw. Uses full mode by default so agents receive both retrieval details and synthesized background_context in one call.",
+        "Primary LycheeMem recall path for OpenClaw. Uses full search mode internally but trims the default response to a lean synthesized payload so the model sees mostly background_context instead of verbose retrieval JSON.",
       parameters: SMART_SEARCH_SCHEMA,
       async execute(_id, params) {
         const cfg = getPluginConfig(api);
         const payload = {
           mode: "full",
+          response_level: "minimal",
           ...params
         };
         if (cfg.transport === "http") {

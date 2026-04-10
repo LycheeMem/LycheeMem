@@ -41,7 +41,7 @@ Call `lychee_memory_smart_search` by default before answering if any of the foll
 
 In short: if the question is not answerable from the current message alone, try `lychee_memory_smart_search` first.
 
-Use `mode=full` by default.
+Use a lean default response by default, and switch to `response_level=full` only when you explicitly need retrieval details for debugging.
 
 ## When Not To Skip Smart Search
 

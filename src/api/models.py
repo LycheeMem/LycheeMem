@@ -266,6 +266,7 @@ class MemorySmartSearchRequest(BaseModel):
     include_skills: bool = True
     synthesize: bool = True
     mode: str = Field(default="compact", pattern="^(raw|full|compact)$")
+    response_level: str = Field(default="full", pattern="^(minimal|compact|full)$")
 
 
 # ─── Memory Synthesize ───
