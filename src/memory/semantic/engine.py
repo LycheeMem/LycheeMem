@@ -1474,7 +1474,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         """完整固化流程：新颖性检查 → 编码 → 去重写入 → 合成。"""
         if not turns:
             return ConsolidationResult(
-                records_added=0, records_merged=0, records_expired=0, steps=[]
+                records_added=0,
+                records_merged=0,
+                records_expired=0,
+                has_novelty=False,
+                steps=[],
             )
 
         steps: list[dict[str, Any]] = []
@@ -1496,7 +1500,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         })
         if not has_novelty:
             return ConsolidationResult(
-                records_added=0, records_merged=0, records_expired=0, steps=steps
+                records_added=0,
+                records_merged=0,
+                records_expired=0,
+                has_novelty=False,
+                steps=steps,
             )
 
         # Step 2: Compact Encoding
@@ -1515,7 +1523,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
         if not new_records:
             return ConsolidationResult(
-                records_added=0, records_merged=0, records_expired=0, steps=steps
+                records_added=0,
+                records_merged=0,
+                records_expired=0,
+                has_novelty=True,
+                steps=steps,
             )
 
         # Step 3: 去重 + 写入
@@ -1634,6 +1646,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             records_added=actually_added,
             records_merged=len(composite_records),
             records_expired=expired_count,
+            has_novelty=True,
             steps=steps,
         )
 
