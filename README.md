@@ -54,7 +54,7 @@ LycheeMemory is a compact memory framework for LLM agents. It starts from effici
 <a id="news"></a>
 
 ## 🔥 News
-- **[04/10/2026]** Semantic memory retrieval upgraded to Action-Aware hierarchical retrieval: CompositeRecords serve as the primary retrieval unit, with LLM-driven holistic relevance judgement conditioned on the current query and ActionState, on-demand expansion along the memory tree to atomic MemoryRecords, and a reflection-based supplementary recall loop to cover residual coverage gaps.
+- **[04/13/2026]** LycheeMem is now LycheeMemory.
 - **[04/03/2026]** The project now supports installation via `pip install lycheemem`. You can easily start the service from anywhere using `lycheemem-cli`!
 - **[03/30/2026]** We evaluated LycheeMemory on PinchBench with the OpenClaw plugin: compared to OpenClaw's native memory, it achieved an ~6% score improvement, while reducing token consumption by ~71% and cost by ~55%!
 - **[03/28/2026]** Semantic memory has been upgraded to Compact Semantic Memory (SQLite + LanceDB), no Neo4j required. See [/quick-start](#quick-start) for details.
