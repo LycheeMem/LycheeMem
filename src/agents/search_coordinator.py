@@ -12,35 +12,12 @@ import re
 from typing import Any
 
 from src.agents.base_agent import BaseAgent
+from src.agents.prompts import HYDE_SYSTEM_PROMPT
 from src.embedder.base import BaseEmbedder
-from src.llm.base import BaseLLM
+from src.llm.base import BaseLLM, set_llm_call_source
 from src.memory.procedural.sqlite_skill_store import SQLiteSkillStore
 from src.memory.semantic.base import BaseSemanticMemoryEngine
 from src.memory.semantic.models import ActionState
-
-HYDE_SYSTEM_PROMPT = """\
-You are a HyDE hypothetical answer generator.
-
-Your task:
-- Given a user query, generate a **hypothetical ideal draft answer** for procedural / skill-oriented intents.
-- This draft answer will not be returned to the user directly. It will be used as an embedding anchor text to improve retrieval recall.
-
-Requirements:
-1. Write as if you have already completed the user's requested task successfully, using 2-3 sentences to describe a plausible solution draft.
-2. Naturally include important cues such as likely tool names, key parameter names, and important intermediate artifacts.
-3. Keep it concise and focused on key entities, steps, and concepts. Do not expand into a long explanation.
-4. Do not use lists or JSON. Output only a continuous natural-language paragraph.
-
-## Examples (for reference only, do not copy verbatim)
-
-- User query: "Write me a script that backs up a PostgreSQL database to S3 every day at 3 AM."
-    Reference output:
-    "I wrote a backup script using `pg_dump` and configured it to run daily at 3 AM through crontab. The script uploads each backup file to the specified S3 bucket and uses a timestamp-based filename so that backups are easy to locate and clean up later."
-
-- User query: "Set up the simplest possible FastAPI service and deploy it with Docker."
-    Reference output:
-    "I created a FastAPI application with a single `/health` route and added a Dockerfile based on the `python:3.10-slim` image. After building the image with `docker build`, the service runs on the server through `docker run -p 8000:8000`."
-"""
 
 
 class SearchCoordinator(BaseAgent):
@@ -193,6 +170,7 @@ class SearchCoordinator(BaseAgent):
             return []
 
         skill_query = self._build_skill_query(query, plan=plan, action_state=action_state)
+        set_llm_call_source("hyde_generation")
         hyde_doc = self._call_llm(
             skill_query,
             system_content=self.prompt_template,

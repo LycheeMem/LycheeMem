@@ -11,7 +11,7 @@ from typing import Any
 
 import tiktoken
 
-from src.llm.base import BaseLLM
+from src.llm.base import BaseLLM, set_llm_call_source
 
 
 class WorkingMemoryCompressor:
@@ -116,6 +116,7 @@ class WorkingMemoryCompressor:
         history_text = "\n".join(history_parts)
         prompt = self.compression_prompt.format(history=history_text)
 
+        set_llm_call_source("wm_compression")
         summary = self.llm.generate([{"role": "user", "content": prompt}])
         return summary
 

@@ -13,6 +13,8 @@ import hashlib
 import json
 import re
 import uuid
+
+from src.llm.base import set_llm_call_source
 from collections import deque
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -364,6 +366,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             user_content += f"<RECENT_CONTEXT>\n{recent_context}\n</RECENT_CONTEXT>\n\n"
         user_content += f"<MEMORY_SUMMARIES>\n{composites_text}\n</MEMORY_SUMMARIES>"
 
+        set_llm_call_source("composite_filter")
         response = self._llm.generate([
             {"role": "system", "content": COMPOSITE_FILTER_SYSTEM},
             {"role": "user", "content": user_content},
@@ -1753,6 +1756,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             f"<ACTION_STATE>\n{json.dumps(self._action_state_to_dict(action_state), ensure_ascii=False)}\n</ACTION_STATE>\n\n"
             f"<RETRIEVED_MEMORY>\n{context_text}\n</RETRIEVED_MEMORY>"
         )
+        set_llm_call_source("adequacy_check")
         response = self._llm.generate([
             {"role": "system", "content": RETRIEVAL_ADEQUACY_CHECK_SYSTEM},
             {"role": "user", "content": user_content},
@@ -1815,6 +1819,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             f"<NEEDS_FAILURE_AVOIDANCE>\n{json.dumps(bool(adequacy.get('needs_failure_avoidance', False)), ensure_ascii=False)}\n</NEEDS_FAILURE_AVOIDANCE>\n\n"
             f"<NEEDS_TOOL_SELECTION_BASIS>\n{json.dumps(bool(adequacy.get('needs_tool_selection_basis', False)), ensure_ascii=False)}\n</NEEDS_TOOL_SELECTION_BASIS>"
         )
+        set_llm_call_source("additional_queries")
         response = self._llm.generate([
             {"role": "system", "content": RETRIEVAL_ADDITIONAL_QUERIES_SYSTEM},
             {"role": "user", "content": user_content},
@@ -1871,6 +1876,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             f"<EXISTING_MEMORY>\n{retrieved_context or '(no existing memory)'}\n</EXISTING_MEMORY>\n\n"
             f"<CONVERSATION>\n{conversation_text}\n</CONVERSATION>"
         )
+        set_llm_call_source("novelty_check")
         response = self._llm.generate([
             {"role": "system", "content": NOVELTY_CHECK_SYSTEM},
             {"role": "user", "content": user_content},
