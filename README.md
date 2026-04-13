@@ -1,6 +1,6 @@
 <div align="center">
   <img src="assets/logo.png" alt="LycheeMem Logo" width="200">
-  <h1>LycheeMem: Lightweight Long-Term Memory for LLM Agents</h1>
+  <h1>LycheeMemory: Lightweight Long-Term Memory for LLM Agents</h1>
   <p>
     <img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License">
     <img src="https://img.shields.io/badge/python-3.9+-blue.svg" alt="Python Version">
@@ -25,7 +25,7 @@
 </div>
 
 
-LycheeMem is a compact memory framework for LLM agents. It starts from efficient conversational memory—through structured organization, lightweight consolidation, and adaptive retrieval—and gradually extends toward action-aware, usage-aware memory for more capable agentic systems.
+LycheeMemory is a compact memory framework for LLM agents. It starts from efficient conversational memory—through structured organization, lightweight consolidation, and adaptive retrieval—and gradually extends toward action-aware, usage-aware memory for more capable agentic systems.
 
 ---
 
@@ -55,11 +55,11 @@ LycheeMem is a compact memory framework for LLM agents. It starts from efficient
 
 ## 🔥 News
 - **[04/03/2026]** The project now supports installation via `pip install lycheemem`. You can easily start the service from anywhere using `lycheemem-cli`!
-- **[03/30/2026]** We evaluated LycheeMem on PinchBench with the OpenClaw plugin: compared to OpenClaw's native memory, it achieved an ~6% score improvement, while reducing token consumption by ~71% and cost by ~55%!
+- **[03/30/2026]** We evaluated LycheeMemory on PinchBench with the OpenClaw plugin: compared to OpenClaw's native memory, it achieved an ~6% score improvement, while reducing token consumption by ~71% and cost by ~55%!
 - **[03/28/2026]** Semantic memory has been upgraded to Compact Semantic Memory (SQLite + LanceDB), no Neo4j required. See [/quick-start](#quick-start) for details.
 - **[03/27/2026]** OpenClaw Plugin is now available at [/openclaw-plugin](#openclaw-plugin) ! [Setup guide →](openclaw-plugin/INSTALL_OPENCLAW.md)
 - **[03/26/2026]** MCP support is available at [/mcp](#mcp) !
-- **[03/23/2026]** LycheeMem is now open source: [GitHub Repository →](https://github.com/LycheeMem/LycheeMem)
+- **[03/23/2026]** LycheeMemory is now open source: [GitHub Repository →](https://github.com/LycheeMem/LycheeMem)
 
 ---
 
@@ -67,7 +67,7 @@ LycheeMem is a compact memory framework for LLM agents. It starts from efficient
 
 ## 🔗 Related Projects 
 
-LycheeMem is part of the **3rd-generation Lychee (立知) large model series**, which focuses on memory intelligence, continual learning, and long-context reasoning.
+LycheeMemory is part of the **3rd-generation Lychee (立知) large model series**, which focuses on memory intelligence, continual learning, and long-context reasoning.
 
 We welcome you to explore our related works:
 
@@ -96,7 +96,7 @@ We welcome you to explore our related works:
 
 ### Installation
 
-You can install LycheeMem directly via pip:
+You can install LycheeMemory directly via pip:
 
 ```bash
 pip install lycheemem
@@ -139,7 +139,7 @@ EMBEDDING_API_BASE=               # optional
 
 ### Start the Server
 
-If you installed via pip, you can start the LycheeMem background service from anywhere using:
+If you installed via pip, you can start the LycheeMemory background service from anywhere using:
 
 ```bash
 lycheemem-cli
@@ -177,7 +177,7 @@ npm run dev      # served at http://localhost:5173
 
 ## 🦞 OpenClaw Plugin
 
-LycheeMem ships a native [OpenClaw](https://openclaw.ai) plugin that gives any OpenClaw session persistent long-term memory with zero manual wiring.
+LycheeMemory ships a native [OpenClaw](https://openclaw.ai) plugin that gives any OpenClaw session persistent long-term memory with zero manual wiring.
 
 **What the plugin provides:**
 
@@ -208,7 +208,7 @@ See the full setup guide: [openclaw-plugin/INSTALL_OPENCLAW.md](openclaw-plugin/
 
 ## 🔧 MCP
 
-LycheeMem also exposes an HTTP MCP endpoint at `http://localhost:8000/mcp`.
+LycheeMemory also exposes an HTTP MCP endpoint at `http://localhost:8000/mcp`.
 
 - Available tools: `lychee_memory_smart_search`, `lychee_memory_search`, `lychee_memory_append_turn`, `lychee_memory_synthesize`, `lychee_memory_consolidate`
 - `lychee_memory_consolidate` works for sessions that already contain mirrored turns from `/chat`, `/memory/reason`, or `lychee_memory_append_turn`
@@ -303,7 +303,7 @@ curl -X POST http://localhost:8000/mcp \
 
 ## 📚 Memory Architecture
 
-LycheeMem organizes memory into three complementary stores:
+LycheeMemory organizes memory into three complementary stores:
 
 <table>
   <thead>
@@ -624,7 +624,7 @@ Runs the ReasoningAgent given pre-synthesized context. Can be chained after `/me
 
 ### `POST /memory/append-turn` — Mirror External Host Turns
 
-Appends one user or assistant turn into LycheeMem's session store so it can be consolidated later.
+Appends one user or assistant turn into LycheeMemory's session store so it can be consolidated later.
 
 ```json
 // Request
