@@ -71,22 +71,24 @@ class _GlobalTokenStats:
                             "input_tokens": int(val.get("input_tokens", 0)),
                             "output_tokens": int(val.get("output_tokens", 0)),
                             "calls": int(val.get("calls", 0)),
+                            "total_latency_ms": float(val.get("total_latency_ms", 0.0)),
                         }
         except Exception:
             pass
 
-    def add(self, input_tokens: int, output_tokens: int, source: str = "unknown") -> None:
+    def add(self, input_tokens: int, output_tokens: int, source: str = "unknown", latency_ms: float = 0.0) -> None:
         """原子地累加 token 数并刷新文件。"""
         with self._lock:
             self._input += input_tokens
             self._output += output_tokens
             entry = self._by_source.get(source)
             if entry is None:
-                entry = {"input_tokens": 0, "output_tokens": 0, "calls": 0}
+                entry = {"input_tokens": 0, "output_tokens": 0, "calls": 0, "total_latency_ms": 0.0}
                 self._by_source[source] = entry
             entry["input_tokens"] += input_tokens
             entry["output_tokens"] += output_tokens
             entry["calls"] += 1
+            entry["total_latency_ms"] += latency_ms
             self._flush_locked()
 
     def _flush_locked(self) -> None:
@@ -98,7 +100,16 @@ class _GlobalTokenStats:
                 "total_output_tokens": self._output,
                 "total_tokens": self._input + self._output,
                 "last_updated": datetime.now(tz=timezone.utc).isoformat(),
-                "by_source": dict(sorted(self._by_source.items())),
+                "by_source": {
+                    src: {
+                        "calls": v["calls"],
+                        "input_tokens": v["input_tokens"],
+                        "output_tokens": v["output_tokens"],
+                        "total_latency_ms": round(v["total_latency_ms"], 1),
+                        "avg_latency_ms": round(v["total_latency_ms"] / v["calls"], 1) if v["calls"] else 0.0,
+                    }
+                    for src, v in sorted(self._by_source.items())
+                },
             }
             tmp = self._file.with_suffix(".tmp")
             tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -114,7 +125,7 @@ class BaseLLM(ABC):
     """所有 LLM 适配器的统一接口。"""
 
     @staticmethod
-    def _accumulate_usage(input_tokens: int, output_tokens: int) -> None:
+    def _accumulate_usage(input_tokens: int, output_tokens: int, latency_ms: float = 0.0) -> None:
         """将本次 LLM 调用的 token 计入当前 turn 的累计器，并同步更新全局统计文件。"""
         # per-turn 累计器
         acc = _token_accumulator.get()
@@ -123,7 +134,7 @@ class BaseLLM(ABC):
             acc["output"] += output_tokens
         # 进程级全局累计（按来源分类统计）
         source = _llm_call_source.get()
-        _global_token_stats.add(input_tokens, output_tokens, source)
+        _global_token_stats.add(input_tokens, output_tokens, source, latency_ms)
 
     @abstractmethod
     def generate(

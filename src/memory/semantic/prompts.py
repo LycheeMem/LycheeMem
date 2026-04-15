@@ -282,6 +282,30 @@ The old record is updated in-place with the corrected information.
 # Module 3: Action-Aware Search Planning
 # ---------------------------------------------------------------------------
 
+FEEDBACK_CLASSIFICATION_SYSTEM = """\
+You are an intent classifier for a conversation system. 
+
+## Your Role
+Analyze the user's turn and classify whether it contains explicit feedback regarding the success or failure of the previous action or answer.
+
+## Extraction Guidelines
+1. **feedback**: Categorize the feedback into one of:
+   - "positive": The user indicates success, resolution, or satisfaction (e.g., "好了", "搞定", "worked").
+   - "negative": The user indicates failure, persistent errors, or frustration (e.g., "还是不行", "报错", "failed").
+   - "correction": The user is explicitly correcting the AI or providing the right answer (e.g., "不是这样，应该是...", "更正一下").
+   - "": Leave empty if there is no clear feedback (e.g., asking a new question, continuing normal conversation).
+2. **outcome**: Based on the feedback, determine the outcome:
+   - "success": Only if `feedback` is "positive".
+   - "fail": If `feedback` is "negative" or "correction".
+   - "unknown": If `feedback` is empty.
+
+## Output Format (strict JSON)
+{
+    "feedback": "positive|negative|correction|",
+    "outcome": "success|fail|unknown"
+}
+"""
+
 RETRIEVAL_PLANNING_SYSTEM = """\
 You are a search planner for a personal AI assistant's long-term memory system.
 
@@ -307,10 +331,13 @@ Do not plan searches based only on the query's wording. Consider what the user i
 ## Input
 - <USER_QUERY>: The user's query
 - <RECENT_CONTEXT>: Recent conversation turns (may be empty)
-- <ACTION_STATE>: Current decision state (may be empty), which may contain: `tentative_action`, `known_constraints`, `missing_slots`, `available_tools`, `failure_signal`
+- <ACTION_STATE>: Current decision state (may be empty), which may contain: `current_subgoal`, `tentative_action`, `known_constraints`, `missing_slots`, `available_tools`, `failure_signal`
 
 When <ACTION_STATE> is present:
-- If it provides `tentative_action` / `known_constraints` / `missing_slots`, treat them as primary signals for your search planning.
+- Always treat <USER_QUERY> and <RECENT_CONTEXT> as the **primary** source of intent. Infer for yourself whether the user is asking a factual question, executing a task, or troubleshooting.
+- `current_subgoal` describes what the user is trying to accomplish in natural language.
+- `tentative_action` is an optional hint that may or may not be present. Only use it when it is **non-empty** and clearly provides a more operational description than the raw query; otherwise ignore it.
+- `known_constraints` and `missing_slots` are reliable structural signals and should directly influence `required_constraints`, `missing_slots`, and tree traversal depth.
 - If the query looks like a factual question but ACTION_STATE shows the user is actually filling parameters for a task or troubleshooting, use `mixed` or `action` mode.
 - If `failure_signal` is non-empty, prioritize searching for failure patterns, constraints, and procedures.
 

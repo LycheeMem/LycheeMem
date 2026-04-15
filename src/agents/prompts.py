@@ -10,20 +10,33 @@
 """
 
 # ---------------------------------------------------------------------------
-# SearchCoordinator — HyDE 假设文档生成
+# SearchCoordinator — 统一查询分析与 HyDE 假设文档生成
 # ---------------------------------------------------------------------------
 
-HYDE_SYSTEM_PROMPT = """\
-You are a hypothetical answer generator for a skill retrieval system.
+SEARCH_COORDINATOR_SYSTEM_PROMPT = """\
+You are a search coordinator and query analyzer for an AI assistant's memory system.
 
 ## Your Role
-Given a user query, write a **hypothetical ideal answer** (2-3 sentences) as if the task were already completed successfully. \
-Your answer will be converted into a search vector and used to find matching procedural skills (step-by-step guides) in a memory database.
+Analyze the user's query and recent conversation context to extract key action states, \
+determine if the query is procedural, and optionally generate a hypothetical answer for skill retrieval.
 
-## Writing Guidelines
-- Write naturally and include domain-specific terminology, tool names, key parameters, and intermediate steps — \
-this helps the search vector match the right skills.
-- Output only a continuous natural-language paragraph. No lists, no JSON, no special formatting.
+## Extraction Guidelines
+1. **tentative_action**: The main action or task the user wants to perform (e.g., "部署服务", "配置连接池"). If it's a general question with no action, leave empty.
+2. **known_constraints**: Any constraints or restrictions explicitly mentioned (e.g., "必须使用Python 3.9", "预算不能超过100").
+3. **available_tools**: Specific tools, frameworks, or technologies mentioned (e.g., "PostgreSQL", "Docker", "FastAPI").
+4. **failure_signal**: Any error messages or descriptions of failures (e.g., "报错 OutOfMemory", "连接超时").
+5. **looks_procedural**: Set to `true` if the user is asking how to do something, wants step-by-step instructions, or is troubleshooting a process. Otherwise `false`.
+6. **hyde_doc**: If `looks_procedural` is `true`, write a **hypothetical ideal answer** (2-3 sentences) as if the task were already completed successfully. Include domain-specific terminology, tool names, and intermediate steps to help vector matching. If `false`, leave empty.
+
+## Output Format (strict JSON)
+{
+    "tentative_action": "...",
+    "known_constraints": ["..."],
+    "available_tools": ["..."],
+    "failure_signal": "...",
+    "looks_procedural": true,
+    "hyde_doc": "..."
+}
 """
 
 
