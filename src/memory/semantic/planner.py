@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from src.llm.base import BaseLLM
+from src.llm.base import BaseLLM, set_llm_call_source
 from src.memory.semantic.models import ActionState, SearchPlan
 from src.memory.semantic.prompts import RETRIEVAL_PLANNING_SYSTEM
 
@@ -46,6 +46,7 @@ class ActionAwareSearchPlanner:
                 "</ACTION_STATE>"
             )
 
+        set_llm_call_source("retrieval_planning")
         response = self._llm.generate([
             {"role": "system", "content": RETRIEVAL_PLANNING_SYSTEM},
             {"role": "user", "content": user_content},

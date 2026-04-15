@@ -10,7 +10,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from src.llm.base import BaseLLM
+from src.llm.base import BaseLLM, set_llm_call_source
 from src.memory.semantic.models import MemoryRecord, VALID_MEMORY_TYPES
 from src.memory.semantic.prompts import COMPACT_ENCODING_SYSTEM
 
@@ -108,6 +108,7 @@ class CompactSemanticEncoder:
             f"<CURRENT_TURNS>\n{curr_text}\n</CURRENT_TURNS>"
         )
 
+        set_llm_call_source("compact_encoding")
         response = self._llm.generate([
             {"role": "system", "content": COMPACT_ENCODING_SYSTEM},
             {"role": "user", "content": user_content},

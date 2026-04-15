@@ -15,7 +15,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from src.llm.base import BaseLLM
+from src.llm.base import BaseLLM, set_llm_call_source
 from src.memory.semantic.models import (
     MemoryRecord,
     CompositeRecord,
@@ -1013,6 +1013,7 @@ class RecordFusionEngine:
 
         user_content = f"<RECORDS>\n{records_json}\n</RECORDS>"
 
+        set_llm_call_source("synthesis_judge")
         response = self._llm.generate([
             {"role": "system", "content": SYNTHESIS_JUDGE_SYSTEM},
             {"role": "user", "content": user_content},
@@ -1055,6 +1056,7 @@ class RecordFusionEngine:
             f"<TARGET_RECORD_ID>\n{target_record_id}\n</TARGET_RECORD_ID>"
         )
 
+        set_llm_call_source("synthesis_execute")
         response = self._llm.generate([
             {"role": "system", "content": SYNTHESIS_EXECUTE_SYSTEM},
             {"role": "user", "content": user_content},

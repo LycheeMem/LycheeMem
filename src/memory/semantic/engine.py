@@ -13,6 +13,8 @@ import hashlib
 import json
 import re
 import uuid
+
+from src.llm.base import set_llm_call_source
 from collections import deque
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -46,6 +48,7 @@ from src.memory.semantic.prompts import (
     NOVELTY_CHECK_SYSTEM,
     RETRIEVAL_ADEQUACY_CHECK_SYSTEM,
     RETRIEVAL_ADDITIONAL_QUERIES_SYSTEM,
+    FEEDBACK_CLASSIFICATION_SYSTEM,
 )
 from src.memory.semantic.scorer import MemoryScorer, ScoredCandidate, ScoringWeights
 from src.memory.semantic.sqlite_store import SQLiteSemanticStore
@@ -364,6 +367,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             user_content += f"<RECENT_CONTEXT>\n{recent_context}\n</RECENT_CONTEXT>\n\n"
         user_content += f"<MEMORY_SUMMARIES>\n{composites_text}\n</MEMORY_SUMMARIES>"
 
+        set_llm_call_source("composite_filter")
         response = self._llm.generate([
             {"role": "system", "content": COMPOSITE_FILTER_SYSTEM},
             {"role": "user", "content": user_content},
@@ -1753,6 +1757,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             f"<ACTION_STATE>\n{json.dumps(self._action_state_to_dict(action_state), ensure_ascii=False)}\n</ACTION_STATE>\n\n"
             f"<RETRIEVED_MEMORY>\n{context_text}\n</RETRIEVED_MEMORY>"
         )
+        set_llm_call_source("adequacy_check")
         response = self._llm.generate([
             {"role": "system", "content": RETRIEVAL_ADEQUACY_CHECK_SYSTEM},
             {"role": "user", "content": user_content},
@@ -1815,6 +1820,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             f"<NEEDS_FAILURE_AVOIDANCE>\n{json.dumps(bool(adequacy.get('needs_failure_avoidance', False)), ensure_ascii=False)}\n</NEEDS_FAILURE_AVOIDANCE>\n\n"
             f"<NEEDS_TOOL_SELECTION_BASIS>\n{json.dumps(bool(adequacy.get('needs_tool_selection_basis', False)), ensure_ascii=False)}\n</NEEDS_TOOL_SELECTION_BASIS>"
         )
+        set_llm_call_source("additional_queries")
         response = self._llm.generate([
             {"role": "system", "content": RETRIEVAL_ADDITIONAL_QUERIES_SYSTEM},
             {"role": "user", "content": user_content},
@@ -1871,6 +1877,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             f"<EXISTING_MEMORY>\n{retrieved_context or '(no existing memory)'}\n</EXISTING_MEMORY>\n\n"
             f"<CONVERSATION>\n{conversation_text}\n</CONVERSATION>"
         )
+        set_llm_call_source("novelty_check")
         response = self._llm.generate([
             {"role": "system", "content": NOVELTY_CHECK_SYSTEM},
             {"role": "user", "content": user_content},
@@ -2709,27 +2716,32 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         self._sqlite.insert_usage_log(log)
         return log_id
 
-    @staticmethod
-    def _classify_feedback_from_user_turn(user_turn: str) -> dict[str, str]:
-        text = str(user_turn or "").strip().lower()
+    def _classify_feedback_from_user_turn(self, user_turn: str) -> dict[str, str]:
+        text = str(user_turn or "").strip()
         if not text:
             return {"feedback": "", "outcome": "unknown"}
 
-        positive_markers = (
-            "好了", "可以了", "搞定", "成功", "解决了", "生效了", "没问题了",
-            "可以用了", "worked", "that works", "resolved", "fixed",
-        )
-        negative_markers = (
-            "还是不行", "不行", "失败", "报错", "错误", "异常", "没生效",
-            "不对", "有问题", "超时", "冲突", "无法", "崩溃", "failed",
-            "error", "wrong", "not work", "doesn't work",
-        )
-        correction_markers = ("不是", "不对", "更正", "应该是", "改成", "其实")
-
-        if any(marker in text for marker in correction_markers):
-            return {"feedback": "correction", "outcome": "fail"}
-        if any(marker in text for marker in negative_markers):
-            return {"feedback": "negative", "outcome": "fail"}
-        if any(marker in text for marker in positive_markers):
-            return {"feedback": "positive", "outcome": "success"}
-        return {"feedback": "", "outcome": "unknown"}
+        user_content = f"<USER_TURN>\n{text}\n</USER_TURN>"
+        
+        set_llm_call_source("feedback_classification")
+        response = self._llm.generate([
+            {"role": "system", "content": FEEDBACK_CLASSIFICATION_SYSTEM},
+            {"role": "user", "content": user_content},
+        ])
+        
+        try:
+            import json
+            raw = response.strip()
+            if raw.startswith("```"):
+                parts = raw.split("```")
+                raw = parts[1].lstrip("json").strip() if len(parts) >= 3 else parts[-1].strip()
+            parsed = json.loads(raw)
+            feedback = str(parsed.get("feedback") or "").strip()
+            outcome = str(parsed.get("outcome") or "unknown").strip()
+            if feedback not in {"positive", "negative", "correction"}:
+                feedback = ""
+            if outcome not in {"success", "fail", "unknown"}:
+                outcome = "unknown"
+            return {"feedback": feedback, "outcome": outcome}
+        except Exception:
+            return {"feedback": "", "outcome": "unknown"}

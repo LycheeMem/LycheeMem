@@ -380,6 +380,8 @@ class MemoryConsolidateRequest(BaseModel):
     retrieved_context: str = ""
     # 是否在后台线程中异步执行（默认 True，避免 HTTP 超时）
     background: bool = True
+    # 强制固化：忽略水位线，从头重新处理所有 turns（用于补跑被跳过的 session）
+    force_ingest: bool = False
 
 
 class MemoryConsolidateResponse(BaseModel):

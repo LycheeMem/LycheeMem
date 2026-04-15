@@ -12,56 +12,16 @@ import re
 from typing import Any
 
 from src.agents.base_agent import BaseAgent
+from src.agents.prompts import SEARCH_COORDINATOR_SYSTEM_PROMPT
 from src.embedder.base import BaseEmbedder
-from src.llm.base import BaseLLM
+from src.llm.base import BaseLLM, set_llm_call_source
 from src.memory.procedural.sqlite_skill_store import SQLiteSkillStore
 from src.memory.semantic.base import BaseSemanticMemoryEngine
 from src.memory.semantic.models import ActionState
 
-HYDE_SYSTEM_PROMPT = """\
-You are a HyDE hypothetical answer generator.
-
-Your task:
-- Given a user query, generate a **hypothetical ideal draft answer** for procedural / skill-oriented intents.
-- This draft answer will not be returned to the user directly. It will be used as an embedding anchor text to improve retrieval recall.
-
-Requirements:
-1. Write as if you have already completed the user's requested task successfully, using 2-3 sentences to describe a plausible solution draft.
-2. Naturally include important cues such as likely tool names, key parameter names, and important intermediate artifacts.
-3. Keep it concise and focused on key entities, steps, and concepts. Do not expand into a long explanation.
-4. Do not use lists or JSON. Output only a continuous natural-language paragraph.
-
-## Examples (for reference only, do not copy verbatim)
-
-- User query: "Write me a script that backs up a PostgreSQL database to S3 every day at 3 AM."
-    Reference output:
-    "I wrote a backup script using `pg_dump` and configured it to run daily at 3 AM through crontab. The script uploads each backup file to the specified S3 bucket and uses a timestamp-based filename so that backups are easy to locate and clean up later."
-
-- User query: "Set up the simplest possible FastAPI service and deploy it with Docker."
-    Reference output:
-    "I created a FastAPI application with a single `/health` route and added a Dockerfile based on the `python:3.10-slim` image. After building the image with `docker build`, the service runs on the server through `docker run -p 8000:8000`."
-"""
-
 
 class SearchCoordinator(BaseAgent):
     """检索协调器：每次请求均同时检索语义记忆和技能库。"""
-
-    _ACTION_HINT_PATTERNS = (
-        "部署", "发布", "上线", "回滚", "排查", "修复", "配置", "执行", "运行",
-        "创建", "实现", "安装", "迁移", "备份", "重启", "导入", "导出", "调试",
-        "怎么做", "如何", "步骤", "流程", "命令",
-    )
-    _CONSTRAINT_MARKERS = (
-        "必须", "只能", "不要", "不能", "禁止", "限定", "预算", "不超过", "至少", "先不要",
-    )
-    _FAILURE_MARKERS = (
-        "报错", "失败", "不行", "异常", "超时", "错误", "冲突", "崩溃", "没生效", "卡住",
-    )
-    _KNOWN_TOOLS = (
-        "python", "docker", "kubernetes", "k8s", "helm", "fastapi", "postgresql", "redis",
-        "neo4j", "sqlite", "lancedb", "git", "node", "npm", "vite", "react", "typescript",
-        "jwt", "openai", "gemini", "ollama", "uvicorn",
-    )
 
     def __init__(
         self,
@@ -72,7 +32,7 @@ class SearchCoordinator(BaseAgent):
         skill_top_k: int = 3,
         skill_reuse_threshold: float = 0.85,
     ):
-        super().__init__(llm=llm, prompt_template=HYDE_SYSTEM_PROMPT)
+        super().__init__(llm=llm, prompt_template=SEARCH_COORDINATOR_SYSTEM_PROMPT)
         self.embedder = embedder
         self.skill_store = skill_store
         self.semantic_engine = semantic_engine
@@ -95,11 +55,15 @@ class SearchCoordinator(BaseAgent):
             raw_recent_turns=kwargs.get("raw_recent_turns") or [],
             compressed_history=kwargs.get("compressed_history") or [],
         )
+        
+        analysis = self._analyze_query_and_context(user_query, recent_context)
+        
         action_state = self._build_action_state(
             user_query=user_query,
             recent_context=recent_context,
             wm_token_usage=int(kwargs.get("wm_token_usage", 0) or 0),
             tool_calls=kwargs.get("tool_calls") or [],
+            analysis=analysis,
         )
 
         feedback_update: dict[str, Any] = {}
@@ -119,6 +83,7 @@ class SearchCoordinator(BaseAgent):
             action_state=action_state,
             top_k=int(top_k) if top_k is not None else None,
             include_skills=include_skills,
+            analysis=analysis,
         )
         result["feedback_update"] = feedback_update
         return result
@@ -132,6 +97,7 @@ class SearchCoordinator(BaseAgent):
         action_state: ActionState | None = None,
         top_k: int | None = None,
         include_skills: bool = True,
+        analysis: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Compact 后端路径：semantic_engine.search() + mode-aware 技能检索。"""
         result = self.semantic_engine.search(
@@ -165,6 +131,7 @@ class SearchCoordinator(BaseAgent):
                 plan=result.retrieval_plan,
                 action_state=result.action_state,
                 top_k=top_k,
+                analysis=analysis,
             )
 
         return {
@@ -183,21 +150,22 @@ class SearchCoordinator(BaseAgent):
         plan: dict[str, Any] | None = None,
         action_state: dict[str, Any] | None = None,
         top_k: int | None = None,
+        analysis: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """按 mode / decision state 自适应检索技能库。"""
         plan = plan or {}
         action_state = action_state or {}
+        analysis = analysis or {}
         mode = str(plan.get("mode") or "answer").strip().lower() or "answer"
+        looks_procedural = bool(analysis.get("looks_procedural", False))
 
-        if mode == "answer" and not self._looks_procedural_query(query):
+        if mode == "answer" and not looks_procedural:
             return []
 
-        skill_query = self._build_skill_query(query, plan=plan, action_state=action_state)
-        hyde_doc = self._call_llm(
-            skill_query,
-            system_content=self.prompt_template,
-            add_time_basis=True,
-        )
+        hyde_doc = str(analysis.get("hyde_doc", "")).strip()
+        if not hyde_doc:
+            hyde_doc = self._build_skill_query(query, plan=plan, action_state=action_state)
+
         hyde_embedding = self.embedder.embed_query(hyde_doc)
 
         default_top_k = self.skill_top_k
@@ -256,6 +224,7 @@ class SearchCoordinator(BaseAgent):
         recent_context: str,
         wm_token_usage: int,
         tool_calls: list[dict[str, Any]],
+        analysis: dict[str, Any],
     ) -> ActionState:
         last_tool_name = ""
         last_tool_result = ""
@@ -268,76 +237,44 @@ class SearchCoordinator(BaseAgent):
                 last_tool.get("result") or last_tool.get("output") or last_tool.get("content") or ""
             ).strip()
 
+        available_tools = list(analysis.get("available_tools") or [])
+        if last_tool_name and last_tool_name not in available_tools:
+            available_tools.append(last_tool_name)
+
         return ActionState(
             current_subgoal=user_query.strip(),
-            tentative_action=self._infer_tentative_action(user_query, recent_context),
+            tentative_action=str(analysis.get("tentative_action", "")).strip(),
             last_tool_name=last_tool_name,
             last_tool_result=last_tool_result[:500],
             missing_slots=[],
-            known_constraints=self._extract_known_constraints(user_query, recent_context),
-            available_tools=self._infer_available_tools(user_query, recent_context, tool_calls),
-            failure_signal=self._infer_failure_signal(user_query, recent_context),
+            known_constraints=list(analysis.get("known_constraints") or [])[:6],
+            available_tools=available_tools[:8],
+            failure_signal=str(analysis.get("failure_signal", "")).strip()[:160],
             token_budget=max(0, wm_token_usage),
             recent_context_excerpt=recent_context[:1000],
         )
 
-    def _infer_tentative_action(self, user_query: str, recent_context: str) -> str:
-        haystack = f"{user_query}\n{recent_context}".lower()
-        if any(keyword in haystack for keyword in self._ACTION_HINT_PATTERNS):
-            return str(user_query or "").strip()
-        return ""
-
-    def _extract_known_constraints(self, user_query: str, recent_context: str) -> list[str]:
-        text = "\n".join([str(recent_context or ""), str(user_query or "")])
-        segments = re.split(r"[\n。！？!?；;]", text)
-        constraints: list[str] = []
-        seen: set[str] = set()
-        for seg in segments:
-            piece = seg.strip()
-            if not piece:
-                continue
-            if any(marker in piece for marker in self._CONSTRAINT_MARKERS):
-                key = piece.casefold()
-                if key in seen:
-                    continue
-                seen.add(key)
-                constraints.append(piece[:120])
-        return constraints[:6]
-
-    def _infer_available_tools(
-        self,
-        user_query: str,
-        recent_context: str,
-        tool_calls: list[dict[str, Any]],
-    ) -> list[str]:
-        combined = f"{user_query}\n{recent_context}".lower()
-        tools: list[str] = []
-        seen: set[str] = set()
-
-        for tool_name in self._KNOWN_TOOLS:
-            if tool_name in combined and tool_name not in seen:
-                seen.add(tool_name)
-                tools.append(tool_name)
-
-        for call in tool_calls or []:
-            tool_name = str(call.get("name") or call.get("tool_name") or "").strip()
-            if not tool_name:
-                continue
-            key = tool_name.casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            tools.append(tool_name)
-
-        return tools[:8]
-
-    def _infer_failure_signal(self, user_query: str, recent_context: str) -> str:
-        segments = [str(user_query or "").strip()] + [s.strip() for s in recent_context.splitlines() if s.strip()]
-        for segment in segments:
-            lowered = segment.lower()
-            if any(marker in lowered for marker in self._FAILURE_MARKERS):
-                return segment[:160]
-        return ""
+    def _analyze_query_and_context(self, user_query: str, recent_context: str) -> dict[str, Any]:
+        user_content = f"<USER_QUERY>\n{user_query}\n</USER_QUERY>"
+        if recent_context:
+            user_content += f"\n\n<RECENT_CONTEXT>\n{recent_context}\n</RECENT_CONTEXT>"
+        
+        set_llm_call_source("query_analysis_and_hyde")
+        response = self._call_llm(
+            user_content,
+            system_content=self.prompt_template,
+            add_time_basis=True,
+        )
+        
+        try:
+            import json
+            raw = response.strip()
+            if raw.startswith("```"):
+                parts = raw.split("```")
+                raw = parts[1].lstrip("json").strip() if len(parts) >= 3 else parts[-1].strip()
+            return json.loads(raw)
+        except Exception:
+            return {}
 
     def _build_skill_query(
         self,
@@ -367,10 +304,6 @@ class SearchCoordinator(BaseAgent):
                         parts.append(item)
 
         return "；".join(parts)
-
-    def _looks_procedural_query(self, query: str) -> bool:
-        text = str(query or "").lower()
-        return any(keyword in text for keyword in self._ACTION_HINT_PATTERNS)
 
     @staticmethod
     def _action_state_to_dict(action_state: ActionState | None) -> dict[str, Any] | None:

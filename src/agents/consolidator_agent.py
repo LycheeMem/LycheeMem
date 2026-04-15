@@ -11,69 +11,11 @@ from __future__ import annotations
 from typing import Any
 
 from src.agents.base_agent import BaseAgent
+from src.agents.prompts import CONSOLIDATION_SYSTEM_PROMPT
 from src.embedder.base import BaseEmbedder
-from src.llm.base import BaseLLM
+from src.llm.base import BaseLLM, set_llm_call_source
 from src.memory.procedural.sqlite_skill_store import SQLiteSkillStore
 from src.memory.semantic.base import BaseSemanticMemoryEngine
-
-CONSOLIDATION_SYSTEM_PROMPT = """\
-You are a Memory Consolidator.
-The semantic novelty check has already been done before you are called.
-Your only task is to decide whether the conversation contains a **new reusable procedural skill** worth storing.
-
-Reply in JSON using exactly the following structure and field names:
-{
-    "new_skills": [
-        {
-            "intent": "One-sentence description of the task intent",
-            "doc_markdown": "# Skill Title\\n\\nWrite a reusable Markdown operation guide that may include steps, commands, notes, and input/output details"
-        }
-    ]
-}
-
-Rules:
-- If the conversation does not contain a complex operational pattern worth saving, `new_skills` must be an empty array.
-- If the main content of this turn is **using an already existing skill** to complete a task, rather than **defining or teaching a new skill**, then `new_skills` must be empty because the skill already exists.
-  The message block "Existing Skill List" will provide all current skill intents. Use it when making this judgment.
-- Ignore repeated phrasing, obviously failed attempts, and similar content that is not worth saving long term.
-- **The output must be strict JSON** with no code fences. JSON strings must not contain raw line breaks; use `\\n` instead.
-
-Requirements for `doc_markdown`:
-- It must be plain Markdown text, not JSON or YAML.
-- It should preferably include: applicable scenario, prerequisites, numbered steps, key commands or code blocks, common errors, and troubleshooting.
-
-Below are several examples for format and extraction criteria only. Do not copy them verbatim.
-
-## Example 1: Contains a new skill
-<session_log>
-user: Help me design a blue-green deployment flow for user-service this time. I want to canary it on half of the prod-a nodes first.
-assistant: We can do it this way:
-    1) Update the Helm values and tag the new user-service image as v2.
-    2) Apply the new Deployment with kubectl.
-    3) Observe Prometheus alerts and logs. If there is no anomaly, shift all replicas to the new version.
-</session_log>
-
-Expected JSON output:
-{
-    "new_skills": [
-        {
-            "intent": "Perform a blue-green deployment of user-service to the prod-a cluster",
-            "doc_markdown": "# user-service Blue-Green Deployment (prod-a)\\n\\n## Applicable Scenario\\n- Deploy user-service to prod-a and canary it on half of the nodes first\\n\\n## Steps\\n1. Update Helm values and mark the image as v2\\n2. Use `kubectl apply` to deploy to part of the nodes\\n3. Observe Prometheus alerts and logs. If there is no anomaly, shift all replicas to v2\\n"
-        }
-    ]
-}
-
-## Example 2: No new skill
-<session_log>
-user: From now on, all documents in this project must be written in Chinese. Do not give me English templates again.
-assistant: Understood. Documentation for this project will use Chinese consistently.
-</session_log>
-
-Expected JSON output:
-{
-    "new_skills": []
-}
-"""
 
 
 class ConsolidatorAgent(BaseAgent):
@@ -174,6 +116,7 @@ class ConsolidatorAgent(BaseAgent):
             existing_block_lines.append("")
             conversation_text = "\n".join(existing_block_lines) + "\n## Current Conversation Log\n" + conversation_text
 
+        set_llm_call_source("skill_extraction")
         response = self._call_llm(
             conversation_text,
             system_content=self.prompt_template,

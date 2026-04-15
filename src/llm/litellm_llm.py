@@ -10,6 +10,7 @@ model 格式遵循 litellm 约定（参考 https://docs.litellm.ai/docs/）：
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -76,6 +77,7 @@ class LiteLLMLLM(BaseLLM):
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
+        t0 = time.perf_counter()
         resp = litellm.completion(
             model=self.model,
             messages=messages,
@@ -85,11 +87,13 @@ class LiteLLMLLM(BaseLLM):
                 response_format=response_format,
             ),
         )
+        latency_ms = (time.perf_counter() - t0) * 1000
         usage = getattr(resp, "usage", None)
         if usage:
             self._accumulate_usage(
                 getattr(usage, "prompt_tokens", 0) or 0,
                 getattr(usage, "completion_tokens", 0) or 0,
+                latency_ms,
             )
         return resp.choices[0].message.content or ""
     
@@ -100,6 +104,7 @@ class LiteLLMLLM(BaseLLM):
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
+        t0 = time.perf_counter()
         resp = await litellm.acompletion(
             model=self.model,
             messages=messages,
@@ -109,11 +114,13 @@ class LiteLLMLLM(BaseLLM):
                 response_format=response_format,
             ),
         )
+        latency_ms = (time.perf_counter() - t0) * 1000
         usage = getattr(resp, "usage", None)
         if usage:
             self._accumulate_usage(
                 getattr(usage, "prompt_tokens", 0) or 0,
                 getattr(usage, "completion_tokens", 0) or 0,
+                latency_ms,
             )
         return resp.choices[0].message.content or ""
 
@@ -132,6 +139,7 @@ class LiteLLMLLM(BaseLLM):
         # stream_options 让 LiteLLM 在最后一个 chunk 中附带 usage 信息。
         # 部分不支持该参数的 provider 会通过 drop_params=True 自动忽略。
         kwargs["stream_options"] = {"include_usage": True}
+        t0 = time.perf_counter()
         response = await litellm.acompletion(
             model=self.model,
             messages=messages,
@@ -145,7 +153,8 @@ class LiteLLMLLM(BaseLLM):
                 pt = getattr(usage, "prompt_tokens", 0) or 0
                 ct = getattr(usage, "completion_tokens", 0) or 0
                 if pt or ct:
-                    self._accumulate_usage(pt, ct)
+                    latency_ms = (time.perf_counter() - t0) * 1000
+                    self._accumulate_usage(pt, ct, latency_ms)
             delta = chunk.choices[0].delta
             if delta and delta.content:
                 yield delta.content
