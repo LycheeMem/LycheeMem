@@ -175,8 +175,10 @@ class SearchCoordinator(BaseAgent):
             default_top_k = 1
         skill_top_k = top_k if top_k is not None else default_top_k
 
+        skill_query_fallback = self._build_skill_query(query, plan=plan, action_state=action_state)
+
         results = self.skill_store.search(
-            query=skill_query,
+            query=skill_query_fallback,
             top_k=skill_top_k,
             query_embedding=hyde_embedding,
         )
