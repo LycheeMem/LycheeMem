@@ -29,7 +29,7 @@ class CompactSemanticEncoder:
         session_id: str = "",
         turn_index_offset: int = 0,
     ) -> list[MemoryRecord]:
-        """单次 LLM 调用完成抽取 + 指代消解 + action metadata 标注。
+        """单次 LLM 调用完成抽取 + 指代消解 + metadata 标注。
 
         Args:
             current_turns: 需要处理的当前对话轮次
@@ -56,8 +56,8 @@ class CompactSemanticEncoder:
             if memory_type not in VALID_MEMORY_TYPES:
                 memory_type = "fact"
 
-            # normalized_text 由 LLM 直接给出；fallback 到 semantic_text
-            normalized_text = raw.get("normalized_text", "") or semantic_text
+            # normalized_text 由 Python 规则生成，不依赖 LLM 输出
+            normalized_text = f"{memory_type}: {semantic_text}"
 
             raw_src = raw.get("source_role", "")
             source_role = raw_src if raw_src in ("user", "assistant", "both") else ""
@@ -71,11 +71,7 @@ class CompactSemanticEncoder:
                 normalized_text=normalized_text,
                 entities=raw.get("entities", []),
                 temporal=raw.get("temporal", {}),
-                task_tags=raw.get("task_tags", []),
-                tool_tags=raw.get("tool_tags", []),
-                constraint_tags=raw.get("constraint_tags", []),
-                failure_tags=raw.get("failure_tags", []),
-                affordance_tags=raw.get("affordance_tags", []),
+                tags=raw.get("tags", []),
                 confidence=1.0,
                 evidence_turn_range=self._normalize_evidence_turns(
                     raw.get("evidence_turns", []),

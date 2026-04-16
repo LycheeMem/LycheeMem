@@ -78,11 +78,7 @@ class MemoryScorer:
         - source: "record" | "composite"
         - semantic_distance: float (越小越相似，0=完美匹配)
         - memory_type: str
-        - tool_tags: list[str]
-        - constraint_tags: list[str]
-        - task_tags: list[str]
-        - failure_tags: list[str]
-        - affordance_tags: list[str]
+        - tags: list[str]
         - created_at: str (ISO)
         - retrieval_count: int
         - retrieval_hit_count: int
@@ -195,48 +191,28 @@ class MemoryScorer:
     ) -> float:
         """行动实用性评分。
 
-        对于 action/mixed 模式，tool_tags / constraint_tags / affordance_tags 匹配度很重要。
-        对于 answer 模式，action_utility 权重较低，但仍考虑约束匹配。
+        使用统一 tags 字段与 plan 中的 tool_hints / constraints / affordances 做交集匹配。
         """
         if plan_mode == "answer":
-            # answer 模式：根据记忆类型评估个人记忆 QA 的相关性
-            # 事件/事实/偏好类型对个人记忆回答最有价値；合成接近完整知识
             mt = c.get("memory_type", "")
             episodic_types = {MEMORY_TYPE_FACT, MEMORY_TYPE_EVENT, MEMORY_TYPE_PREFERENCE}
             if mt in episodic_types:
                 return 0.6
-            # composite records covering multiple episodic records also score high
             if c.get("source") == "composite":
                 return 0.5
             return 0.2
 
         score = 0.0
         parts = 0
+        c_tags = set(c.get("tags", []) or [])
+        c_tags_lower = {t.lower() for t in c_tags}
 
-        # tool_tags 匹配
-        if tool_hints:
-            c_tools = set(c.get("tool_tags", []))
-            overlap = len(c_tools & tool_hints)
-            score += overlap / len(tool_hints) if tool_hints else 0
-            parts += 1
-
-        # constraint_tags 匹配
-        if req_constraints:
-            c_constraints = set(c.get("constraint_tags", []))
-            overlap = len(c_constraints & req_constraints)
-            score += overlap / len(req_constraints) if req_constraints else 0
-            parts += 1
-
-        # affordance_tags 匹配：plan 有 required_affordances 时做交集比；
-        # plan 无 required_affordances 时若记录本身有 affordance_tags 则给小额存在奖励
-        c_affordances = set(c.get("affordance_tags", []))
-        if req_affordances:
-            overlap = len(c_affordances & req_affordances)
-            score += overlap / len(req_affordances)
-            parts += 1
-        elif c_affordances:
-            # 无计划约束时：有可供性标签的记忆优于无标签的（小额加分）
-            score += 0.15
+        # 统一 tags 与 plan hints 交集匹配
+        all_hints = tool_hints | req_constraints | req_affordances
+        if all_hints:
+            hints_lower = {h.lower() for h in all_hints}
+            overlap = len(c_tags_lower & hints_lower)
+            score += overlap / len(all_hints) if all_hints else 0
             parts += 1
 
         # memory_type 加分
@@ -254,8 +230,8 @@ class MemoryScorer:
             score += 0.5
             parts += 1
 
-        # failure_tags 有值时额外加分（失败模式在 action 模式下有价值）
-        if c.get("failure_tags"):
+        # failure 相关 memory_type 额外加分
+        if mt in {MEMORY_TYPE_FAILURE_PATTERN, SYNTH_TYPE_PATTERN}:
             score += 0.3
             parts += 1
 
@@ -272,9 +248,7 @@ class MemoryScorer:
             c.get("normalized_text", ""),
             c.get("semantic_text", ""),
             " ".join(c.get("entities", []) or []),
-            " ".join(c.get("constraint_tags", []) or []),
-            " ".join(c.get("tool_tags", []) or []),
-            " ".join(c.get("affordance_tags", []) or []),
+            " ".join(c.get("tags", []) or []),
         ):
             value = str(field or "").strip().lower()
             if value:
@@ -320,10 +294,8 @@ class MemoryScorer:
     ) -> float:
         """根据反思轮暴露的缺口，评估候选对当前缺口的补足能力。"""
         mt = str(c.get("memory_type", "") or "")
-        c_tools = set(c.get("tool_tags", []) or [])
-        c_constraints = set(c.get("constraint_tags", []) or [])
-        c_affordances = set(c.get("affordance_tags", []) or [])
-        has_failure_tags = bool(c.get("failure_tags"))
+        c_tags = set(c.get("tags", []) or [])
+        c_tags_lower = {t.lower() for t in c_tags}
 
         score = 0.0
         parts = 0
@@ -334,10 +306,9 @@ class MemoryScorer:
                 failure_score += 0.7
             elif mt in {MEMORY_TYPE_CONSTRAINT, MEMORY_TYPE_PROCEDURE, SYNTH_TYPE_CONSTRAINT, SYNTH_TYPE_USAGE}:
                 failure_score += 0.35
-            if has_failure_tags:
-                failure_score += 0.5
             if missing_constraints:
-                overlap = len(c_constraints & missing_constraints)
+                constraints_lower = {s.lower() for s in missing_constraints}
+                overlap = len(c_tags_lower & constraints_lower)
                 if overlap > 0:
                     failure_score += 0.3 * (overlap / len(missing_constraints))
             score += min(1.0, failure_score)
@@ -351,15 +322,17 @@ class MemoryScorer:
                 tool_score += 0.25
 
             if available_tools:
-                overlap = len(c_tools & available_tools)
+                tools_lower = {t.lower() for t in available_tools}
+                overlap = len(c_tags_lower & tools_lower)
                 if overlap > 0:
                     tool_score += 0.4 * (overlap / len(available_tools))
 
             if missing_affordances:
-                overlap = len(c_affordances & missing_affordances)
+                affordances_lower = {a.lower() for a in missing_affordances}
+                overlap = len(c_tags_lower & affordances_lower)
                 if overlap > 0:
                     tool_score += 0.5 * (overlap / len(missing_affordances))
-            elif c_affordances:
+            elif c_tags:
                 tool_score += 0.15
 
             score += min(1.0, tool_score)
@@ -367,7 +340,8 @@ class MemoryScorer:
 
         if missing_constraints and not needs_failure_avoidance:
             constraint_score = 0.0
-            overlap = len(c_constraints & missing_constraints)
+            constraints_lower = {s.lower() for s in missing_constraints}
+            overlap = len(c_tags_lower & constraints_lower)
             if overlap > 0:
                 constraint_score += overlap / len(missing_constraints)
             if mt in {MEMORY_TYPE_CONSTRAINT, MEMORY_TYPE_PROCEDURE, SYNTH_TYPE_CONSTRAINT, SYNTH_TYPE_USAGE}:

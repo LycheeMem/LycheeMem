@@ -8,6 +8,7 @@ ActionState，让 planner 看到“当前想做什么、最近发生了什么、
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -18,6 +19,7 @@ from src.llm.base import BaseLLM, set_llm_call_source
 from src.memory.procedural.sqlite_skill_store import SQLiteSkillStore
 from src.memory.semantic.base import BaseSemanticMemoryEngine
 from src.memory.semantic.models import ActionState
+from src.memory.semantic.prompts import RETRIEVAL_PLANNING_SYSTEM
 
 
 class SearchCoordinator(BaseAgent):
@@ -84,6 +86,9 @@ class SearchCoordinator(BaseAgent):
             top_k=int(top_k) if top_k is not None else None,
             include_skills=include_skills,
             analysis=analysis,
+            retrieval_plan=self._build_retrieval_plan(
+                user_query, recent_context, action_state,
+            ),
         )
         result["feedback_update"] = feedback_update
         return result
@@ -98,6 +103,7 @@ class SearchCoordinator(BaseAgent):
         top_k: int | None = None,
         include_skills: bool = True,
         analysis: dict[str, Any] | None = None,
+        retrieval_plan: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Compact 后端路径：semantic_engine.search() + mode-aware 技能检索。"""
         result = self.semantic_engine.search(
@@ -106,6 +112,7 @@ class SearchCoordinator(BaseAgent):
             top_k=int(top_k or 0),
             recent_context=recent_context,
             action_state=self._action_state_to_dict(action_state),
+            retrieval_plan=retrieval_plan,
         )
 
         graph_memories = []
@@ -269,7 +276,6 @@ class SearchCoordinator(BaseAgent):
         )
         
         try:
-            import json
             raw = response.strip()
             if raw.startswith("```"):
                 parts = raw.split("```")
@@ -277,6 +283,37 @@ class SearchCoordinator(BaseAgent):
             return json.loads(raw)
         except Exception:
             return {}
+
+    def _build_retrieval_plan(
+        self,
+        user_query: str,
+        recent_context: str,
+        action_state: ActionState | None,
+    ) -> dict[str, Any] | None:
+        """调用 RETRIEVAL_PLANNING_SYSTEM LLM 生成结构化 SearchPlan。"""
+        user_content = f"<USER_QUERY>\n{user_query}\n</USER_QUERY>"
+        if recent_context:
+            user_content += f"\n\n<RECENT_CONTEXT>\n{recent_context}\n</RECENT_CONTEXT>"
+        if action_state:
+            state_dict = self._action_state_to_dict(action_state)
+            user_content += f"\n\n<ACTION_STATE>\n{json.dumps(state_dict, ensure_ascii=False)}\n</ACTION_STATE>"
+
+        try:
+            set_llm_call_source("retrieval_planning")
+            response = self._call_llm(
+                user_content,
+                system_content=RETRIEVAL_PLANNING_SYSTEM,
+                add_time_basis=True,
+            )
+            raw = response.strip()
+            if raw.startswith("```"):
+                parts = raw.split("```")
+                raw = parts[1].lstrip("json").strip() if len(parts) >= 3 else parts[-1].strip()
+            plan = json.loads(raw)
+            plan.pop("reasoning", None)
+            return plan
+        except Exception:
+            return None
 
     def _build_skill_query(
         self,

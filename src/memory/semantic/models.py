@@ -55,21 +55,17 @@ class MemoryRecord:
     每条 record 脱离原始对话上下文也能被完整理解。
     """
 
-    record_id: str  # SHA256(normalized_text)，天然幂等
+    record_id: str  # SHA256(semantic_text)，天然幂等
     memory_type: str  # 取值见 VALID_MEMORY_TYPES
 
     # ── 文本 ──
     semantic_text: str  # 经过指代消解后的完整语义文本
-    normalized_text: str  # 归一化后的紧凑表述（用于去重 & FTS）
+    normalized_text: str  # 由 Python 生成: f"{memory_type}: {semantic_text}"（用于去重 & FTS）
 
-    # ── 结构化元数据（action-facing metadata） ──
+    # ── 结构化元数据 ──
     entities: list[str] = field(default_factory=list)  # 涉及的实体名
     temporal: dict[str, Any] = field(default_factory=dict)  # {t_ref, t_valid_from, t_valid_to}
-    task_tags: list[str] = field(default_factory=list)  # 适用任务类型
-    tool_tags: list[str] = field(default_factory=list)  # 关联工具/API
-    constraint_tags: list[str] = field(default_factory=list)  # 约束条件
-    failure_tags: list[str] = field(default_factory=list)  # 失败模式标记
-    affordance_tags: list[str] = field(default_factory=list)  # 行动可供性
+    tags: list[str] = field(default_factory=list)  # 统一标签（工具/约束/任务/失败/可供性等）
 
     # ── 置信度 & 来源 ──
     confidence: float = 1.0
@@ -96,7 +92,7 @@ class MemoryRecord:
 class CompositeRecord:
     """复合记忆记录。
 
-    由多个 MemoryRecord 聚合形成的高密度条目。
+    由多个 MemoryRecord 通过 embedding 聚类形成的聚合节点。
     聚合后不删除 source records（保留细粒度检索能力），
     但在检索排序中 composite record 优先于碎片 records。
     """
@@ -105,22 +101,17 @@ class CompositeRecord:
     memory_type: str  # 取值见 VALID_SYNTH_TYPES
 
     # ── 文本 ──
-    semantic_text: str
+    semantic_text: str  # cluster 中距质心最近的 record 的 semantic_text
     normalized_text: str
 
     # ── 聚合来源 ──
     source_record_ids: list[str] = field(default_factory=list)
     child_composite_ids: list[str] = field(default_factory=list)  # 直接子 composite，形成层级树
-    synthesis_reason: str = ""  # LLM 给出的聚合理由
 
     # ── 继承自 source records 的聚合元数据 ──
     entities: list[str] = field(default_factory=list)
     temporal: dict[str, Any] = field(default_factory=dict)
-    task_tags: list[str] = field(default_factory=list)
-    tool_tags: list[str] = field(default_factory=list)
-    constraint_tags: list[str] = field(default_factory=list)
-    failure_tags: list[str] = field(default_factory=list)
-    affordance_tags: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)  # 统一标签
 
     confidence: float = 1.0
     created_at: str = ""

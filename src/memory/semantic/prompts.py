@@ -41,19 +41,10 @@ You receive two blocks of conversation:
 - failure_pattern: Lessons from failures ("running pip install directly causes version conflicts")
 - tool_affordance: Tool capabilities or limitations ("GPT-4's context window is 128K tokens")
 
-## Structured Tags
-Each record includes structured tags that help the search system find this memory when the user works on related tasks. \
-Fill in every field; use an empty list `[]` when nothing applies.
-
-- **normalized_text**: A compact version of the semantic text optimized for search matching. Use a prefix format: \
-"user_preference:weekend Python projects", "failure_case:pip install version conflict".
-- **task_tags**: Task categories this memory is relevant to (e.g., "deployment", "debugging", "data analysis").
-- **tool_tags**: Specific tools, APIs, or technologies mentioned (e.g., "Python", "Docker").
-- **constraint_tags**: Restrictions or limits implied (e.g., "budget<=5000", "must use TypeScript").
-- **failure_tags**: Failure patterns or pitfalls described (e.g., "pip version conflict").
-- **affordance_tags**: Capabilities or features described (e.g., "supports batch processing").
-
-Each tag should be a short keyword or phrase (5 words maximum).
+## Tags
+Each record includes a unified `tags` list — short keywords or phrases (5 words max each) that help the search system \
+find this memory when the user works on related tasks. Include any relevant tools, APIs, technologies, task categories, \
+constraints, failure patterns, or capabilities. Use an empty list `[]` when nothing applies.
 
 ## source_role Determination
 - "user": The information was directly stated by the user (role=user) — high confidence
@@ -66,14 +57,9 @@ Each tag should be a short keyword or phrase (5 words maximum).
         {
             "memory_type": "fact|preference|event|constraint|procedure|failure_pattern|tool_affordance",
             "semantic_text": "Complete self-contained text with all pronouns resolved and all references clarified",
-            "normalized_text": "Compact search-optimized version with prefix format",
             "entities": ["entity1", "entity2"],
             "temporal": {"t_ref": "ISO timestamp or description", "t_valid_from": "", "t_valid_to": ""},
-            "task_tags": ["task type"],
-            "tool_tags": ["tool name"],
-            "constraint_tags": ["constraint"],
-            "failure_tags": ["failure pattern"],
-            "affordance_tags": ["capability"],
+            "tags": ["keyword1", "keyword2"],
             "evidence_turns": [0, 1],
             "source_role": "user|assistant|both"
         }
@@ -82,7 +68,6 @@ Each tag should be a short keyword or phrase (5 words maximum).
 
 Field notes:
 - `semantic_text`: The complete human-readable description. Must stand alone without conversation context.
-- `normalized_text`: The compact search-matching version. Both fields are required.
 - `temporal`: `t_ref` is the reference time when the information was produced. `t_valid_from`/`t_valid_to` define the validity period. \
 Use `t_valid_from` for start dates ("goes live on DATE") and `t_valid_to` for deadlines or expiration ("due by DATE", "expires on DATE"). \
 Both can be set when the validity window has both bounds. Leave as empty string when no time information is available.
@@ -132,148 +117,40 @@ Output `reason` first, then `has_novelty`.
 
 
 # ---------------------------------------------------------------------------
-# Module 2: Record Fusion
+# Module 2: Record Fusion (Conflict Update Only — merge is now embedding-based)
 # ---------------------------------------------------------------------------
 
-SYNTHESIS_JUDGE_SYSTEM = """\
-You are a memory organization planner for a personal AI assistant's long-term memory system.
-
-## Your Role
-You receive a group of related memory items and decide how to organize them: which items should be **merged** into \
-a single denser record, and which represent **corrections/updates** to existing records.
-
-## How Your Output Is Used
-- Items you group under `groups`: The system will merge them into a single, consolidated record that replaces \
-the individual pieces during retrieval. This reduces clutter and improves information density.
-- Items you list under `conflicts`: The system will update the existing record in-place with the corrected \
-information from the new records. The superseded new records will be marked as consumed.
-
-## Key Concepts
-- Each input item has an `ingest_status` field:
-  - `new` = just extracted from the current conversation
-  - `existing` = already stored in the memory database
-- Each input item has an `item_kind` field:
-  - `record` = an individual atomic memory (a single fact, preference, event, etc.)
-  - `composite` = a previously merged summary combining multiple individual memories
-
-## Two Operations
-
-### 1. Merge (synthesis)
-Consolidate multiple related, coexistent memory items into a single denser record. Use when:
-- **Same-topic aggregation**: Multiple records describe the same entity or topic and can be combined into one integrated description.
-- **Temporal completion**: Multiple records describe different stages of the same event and can form a complete event description.
-- **Preference generalization**: Multiple specific preferences can be abstracted into a broader preference pattern.
-- **Constraint integration**: Multiple scattered constraints can be merged into a complete constraint set.
-- **Pattern distillation**: Multiple failure/success experiences can be merged into an operational pattern or best practice.
-
-Do not merge when:
-- Only 1 item is present (merging requires at least 2 items).
-- The items are on completely unrelated topics.
-- Each item is already complete and independent — merging would not add value.
-
-### 2. Conflict Resolution (update)
-When new information explicitly corrects, replaces, or updates existing information. All of these conditions must hold:
-1. At least one item with `ingest_status = new` and one with `ingest_status = existing` are involved.
-2. They describe the same entity/topic/slot (such as a date, location, preference, status, config value).
-3. Their current-state claims are mutually exclusive — both cannot be true at the same time.
-4. The new item clearly expresses correction semantics: "changed to", "no longer", "postponed to", "now is", etc.
-5. The target of the update must be an individual memory (`item_kind = record`), not a merged summary. \
-The system updates individual records in-place; merged summaries are automatically rebuilt from their updated source records.
-
-### Distinguishing Merge vs. Conflict
-- If old and new items add details, describe different phases, or describe coexistent preferences/constraints/experiences → **merge**.
-- If old and new items claim different current states for the same slot and both cannot be simultaneously true → **conflict resolution**.
-- If temporal ranges clearly do not overlap and records represent historical evolution (not a correction), treat as merge rather than conflict.
-
-## Input
-- <RECORDS>: A JSON array of memory items with their full information
-
-## Output Format (strict JSON, no code blocks)
-{
-    "should_synthesize": true,
-    "groups": [
-        {
-            "source_record_ids": ["id1", "id2"],
-            "synthesis_reason": "Reason for merging these items",
-            "suggested_type": "composite_preference|composite_pattern|composite_constraint|usage_pattern"
-        }
-    ],
-    "conflicts": [
-        {
-            "anchor_record_id": "existing_record_id",
-            "incoming_record_ids": ["new_record_id_1"],
-            "conflict_reason": "Why this is a correction rather than coexistent information",
-            "resolution_mode": "update_existing"
-        }
-    ]
-}
-
-## Rules
-- Each item can appear in at most one group, and cannot appear in both a merge group and a conflict. \
-This keeps the memory hierarchy clean.
-- `source_record_ids` contains the ids of the items in each merge group. For items that are themselves merged summaries \
-(`item_kind = composite`), use their `composite_id`.
-- In `conflicts`:
-  - `anchor_record_id` must be an existing individual memory (`ingest_status = existing`, `item_kind = record`).
-  - `incoming_record_ids` must be new individual memories (`ingest_status = new`, `item_kind = record`).
-  - `resolution_mode` is always `update_existing`.
-- Set `should_synthesize = false` if only conflict resolution is needed (no merging).
-- If neither merging nor conflict resolution is needed, return `{"should_synthesize": false, "groups": [], "conflicts": []}`.
-"""
-
+# SYNTHESIS_JUDGE_SYSTEM removed: fusion grouping is now done via embedding cosine
+# similarity clustering, no LLM call needed.
 
 SYNTHESIS_EXECUTE_SYSTEM = """\
 You are a memory writer for a personal AI assistant's long-term memory system.
 
 ## Your Role
-You perform one of two operations based on `<RESOLUTION_MODE>`:
-
-### Mode 1: `synthesize` — Merge multiple memory items into one
-Your output becomes a new consolidated record stored in the memory database. It replaces the individual source items \
-for retrieval purposes, so ensure **no information is lost** during the merge.
-
-### Mode 2: `conflict_update` — Update an existing record with corrections
-Your output replaces the content of an existing memory record (identified by `<TARGET_RECORD_ID>`) in the database. \
-The old record is updated in-place with the corrected information.
+You update an existing memory record with corrections from new information.
 
 ## Input
-- <SOURCE_RECORDS>: The memory items involved (JSON array)
-- <SYNTHESIS_REASON>: Why these items are being merged or updated
-- <SUGGESTED_TYPE>: The suggested type for the merged result
-- <RESOLUTION_MODE>: `synthesize` or `conflict_update`
-- <TARGET_RECORD_ID>: The existing record to update (only in `conflict_update` mode; empty string otherwise)
+- <EXISTING_RECORD>: The current state of the memory record (JSON)
+- <NEW_RECORDS>: The new records that contain corrective information (JSON array)
+- <CONFLICT_REASON>: Why these records conflict
 
-## Rules for `synthesize` Mode
-1. The merged `semantic_text` must cover all core information from every source item. Do not drop details.
-2. Remove duplicated information and organize into fluent, coherent text.
-3. Preserve all specifics: names, numbers, timestamps, parameters. Do not over-generalize.
-4. If some source items are themselves merged summaries, preserve their key details during this second-level merge.
-5. `entities`: the combined set of entities from all source items.
-6. All tag fields: the combined set of tags from all source items.
-7. `temporal`: the full time range from earliest to latest across all source items.
-8. `confidence`: the average of confidence values from all source items.
-
-## Rules for `conflict_update` Mode
-1. The output represents the corrected state of the existing memory `<TARGET_RECORD_ID>`.
-2. Apply the new information to revise the old memory. Retain any details from the old memory that are still valid and not contradicted by the update.
-3. For mutually exclusive states (e.g., old location vs. new location), use only the updated value. Do not concatenate old and new states.
-4. For date changes, ownership changes, location changes, config updates, status switches, or preference changes — output the updated value directly.
-5. If the old state is clearly no longer valid, remove it from `semantic_text` and `normalized_text` rather than keeping it as current fact.
-6. `resolved_memory_type` should match the original memory type (`fact`, `preference`, `event`, `constraint`, `procedure`, `failure_pattern`, `tool_affordance`) unless there is a strong reason to change it.
+## Rules
+1. The output represents the corrected state of the existing memory.
+2. Apply the new information to revise the old memory. Retain any details from the old memory that are still valid \
+and not contradicted by the update.
+3. For mutually exclusive states (e.g., old location vs. new location), use only the updated value. \
+Do not concatenate old and new states.
+4. For date changes, ownership changes, location changes, config updates, status switches, or preference changes — \
+output the updated value directly.
 
 ## Output Format (strict JSON, no code blocks)
 {
-    "semantic_text": "Complete merged or updated text",
-    "normalized_text": "Compact search-matching version",
+    "semantic_text": "Complete updated text",
     "entities": ["entity1", "entity2"],
     "temporal": {"t_ref": "", "t_valid_from": "", "t_valid_to": ""},
-    "task_tags": [],
-    "tool_tags": [],
-    "constraint_tags": [],
-    "failure_tags": [],
-    "affordance_tags": [],
+    "tags": ["keyword1", "keyword2"],
     "confidence": 0.95,
-    "resolved_memory_type": "fact|preference|event|constraint|procedure|failure_pattern|tool_affordance|composite_preference|composite_pattern|composite_constraint|usage_pattern"
+    "resolved_memory_type": "fact|preference|event|constraint|procedure|failure_pattern|tool_affordance"
 }
 """
 

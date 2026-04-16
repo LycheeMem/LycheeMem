@@ -116,10 +116,10 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         # 子模块
         self._encoder = CompactSemanticEncoder(llm=llm)
         self._synthesizer = RecordFusionEngine(
-            llm=llm,
             sqlite_store=self._sqlite,
             vector_index=self._vector,
-            similarity_threshold=synthesis_similarity,
+            synthesis_similarity=synthesis_similarity,
+            dedup_threshold=dedup_threshold,
             min_records_for_synthesis=synthesis_min_records,
         )
 
@@ -180,33 +180,44 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         selected_candidates: list[ScoredCandidate] = []
         seen_ids: set[str] = set()
 
-        # ─── Phase 1: LLM 过滤 CompositeRecord ───────────────────
-        all_composites = self._sqlite.list_synthesized()
+        # ─── Phase 1: ANN 预过滤 + LLM 过滤 CompositeRecord ─────
+        # 先用向量 ANN 检索 top-20 相关 composites，再做一次 LLM 过滤
+        ann_composite_results = self._vector.search_synthesized(
+            query, column="vector", limit=20,
+        )
+        ann_composite_ids = [
+            str(r.get("composite_id", "")).strip()
+            for r in ann_composite_results
+            if str(r.get("composite_id", "")).strip()
+        ]
+        ann_composites: list[CompositeRecord] = []
+        for cid in ann_composite_ids:
+            comp = self._sqlite.get_synthesized(cid)
+            if comp:
+                ann_composites.append(comp)
+
         needs_detail_ids: set[str] = set()
 
-        if all_composites:
-            _CHUNK = 20
-            for i in range(0, len(all_composites), _CHUNK):
-                chunk = all_composites[i : i + _CHUNK]
-                sel_ids, det_ids = self._llm_filter_composites(
-                    query=query,
-                    recent_context=recent_context,
-                    composites=chunk,
-                )
-                for composite in chunk:
-                    cid = composite.composite_id
-                    if cid in sel_ids and cid not in seen_ids:
-                        seen_ids.add(cid)
-                        data = self._synth_to_candidate(composite)
-                        selected_candidates.append(ScoredCandidate(
-                            id=cid,
-                            source="composite",
-                            final_score=1.0,
-                            score_breakdown={"llm_selected": 1.0},
-                            data=data,
-                        ))
-                    if cid in det_ids:
-                        needs_detail_ids.add(cid)
+        if ann_composites:
+            sel_ids, det_ids = self._llm_filter_composites(
+                query=query,
+                recent_context=recent_context,
+                composites=ann_composites,
+            )
+            for composite in ann_composites:
+                cid = composite.composite_id
+                if cid in sel_ids and cid not in seen_ids:
+                    seen_ids.add(cid)
+                    data = self._synth_to_candidate(composite)
+                    selected_candidates.append(ScoredCandidate(
+                        id=cid,
+                        source="composite",
+                        final_score=1.0,
+                        score_breakdown={"llm_selected": 1.0},
+                        data=data,
+                    ))
+                if cid in det_ids:
+                    needs_detail_ids.add(cid)
 
         # ─── Phase 2: 下钻叶子 MemoryRecord ──────────────────────
         for composite_id in list(needs_detail_ids):
@@ -1172,11 +1183,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             "memory_type": record.memory_type,
             "semantic_text": record.semantic_text,
             "normalized_text": record.normalized_text,
-            "tool_tags": record.tool_tags,
-            "constraint_tags": record.constraint_tags,
-            "task_tags": record.task_tags,
-            "failure_tags": record.failure_tags,
-            "affordance_tags": record.affordance_tags,
+            "tags": record.tags,
             "created_at": record.created_at,
             "retrieval_count": record.retrieval_count,
             "retrieval_hit_count": record.retrieval_hit_count,
@@ -1199,11 +1206,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             "memory_type": record.memory_type,
             "semantic_text": record.semantic_text,
             "normalized_text": record.normalized_text,
-            "tool_tags": record.tool_tags,
-            "constraint_tags": record.constraint_tags,
-            "task_tags": record.task_tags,
-            "failure_tags": record.failure_tags,
-            "affordance_tags": record.affordance_tags,
+            "tags": record.tags,
             "created_at": record.created_at,
             "retrieval_count": record.retrieval_count,
             "retrieval_hit_count": record.retrieval_hit_count,
@@ -1353,11 +1356,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 "evidence_turn_range": [idx],
                 "entities": [],
                 "tags": [],
-                "tool_tags": [],
-                "constraint_tags": [],
-                "task_tags": [],
-                "failure_tags": [],
-                "affordance_tags": [],
                 "temporal": {},
                 "created_at": str(hit.get("created_at", "")),
                 "retrieval_count": 0,

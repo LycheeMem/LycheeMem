@@ -354,7 +354,7 @@ The working memory window holds the active conversation context for a session. I
 
 Compression produces *summary anchors* (past context, distilled) + *raw recent turns* (last N turns, verbatim). Both are passed downstream as the conversation history.
 
-### 🗺️ Semantic Memory — Compact Semantic Memory
+### 🗺️ Semantic Memory
 
 Semantic memory is organised around **typed MemoryRecords plus action-grounded retrieval state**. The storage layer is SQLite (FTS5 full-text search) + LanceDB (vector index), while retrieval is conditioned on recent context, tentative action, constraints, and missing slots.
 
@@ -390,13 +390,12 @@ A single-pass pipeline that converts conversation turns into a list of `MemoryRe
 
 ##### Module 2: Record Fusion, Conflict Update, and Hierarchical Consolidation
 
-Triggered online after each consolidation:
+Triggered online after each consolidation. No LLM calls — pure embedding cosine similarity math:
 
-1. FTS / vector recall gathers related **existing atomic records** around the new records (candidate pool).
-2. The existing synthesis judge prompt decides whether each candidate set should produce a new `CompositeRecord` **or** perform a `conflict_update` against an existing atomic record.
-3. On `conflict_update`, the existing anchor record is updated in place, conflicting incoming records are soft-expired, and composites covering affected source records are invalidated.
-4. On synthesis, the engine writes a new `CompositeRecord` to SQLite + LanceDB.
-5. Additional hierarchy rounds can synthesize `record -> composite` and `composite -> composite`, persisting `child_composite_ids` so the memory tree can keep growing upward.
+1. **Deduplication** — For each new record, ANN search finds existing records of the same `memory_type` with cosine similarity > 0.85. Near-duplicates are soft-expired; composites covering affected source records are invalidated.
+2. **Clustering** — ANN search builds a similarity graph (cosine > 0.75) over surviving records. Union-Find finds connected components; each component containing at least one new record becomes a candidate cluster.
+3. **Composite construction** — The representative record (highest confidence / most recent) provides `semantic_text`; entities, tags, and temporal fields are merged from all cluster members. A new `CompositeRecord` is written to SQLite + LanceDB.
+4. **Hierarchy rounds** — The same clustering pass runs over CompositeRecords, producing `composite → composite` abstractions and persisting `child_composite_ids` so the memory tree can keep growing upward.
 
 ##### Module 3: Action-Aware Hierarchical Retrieval
 
@@ -404,7 +403,7 @@ Retrieval is organised around the hierarchical memory tree, using CompositeRecor
 
 **Composite-Level Relevance Judgement**
 
-Retrieval first operates at the CompositeRecord level. The retrieval engine presents the full set of CompositeRecords — each with its type, summary, and entities — alongside the current query and recent context to the LLM, which performs a holistic semantic relevance assessment. Each composite is either selected as relevant to the query or excluded; among those selected, the LLM additionally flags candidates whose composite-level summary is too abstract to fully answer the query and therefore warrant expansion to their underlying atomic records. Unlike threshold-based vector recall, this judgement operates directly in the semantic space and can surface associations that do not align well in the embedding space.
+Retrieval first operates at the CompositeRecord level. An ANN vector search pre-filters to the top-20 semantically nearest CompositeRecords, then a single LLM call performs holistic relevance judgement over those candidates: each composite is either selected as relevant or excluded; among those selected, the LLM additionally flags entries whose summary is too abstract to fully answer the query and therefore warrant expansion to their underlying atomic records. The ANN pre-filter keeps the LLM judgement bounded to one call regardless of how many CompositeRecords exist in the database.
 
 **Memory Tree Expansion**
 
@@ -475,7 +474,7 @@ Rule-based agent (no LLM prompt). Appends the user turn to the session log, coun
 
 ### Stage 2 — SearchCoordinator
 
-`SearchCoordinator` first builds `recent_context` from compressed summaries and raw recent turns, then derives an `ActionState` from the current query, constraints, recent failure signals, token budget, and recent tool use. Semantic memory retrieval proceeds through the Action-Aware hierarchical retrieval pipeline: the full set of CompositeRecords is first assessed holistically for relevance conditioned on the query and ActionState, with relevant candidates selected and detail-requiring entries flagged for tree expansion; the memory tree is then recursively traversed to surface the corresponding atomic MemoryRecords; finally, an adequacy assessment determines whether supplementary FTS, vector, and raw episode turn recall is needed to close any remaining coverage gaps. This stage returns raw semantic fragments, skill hits, retrieval provenance, and a dedicated `novelty_retrieved_context` built from **pre-synthesis** semantic fragments for later novelty checking; it does **not** build the final `background_context` yet. Skill retrieval is mode-aware (`answer` / `action` / `mixed`) and uses HyDE against the skill store only when it is likely to help.
+`SearchCoordinator` first builds `recent_context` from compressed summaries and raw recent turns, then derives an `ActionState` from the current query, constraints, recent failure signals, token budget, and recent tool use. Before retrieval, it calls the LLM with `RETRIEVAL_PLANNING_SYSTEM` to produce a structured `SearchPlan` (mode, semantic queries, tool hints, required constraints, tree traversal depth, etc.) conditioned on the query and ActionState. Semantic memory retrieval then proceeds through the Action-Aware hierarchical retrieval pipeline: an ANN pre-filter narrows to the top-20 nearest CompositeRecords, a single LLM call judges their relevance and flags entries requiring tree expansion, the memory tree is recursively traversed to surface the corresponding atomic MemoryRecords, and an adequacy assessment determines whether supplementary FTS, vector, and raw episode turn recall is needed to close any remaining coverage gaps. This stage returns raw semantic fragments, skill hits, retrieval provenance, and a dedicated `novelty_retrieved_context` built from **pre-synthesis** semantic fragments for later novelty checking; it does **not** build the final `background_context` yet. Skill retrieval is mode-aware (`answer` / `action` / `mixed`) and uses HyDE against the skill store only when it is likely to help.
 
 When a new user turn arrives, `SearchCoordinator` also tries to apply lightweight feedback to the most recent unresolved action/mixed retrieval log, so the next turn can mark the prior memory usage as success / fail / correction.
 
@@ -492,7 +491,7 @@ Receives `compressed_history`, `background_context`, and `skill_reuse_plan` and 
 Triggered immediately after `ReasoningAgent` completes, runs in a thread pool and **does not block the response**. It:
 
 1. Performs a **novelty check** — LLM judges whether the conversation introduced new information worth persisting. Skips consolidation for pure retrieval exchanges.
-2. **Compact consolidation** — calls `CompactSemanticEngine.ingest_conversation()`, which runs a single-pass encoder (typed extraction → decontextualization → action metadata annotation), writes `MemoryRecord`s to SQLite + LanceDB, then triggers conflict-aware Record Fusion. Novelty check uses the search-stage `novelty_retrieved_context` (raw semantic fragments), not the answer-time `background_context`, so query-conditioned synthesis does not suppress valid new-memory ingestion.
+2. **Compact consolidation** — calls `CompactSemanticEngine.ingest_conversation()`, which runs a single-pass encoder (typed extraction → decontextualization → action metadata annotation), writes `MemoryRecord`s to SQLite + LanceDB, then triggers the embedding-based Record Fusion engine (zero LLM calls: cosine similarity dedup → cluster → build CompositeRecord from representative record → hierarchy rounds). Novelty check uses the search-stage `novelty_retrieved_context` (raw semantic fragments), not the answer-time `background_context`, so query-conditioned synthesis does not suppress valid new-memory ingestion.
 3. **Skill extraction** — identifies successful tool-usage patterns in the conversation and adds skill entries to the skill store. Runs in parallel with compact consolidation (ThreadPoolExecutor).
 
 ---

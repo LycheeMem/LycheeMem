@@ -357,7 +357,7 @@ LycheeMemory 将记忆组织为三个相辅相成的存储库：
 
 压缩产生两种形式的历史：摘要锚点（旧内容，凝聚化）+ 原始最近轮次（最后 N 轮，逐字保留）。两者一起作为对话上下文传递给下游阶段。
 
-### 🗺️ 语义记忆 —— Compact Semantic Memory
+### 🗺️ 语义记忆
 
 语义记忆以**类型化 MemoryRecord + action-grounded 检索状态**为核心组织形式，存储层使用 SQLite（FTS5 全文检索）+ LanceDB（向量索引）；检索则显式受 recent context、tentative action、约束条件和 missing slots 共同驱动。
 
@@ -393,13 +393,12 @@ LycheeMemory 将记忆组织为三个相辅相成的存储库：
 
 ##### 模块二：记录融合、冲突更新与层级整合
 
-每次固化后在线触发：
+每次固化后在线触发，无任何 LLM 调用——纯 embedding 余弦相似度数学驱动：
 
-1. 先通过 FTS / 向量召回，为新 record 收集相关的**已有 atomic record** 候选池。
-2. 复用原有 synthesis judge prompt，让 LLM 判断当前候选集是应该生成新的 `CompositeRecord`，还是对某条已有 atomic record 执行 `conflict_update`。
-3. 若判定为 `conflict_update`，则原有 anchor record 原地更新，冲突的新 incoming records 被软过期，同时覆盖相关 source records 的 composite 会被失效。
-4. 若判定为 synthesis，则写入新的 `CompositeRecord` 到 SQLite + LanceDB。
-5. 随后继续执行 `record -> composite` 与 `composite -> composite` 的多轮层级融合，并持久化 `child_composite_ids`，让记忆树持续向上生长。
+1. **去重** —— 对每条新 record 进行 ANN 检索，找出同 `memory_type` 且余弦相似度 > 0.85 的已有记录，将近似重复者软过期，并使覆盖相关 source record 的 composite 失效。
+2. **聚类** —— ANN 检索在存活记录之间构建相似度图（余弦 > 0.75），Union-Find 求连通分量；每个包含至少一条新 record 的分量成为候选 cluster。
+3. **构建 Composite** —— 以置信度最高/最新的记录作为代表，取其 `semantic_text`；合并全部成员的 entities、tags 和 temporal 字段，写入新 `CompositeRecord` 至 SQLite + LanceDB。
+4. **层级轮次** —— 对 CompositeRecord 再执行一轮同样的聚类，生成 `composite → composite` 抽象层，并持久化 `child_composite_ids`，使记忆树持续向上生长。
 
 ##### 模块三：Action-Aware 层级化检索
 
@@ -407,7 +406,7 @@ LycheeMemory 将记忆组织为三个相辅相成的存储库：
 
 **Composite-Level 相关性判断**
 
-检索首先在 CompositeRecord 层面运作。检索引擎将全量 CompositeRecord 的类型、摘要与实体信息连同当前查询提交 LLM，由 LLM 对各条 composite 进行整体语义相关性判断；同时标记出摘要层次过于抽象、需进一步展开至原子记录方能充分回答查询的候选项。与基于向量距离阈值的多通道召回不同，这一判断直接在语义层运作，能够捕捉向量空间中不易对齐的深层关联。
+检索首先在 CompositeRecord 层面运作。向量 ANN 预过滤取得语义最近的 top-20 CompositeRecord 候选，随后由**一次** LLM 调用对这批候选进行整体相关性判断：每条 composite 或被判定为与查询相关，或被排除；其中被选中的条目，若摘要层次过于抽象不足以直接回答查询，则被额外标记为需展开至原子记录。ANN 预过滤将 LLM 判断严格限定在一次调用以内，不随数据库中 CompositeRecord 的数量增长。
 
 **层级记忆树展开**
 
@@ -478,7 +477,7 @@ LycheeMemory 将记忆组织为三个相辅相成的存储库：
 
 ### 阶段 2 —— SearchCoordinator
 
-`SearchCoordinator` 先从压缩摘要与最近原始轮次构造 `recent_context`，并从当前查询、约束条件、近期失败信号、token 预算和近期工具使用中推导 `ActionState`。语义记忆检索基于 Action-Aware 层级化检索管线展开：首先在 CompositeRecord 层面对全量 composite 进行整体相关性判断，筛选出关联候选并标记需展开的条目；随后沿记忆树递归取出对应的原子 MemoryRecord；最后经充分性评估，在存在信息缺口时激活 FTS + 向量 + 原始对话 turns 的补充召回。此阶段输出原始语义片段、技能结果、检索 provenance，以及专供新颖性检查使用的 `novelty_retrieved_context`（**pre-synthesis** 的原始语义片段）；本阶段不构造最终的 `background_context`。技能检索 mode-aware，依 `answer / action / mixed` 模式按需启用 HyDE 查询技能库。
+`SearchCoordinator` 先从压缩摘要与最近原始轮次构造 `recent_context`，并从当前查询、约束条件、近期失败信号、token 预算和近期工具使用中推导 `ActionState`。在正式检索前，先调用 LLM（`RETRIEVAL_PLANNING_SYSTEM`）生成结构化 `SearchPlan`（含 mode、语义查询词、工具提示、约束条件、树遍历深度等字段），以查询和 ActionState 为条件。语义记忆检索随后基于 Action-Aware 层级化检索管线展开：ANN 预过滤取 top-20 最近 CompositeRecord 候选，一次 LLM 调用判断相关性并标记需展开的条目；随后沿记忆树递归取出对应原子 MemoryRecord；最后经充分性评估，在存在信息缺口时激活 FTS + 向量 + 原始对话 turns 的补充召回。此阶段输出原始语义片段、技能结果、检索 provenance，以及专供新颖性检查使用的 `novelty_retrieved_context`（**pre-synthesis** 的原始语义片段）；本阶段不构造最终的 `background_context`。技能检索 mode-aware，依 `answer / action / mixed` 模式按需启用 HyDE 查询技能库。
 
 当新一轮用户输入到来时，`SearchCoordinator` 还会尝试把它解释为上一轮 action/mixed 检索的轻量 outcome feedback，用于将之前的记忆使用标记为 success / fail / correction。
 
@@ -495,7 +494,7 @@ LycheeMemory 将记忆组织为三个相辅相成的存储库：
 在 `ReasoningAgent` 完成后立即触发，在线程池中运行且**不阻塞响应**。它执行：
 
 1. **新颖性检查** —— LLM 判断对话是否引入值得持久化的新信息。跳过纯检索交互的固化。
-2. **Compact 编码固化** —— 调用 `CompactSemanticEngine.ingest_conversation()`，经单次编码（类型化提取 → 指代消解 → 行动元数据标注）将对话内容提取为 `MemoryRecord` 并写入 SQLite + LanceDB；随后触发带冲突处理的 Record Fusion。这里的新颖性检查使用的是 search 阶段的 `novelty_retrieved_context`（原始语义片段），而不是回答期的 `background_context`，从而避免 query-conditioned 融合文本误伤真正的新记忆。
+2. **Compact 编码固化** —— 调用 `CompactSemanticEngine.ingest_conversation()`，经单次编码（类型化提取 → 指代消解 → 行动元数据标注）将对话内容提取为 `MemoryRecord` 并写入 SQLite + LanceDB；随后触发基于 embedding 的 Record Fusion（零 LLM 调用：余弦相似度去重 → 聚类 → 从代表记录构建 CompositeRecord → 层级轮次）。新颖性检查使用的是 search 阶段的 `novelty_retrieved_context`（原始语义片段），而不是回答期的 `background_context`，从而避免 query-conditioned 融合文本误伤真正的新记忆。
 3. **技能提取** —— 从对话中识别成功的工具使用模式，提取技能条目并添加到技能库；与 Compact 固化并行执行（ThreadPoolExecutor）。
 
 ---
