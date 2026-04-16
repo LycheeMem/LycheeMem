@@ -656,6 +656,8 @@ def run_memory_consolidate(
                     session_id=req.session_id,
                     retrieved_context=req.retrieved_context,
                     turn_index_offset=effective_watermark,
+                    skip_skills=req.skip_skills,
+                    session_date=req.session_date,
                 )
                 # 后台线程固化成功后推进水位线
                 store.set_last_consolidated_turn_index(req.session_id, raw_total)
@@ -675,6 +677,8 @@ def run_memory_consolidate(
         session_id=req.session_id,
         retrieved_context=req.retrieved_context,
         turn_index_offset=effective_watermark,
+        skip_skills=req.skip_skills,
+        session_date=req.session_date,
     )
     # 同步固化成功后推进水位线
     store.set_last_consolidated_turn_index(req.session_id, raw_total)

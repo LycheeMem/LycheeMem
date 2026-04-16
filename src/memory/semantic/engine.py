@@ -541,6 +541,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             previous_turns=previous,
             session_id=session_id,
             turn_index_offset=turn_index_offset + max(0, len(turns) - len(current)),
+            session_date=reference_timestamp,
         )
 
         steps.append({

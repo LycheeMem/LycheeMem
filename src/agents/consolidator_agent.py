@@ -39,6 +39,8 @@ class ConsolidatorAgent(BaseAgent):
         session_id: str | None = None,
         retrieved_context: str = "",
         turn_index_offset: int = 0,
+        skip_skills: bool = False,
+        session_date: str | None = None,
         **kwargs,
     ) -> dict[str, Any]:
         """分析对话并固化到长期记忆。
@@ -64,6 +66,8 @@ class ConsolidatorAgent(BaseAgent):
             session_id=session_id,
             retrieved_context=retrieved_context,
             turn_index_offset=turn_index_offset,
+            skip_skills=skip_skills,
+            session_date=session_date,
         )
 
     def _run_compact(
@@ -73,28 +77,31 @@ class ConsolidatorAgent(BaseAgent):
         session_id: str,
         retrieved_context: str = "",
         turn_index_offset: int = 0,
+        skip_skills: bool = False,
+        session_date: str | None = None,
     ) -> dict[str, Any]:
         """Compact 后端路径：语义固化 → 按新颖性门控技能抽取。
 
         流程：
         1. 先执行 semantic_engine.ingest_conversation()；其中已包含新颖性检查。
-        2. 仅当语义引擎确认存在新信息时，再执行技能提取。
+        2. 仅当语义引擎确认存在新信息时，再执行技能提取（skip_skills=True 时跳过）。
         """
         ingest_result = self.semantic_engine.ingest_conversation(
             turns=turns,
             session_id=session_id,
             retrieved_context=retrieved_context,
             turn_index_offset=turn_index_offset,
+            reference_timestamp=session_date,
         )
 
         steps: list[dict[str, Any]] = list(ingest_result.steps)
         has_novelty = bool(ingest_result.has_novelty)
 
-        if not has_novelty:
+        if not has_novelty or skip_skills:
             steps.append({
                 "name": "skill_extraction",
                 "status": "skipped",
-                "detail": "无新信息，跳过技能提取",
+                "detail": "无新信息，跳过技能提取" if not has_novelty else "skip_skills=True，跳过技能提取",
             })
             return {
                 "entities_added": ingest_result.records_added,
