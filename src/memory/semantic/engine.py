@@ -295,8 +295,12 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             if not new_added:
                 break
 
-        # 情节上下文增强
+        # 情节上下文增强：强制开启，且保证至少 window=1
+        # 这样即使 answer 模式下 _normalize_tree_retrieval_plan 将 window 设为 0，
+        # 此处也会回溯每条已召回记录的原始对话 turns（含相邻 1 条 turn），
+        # 从而补偿 encoder 在抽取时丢失的细节。
         plan.include_episodic_context = True
+        plan.episodic_turn_window = max(plan.episodic_turn_window, 1)
         self._enrich_candidates_with_episodic_context(
             selected_candidates,
             plan=plan,
@@ -1485,7 +1489,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             reverse=True,
         )
 
-        max_records = 3 if plan.mode in {"action", "mixed"} else 1
+        # 对所有模式统一取 3 条叶子 record 的原始对话：
+        # answer 模式之所以之前限制为 1，是担心 token 过多，但这导致 composite 只展示
+        # 代表记录的 turn，而具体细节（书名、物品描述、精确数字等）往往在其他叶子
+        # record 的原始对话里，造成细节特异性丢失。改为统一 3 条。
+        max_records = 3
         episode_refs: list[dict[str, Any]] = []
         seen_turn_keys: set[tuple[str, int]] = set()
         for _, record_data in ranked_records[:max_records]:

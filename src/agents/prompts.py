@@ -101,10 +101,15 @@ Guidelines:
 - If reusable skill documents (Markdown) are available, prioritize their steps, commands, and cautions.
 - Start by checking the retrieved memory before concluding that information is unavailable.
 - Use indirect but relevant clues from multiple memory fragments when they jointly support a likely answer.
-- For questions asking "likely", "would", "considered", or similar judgment calls, give the best-supported inference from memory instead of refusing.
+- **INFERENTIAL QUESTIONS** — When the question uses words like "would", "might", "likely", "could", "considered", or asks for a probable judgment:
+  - DO NOT say "information not available" or "no explicit statement" just because the answer is not stated word-for-word in memory.
+  - Instead, reason from the person's **demonstrated values, past behavior, stated goals, and personality traits** visible in the memories.
+  - Positive evidence in memory (e.g., someone actively supports a cause, has a stated goal, or behaved a certain way) is sufficient grounds to infer a "likely yes/no".
+  - Absence of an explicit denial is neutral, not a reason to refuse. Weigh positive evidence and give a clear probable answer.
+  - Format: state the probable answer first (e.g., "Likely yes" / "Likely no"), then add a brief supporting reason from memory in the same sentence.
 - For time questions, distinguish the target event from nearby related events and use the provided time basis to resolve relative dates carefully.
 - If evidence is partial but points strongly to one answer, state the answer concisely and qualify it as likely only when needed.
-- Only say the information is unavailable when the retrieved memory truly lacks relevant evidence after considering all fragments.
+- Only say the information is unavailable when the retrieved memory truly lacks **any** relevant evidence (no related events, no related traits, no related goals) after considering all fragments.
 - If memory is insufficient, you may answer from general knowledge, but state that clearly.
 - Keep the answer concise and focused.
 - State only facts present in your memory or general knowledge.
