@@ -74,6 +74,12 @@ The quality and completeness of this text directly determines the quality of the
 
 ## Rules
 - `background_context`: Fuse and rewrite the kept fragments into coherent text. Do not simply concatenate.
+- **Preserve specific details verbatim**: When writing `background_context`, do NOT generalize or paraphrase the following — keep them exactly as they appear in the fragments:
+  - Book titles, song titles, film titles, artwork names (e.g., "Becoming Nicole", not "a book")
+  - Exact numeric counts (e.g., "3 children", not "multiple children"; "7 years", not "several years")
+  - Named objects with specific descriptions (e.g., "a cup with a dog face on it", not "a pottery item")
+  - Named artists, performers, places (e.g., "Matt Patterson", "Grand Canyon")
+  - Specific descriptive attributes: colors, shapes, materials, exact quoted phrases (e.g., "Trans Lives Matter")
 - Respect time annotations: distinguish `created_at` (when the memory was stored) from `temporal` (when the event occurred). \
 Do not merge facts from different time periods into one tense.
 - Sort `scored_fragments` descending by `relevance`.
@@ -101,15 +107,30 @@ Guidelines:
 - If reusable skill documents (Markdown) are available, prioritize their steps, commands, and cautions.
 - Start by checking the retrieved memory before concluding that information is unavailable.
 - Use indirect but relevant clues from multiple memory fragments when they jointly support a likely answer.
+
+- **ENTITY PREMISE CHECK** — Before answering, verify that the subject of the question matches the subject in the retrieved memory.
+  - If the question asks about person A but the memory only describes person B doing that thing, do NOT answer as if A did it.
+  - In such cases, clearly state: "The memory does not contain this information about [A]; however, [B] did [...]."
+  - This applies to events, objects, emotions, and activities — always attribute facts to the correct person.
+
+- **SEMANTIC BRIDGING** — When the question uses different wording than the memory but refers to the same underlying fact, connect them:
+  - "Plans for the summer" ↔ "researching adoption agencies" — these are the same fact; extract and state it.
+  - "What did X do to relax" ↔ "X went on a nature walk after the road trip" — bridge the semantic gap and answer.
+  - "What setback did X face in [month]" ↔ memory states X got hurt in that period — match on time + person and answer.
+  - Do NOT refuse because the exact phrase in the question does not appear verbatim in memory. Use reasoning to bridge the gap.
+
 - **INFERENTIAL QUESTIONS** — When the question uses words like "would", "might", "likely", "could", "considered", or asks for a probable judgment:
+  - First apply the ENTITY PREMISE CHECK above. Only infer about the person the question explicitly asks about.
   - DO NOT say "information not available" or "no explicit statement" just because the answer is not stated word-for-word in memory.
-  - Instead, reason from the person's **demonstrated values, past behavior, stated goals, and personality traits** visible in the memories.
+  - Instead, reason from that person's **demonstrated values, past behavior, stated goals, and personality traits** visible in the memories.
   - Positive evidence in memory (e.g., someone actively supports a cause, has a stated goal, or behaved a certain way) is sufficient grounds to infer a "likely yes/no".
   - Absence of an explicit denial is neutral, not a reason to refuse. Weigh positive evidence and give a clear probable answer.
   - Format: state the probable answer first (e.g., "Likely yes" / "Likely no"), then add a brief supporting reason from memory in the same sentence.
+  - **ADVERSARIAL PREMISE** — If the question's premise itself is false (the event never happened to this person, or the question attributes something to the wrong person), do NOT answer based on a false premise. Instead, state: "Based on the available memory, [person] did not [event described in question]." If a similar event happened to a different person, mention that instead.
+
 - For time questions, distinguish the target event from nearby related events and use the provided time basis to resolve relative dates carefully.
 - If evidence is partial but points strongly to one answer, state the answer concisely and qualify it as likely only when needed.
-- Only say the information is unavailable when the retrieved memory truly lacks **any** relevant evidence (no related events, no related traits, no related goals) after considering all fragments.
+- Only say the information is unavailable when the retrieved memory truly lacks **any** relevant evidence (no related events, no related traits, no related goals) after considering all fragments — AND the entity premise check confirms you are looking for the right person.
 - If memory is insufficient, you may answer from general knowledge, but state that clearly.
 - Keep the answer concise and focused.
 - State only facts present in your memory or general knowledge.

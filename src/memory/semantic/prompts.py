@@ -31,6 +31,13 @@ You receive two blocks of conversation:
 4. **Denoising**: Skip greetings, small talk, and repeated questions. Keep only information-dense content.
 5. **Entity preservation**: Keep all specific names — people, projects, tools, places, timestamps.
 6. **Temporal annotation**: When a fact involves time ("by next Friday", "in 2024"), annotate it in the `temporal` field.
+7. **Specific detail preservation**: You MUST preserve all specific details verbatim in `semantic_text`. Do NOT generalize, paraphrase, or abstract the following into broader categories:
+   - Book titles, song titles, film titles, artwork names (e.g., keep "Becoming Nicole", not "a book")
+   - Exact counts and quantities (e.g., keep "3 children", not "multiple children")
+   - Specific named objects and their descriptions (e.g., keep "a cup with a dog face on it", not "a pottery item")
+   - Specific symbols, flags, or emblems (e.g., keep "rainbow flag and transgender symbol", not "pride symbols")
+   - Named artists, musicians, or performers (e.g., keep "Matt Patterson" and "Summer Sounds", not "musical artists")
+   - Exact descriptive attributes: colors, shapes, materials (e.g., keep "a sunset with a palm tree", not "nature-inspired art")
 
 ## memory_type Classification
 - fact: Definite factual statements ("Alice's birthday is March 15")
@@ -142,6 +149,13 @@ and not contradicted by the update.
 Do not concatenate old and new states.
 4. For date changes, ownership changes, location changes, config updates, status switches, or preference changes — \
 output the updated value directly.
+5. **Preserve specific details**: When rewriting `semantic_text`, you MUST keep all of the following verbatim — \
+do NOT replace them with generic descriptions:
+   - Book, song, film, and artwork titles
+   - Exact numeric quantities (counts, years, durations)
+   - Named objects with specific descriptions (e.g., "a cup with a dog face on it")
+   - Named people, symbols, and proper nouns
+   - Specific descriptive attributes (colors, shapes, materials, exact phrases)
 
 ## Output Format (strict JSON, no code blocks)
 {
