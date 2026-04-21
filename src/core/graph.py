@@ -12,6 +12,7 @@ LangGraph Pipeline 构建。
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 from typing import Any, AsyncIterator
@@ -24,6 +25,7 @@ from src.agents.search_coordinator import SearchCoordinator
 from src.agents.synthesizer_agent import SynthesizerAgent
 from src.agents.wm_manager import WMManager
 from src.core.state import PipelineState
+from src.evolve.prompt_registry import get_active_versions_snapshot
 from src.llm.base import _token_accumulator
 
 logger = logging.getLogger("src.pipeline")
@@ -166,6 +168,65 @@ class LycheePipeline:
             tool_calls=state.get("tool_calls", []),
         )
         retrieved_graph_memories = result["retrieved_graph_memories"]
+        feedback_update = result.get("feedback_update") or {}
+
+        if self.evolve_loop is not None and isinstance(feedback_update, dict):
+            outcome = str(feedback_update.get("outcome") or "").strip().lower() or "unknown"
+            feedback = str(feedback_update.get("feedback") or "").strip().lower()
+            if outcome in {"success", "fail"}:
+                try:
+                    versions = feedback_update.get("prompt_versions_used") or result.get("prompt_versions_used") or {}
+                    self.evolve_loop.after_run(
+                        user_feedback=feedback,
+                        user_outcome=outcome,
+                        prompt_versions_used=dict(versions) if isinstance(versions, dict) else None,
+                    )
+                except Exception:
+                    logger.warning("Evolve delayed feedback ingestion failed", exc_info=True)
+
+        if self.evolve_loop is not None:
+            diagnostics = result.get("retrieval_diagnostics") or {}
+            if isinstance(diagnostics, dict):
+                try:
+                    final_ok = bool(diagnostics.get("final_is_sufficient", True))
+                    rounds = int(diagnostics.get("reflection_rounds", 0) or 0)
+                    if rounds > 0:
+                        self.evolve_loop.collect_retrieval_adequacy(
+                            is_sufficient=final_ok,
+                            reflection_round=max(0, rounds - 1),
+                        )
+
+                    max_rounds = int(diagnostics.get("max_reflection_rounds", 0) or 0)
+                    if (not final_ok) and max_rounds and rounds >= max_rounds:
+                        versions = result.get("prompt_versions_used") or {}
+                        planning_ver = 0
+                        if isinstance(versions, dict):
+                            try:
+                                planning_ver = int(versions.get("retrieval_planning", 0) or 0)
+                            except Exception:
+                                planning_ver = 0
+
+                        missing = ""
+                        hist = diagnostics.get("adequacy_history") or []
+                        if isinstance(hist, list) and hist:
+                            last = hist[-1] if isinstance(hist[-1], dict) else {}
+                            missing = str(last.get("missing_info") or "").strip()
+
+                        plan_summary = json.dumps(
+                            {
+                                "missing_info": missing[:200],
+                                "retrieval_plan": result.get("retrieval_plan", {}),
+                            },
+                            ensure_ascii=False,
+                        )
+                        self.evolve_loop.signal_collector.collect_retrieval_miss(
+                            query=str(state.get("user_query") or ""),
+                            plan_summary=plan_summary,
+                            planning_version=planning_ver,
+                        )
+                except Exception:
+                    logger.warning("Evolve adequacy ingestion failed", exc_info=True)
+
         return {
             "retrieved_graph_memories": retrieved_graph_memories,
             "retrieved_skills": result["retrieved_skills"],
@@ -176,7 +237,9 @@ class LycheePipeline:
             "action_state": result.get("action_state", {}),
             "search_mode": result.get("search_mode", "answer"),
             "semantic_usage_log_id": result.get("semantic_usage_log_id", ""),
-            "feedback_update": result.get("feedback_update", {}),
+            "feedback_update": feedback_update,
+            "prompt_versions_used": result.get("prompt_versions_used", {}),
+            "retrieval_diagnostics": result.get("retrieval_diagnostics", {}),
         }
 
     def _synthesize_node(self, state: PipelineState) -> dict[str, Any]:
@@ -662,6 +725,11 @@ class LycheePipeline:
             )
         except Exception:
             logger.warning("Evolve signal collection failed", exc_info=True)
+
+    @staticmethod
+    def _snapshot_prompt_versions() -> dict[str, int]:
+        """保留统一的 prompt 版本快照入口。"""
+        return get_active_versions_snapshot()
 
     @property
     def graph(self):

@@ -156,6 +156,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         recent_context: str = "",
         action_state: dict[str, Any] | None = None,
         retrieval_plan: dict[str, Any] | None = None,
+        prompt_versions_used: dict[str, int] | None = None,
     ) -> SemanticSearchResult:
         """三阶段 LLM 驱动检索（已替换旧的多通道打分管线）。
 
@@ -180,6 +181,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
         selected_candidates: list[ScoredCandidate] = []
         seen_ids: set[str] = set()
+        adequacy_history: list[dict[str, Any]] = []
 
         # ─── Phase 1: ANN 预过滤 + LLM 过滤 CompositeRecord ─────
         # 先用向量 ANN 检索 top-20 相关 composites，再做一次 LLM 过滤
@@ -251,6 +253,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 plan=plan,
                 action_state=action_state_obj,
             )
+            adequacy_history.append({
+                "round": int(_round),
+                "is_sufficient": bool(adequacy.get("is_sufficient", True)),
+                "missing_info": str(adequacy.get("missing_info", ""))[:200],
+            })
             if adequacy["is_sufficient"]:
                 break
 
@@ -320,6 +327,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             action_state=action_state_obj,
             retrieved_ids=[c.id for c in selected_candidates],
             kept_ids=[c.id for c in top],
+            prompt_versions_used=prompt_versions_used or {},
         )
 
         # 更新统计（仅对 SQLite 中存储的 record / composite）
@@ -343,6 +351,12 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             action_state=self._action_state_to_dict(action_state_obj),
             usage_log_id=log_id,
             mode=plan.mode,
+            diagnostics={
+                "adequacy_history": adequacy_history,
+                "reflection_rounds": len(adequacy_history),
+                "final_is_sufficient": bool(adequacy_history[-1]["is_sufficient"]) if adequacy_history else True,
+                "max_reflection_rounds": int(self._max_reflection_rounds),
+            },
         )
 
     def _llm_filter_composites(
@@ -754,6 +768,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             "log_id": pending_log.log_id,
             "outcome": feedback["outcome"],
             "feedback": feedback["feedback"],
+            "prompt_versions_used": dict(getattr(pending_log, "prompt_versions_used", {}) or {}),
         }
 
     # ════════════════════════════════════════════════════════════════
@@ -1715,6 +1730,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         action_state: ActionState,
         retrieved_ids: list[str],
         kept_ids: list[str],
+        prompt_versions_used: dict[str, int] | None = None,
     ) -> str:
         """记录一次检索使用日志。"""
         log_id = uuid.uuid4().hex
@@ -1740,6 +1756,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             action_state=self._action_state_to_dict(action_state),
             retrieved_record_ids=retrieved_ids,
             kept_record_ids=kept_ids,
+            prompt_versions_used=dict(prompt_versions_used or {}),
         )
         self._sqlite.insert_usage_log(log)
         return log_id

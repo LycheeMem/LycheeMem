@@ -14,7 +14,7 @@ from typing import Any
 
 from src.agents.base_agent import BaseAgent
 from src.agents.prompts import SEARCH_COORDINATOR_SYSTEM_PROMPT
-from src.evolve.prompt_registry import get_prompt
+from src.evolve.prompt_registry import get_active_versions_snapshot, get_prompt
 from src.embedder.base import BaseEmbedder
 from src.llm.base import BaseLLM, set_llm_call_source
 from src.memory.procedural.sqlite_skill_store import SQLiteSkillStore
@@ -53,6 +53,7 @@ class SearchCoordinator(BaseAgent):
             session_id = str(session_id)
         top_k = kwargs.get("top_k")
         include_skills = bool(kwargs.get("include_skills", True))
+        prompt_versions_used = get_active_versions_snapshot()
 
         recent_context = self._build_recent_context(
             raw_recent_turns=kwargs.get("raw_recent_turns") or [],
@@ -90,8 +91,10 @@ class SearchCoordinator(BaseAgent):
             retrieval_plan=self._build_retrieval_plan(
                 user_query, recent_context, action_state,
             ),
+            prompt_versions_used=prompt_versions_used,
         )
         result["feedback_update"] = feedback_update
+        result["prompt_versions_used"] = prompt_versions_used
         return result
 
     def _run_compact(
@@ -105,6 +108,7 @@ class SearchCoordinator(BaseAgent):
         include_skills: bool = True,
         analysis: dict[str, Any] | None = None,
         retrieval_plan: dict[str, Any] | None = None,
+        prompt_versions_used: dict[str, int] | None = None,
     ) -> dict[str, Any]:
         """Compact 后端路径：semantic_engine.search() + mode-aware 技能检索。"""
         result = self.semantic_engine.search(
@@ -114,6 +118,7 @@ class SearchCoordinator(BaseAgent):
             recent_context=recent_context,
             action_state=self._action_state_to_dict(action_state),
             retrieval_plan=retrieval_plan,
+            prompt_versions_used=prompt_versions_used,
         )
 
         graph_memories = []
@@ -149,6 +154,7 @@ class SearchCoordinator(BaseAgent):
             "action_state": result.action_state,
             "search_mode": result.mode,
             "semantic_usage_log_id": result.usage_log_id,
+            "retrieval_diagnostics": result.diagnostics,
         }
 
     def _search_skills(

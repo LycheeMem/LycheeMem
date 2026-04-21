@@ -88,6 +88,7 @@ class EvolveLoop:
         *,
         user_feedback: str = "",
         user_outcome: str = "unknown",
+        prompt_versions_used: dict[str, int] | None = None,
         synthesis_kept: int = 0,
         synthesis_dropped: int = 0,
         synthesis_input: int = 0,
@@ -98,7 +99,7 @@ class EvolveLoop:
         consolidation_skills_added: int = 0,
     ) -> None:
         """Pipeline 每次请求后的信号收集 hook。"""
-        versions = self._signals.get_current_versions()
+        versions = prompt_versions_used or self._signals.get_current_versions()
 
         if user_feedback or user_outcome != "unknown":
             self._signals.collect_user_feedback(

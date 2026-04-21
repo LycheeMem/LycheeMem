@@ -190,3 +190,4 @@ class UsageLog:
     final_response_excerpt: str = ""
     user_feedback: str = ""  # "positive" | "negative" | "correction" | ""
     action_outcome: str = ""  # "success" | "fail" | "unknown"
+    prompt_versions_used: dict[str, int] = field(default_factory=dict)

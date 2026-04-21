@@ -22,6 +22,7 @@ class SemanticSearchResult:
     action_state: dict[str, Any] = field(default_factory=dict)
     usage_log_id: str = ""
     mode: str = "answer"
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -53,6 +54,7 @@ class BaseSemanticMemoryEngine(ABC):
         recent_context: str = "",
         action_state: dict[str, Any] | None = None,
         retrieval_plan: dict[str, Any] | None = None,
+        prompt_versions_used: dict[str, int] | None = None,
     ) -> SemanticSearchResult:
         """检索与 query 相关的长期记忆。
 

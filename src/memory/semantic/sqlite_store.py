@@ -135,7 +135,8 @@ class SQLiteSemanticStore:
                     kept_record_ids  TEXT NOT NULL DEFAULT '[]',
                     final_response_excerpt TEXT NOT NULL DEFAULT '',
                     user_feedback    TEXT NOT NULL DEFAULT '',
-                    action_outcome   TEXT NOT NULL DEFAULT ''
+                    action_outcome   TEXT NOT NULL DEFAULT '',
+                    prompt_versions_used TEXT NOT NULL DEFAULT '{}'
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_mr_memory_type ON memory_records(memory_type);
@@ -173,6 +174,16 @@ class SQLiteSemanticStore:
                         tokenize='unicode61'
                     )
                 """)
+            except sqlite3.OperationalError:
+                pass
+
+            try:
+                rows = c.execute("PRAGMA table_info(usage_logs)").fetchall()
+                existing_cols = {str(r["name"]) for r in rows}
+                if "prompt_versions_used" not in existing_cols:
+                    c.execute(
+                        "ALTER TABLE usage_logs ADD COLUMN prompt_versions_used TEXT NOT NULL DEFAULT '{}'"
+                    )
             except sqlite3.OperationalError:
                 pass
 
@@ -676,8 +687,8 @@ class SQLiteSemanticStore:
                 "INSERT OR IGNORE INTO usage_logs "
                 "(log_id, session_id, timestamp, query, "
                 "retrieval_plan, action_state, retrieved_record_ids, kept_record_ids, "
-                "final_response_excerpt, user_feedback, action_outcome) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "final_response_excerpt, user_feedback, action_outcome, prompt_versions_used) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     log.log_id, log.session_id, log.timestamp,
                     log.query, _json_dumps(log.retrieval_plan),
@@ -686,6 +697,7 @@ class SQLiteSemanticStore:
                     _json_dumps(log.kept_record_ids),
                     log.final_response_excerpt,
                     log.user_feedback, log.action_outcome,
+                    _json_dumps(log.prompt_versions_used),
                 ),
             )
             self._conn.commit()
@@ -709,6 +721,7 @@ class SQLiteSemanticStore:
             final_response_excerpt=row["final_response_excerpt"],
             user_feedback=row["user_feedback"],
             action_outcome=row["action_outcome"],
+            prompt_versions_used=_json_loads_dict(row["prompt_versions_used"] or "{}"),
         )
 
     def update_usage_log(
@@ -718,6 +731,7 @@ class SQLiteSemanticStore:
         final_response_excerpt: str | None = None,
         user_feedback: str | None = None,
         action_outcome: str | None = None,
+        prompt_versions: dict[str, int] | None = None,
     ) -> None:
         fields: list[str] = []
         params: list[Any] = []
@@ -731,6 +745,9 @@ class SQLiteSemanticStore:
         if action_outcome is not None:
             fields.append("action_outcome = ?")
             params.append(action_outcome)
+        if prompt_versions is not None:
+            fields.append("prompt_versions_used = ?")
+            params.append(_json_dumps(prompt_versions))
 
         if not fields:
             return
@@ -765,6 +782,7 @@ class SQLiteSemanticStore:
                 final_response_excerpt=r["final_response_excerpt"],
                 user_feedback=r["user_feedback"],
                 action_outcome=r["action_outcome"],
+                prompt_versions_used=_json_loads_dict(r["prompt_versions_used"] or "{}"),
             )
             for r in rows
         ]

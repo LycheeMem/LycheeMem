@@ -33,6 +33,8 @@ class PipelineState(TypedDict, total=False):
     search_mode: str
     semantic_usage_log_id: str
     feedback_update: dict[str, Any]
+    prompt_versions_used: dict[str, int]
+    retrieval_diagnostics: dict[str, Any]
 
     # ─── 整合器输出 ───
     background_context: str  # 融合后的上下文注入字符串
