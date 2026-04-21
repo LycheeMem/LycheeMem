@@ -13,6 +13,7 @@ from typing import Any
 from src.llm.base import BaseLLM, set_llm_call_source
 from src.memory.semantic.models import MemoryRecord, VALID_MEMORY_TYPES
 from src.memory.semantic.prompts import COMPACT_ENCODING_SYSTEM
+from src.evolve.prompt_registry import get_prompt
 
 
 class CompactSemanticEncoder:
@@ -124,7 +125,7 @@ class CompactSemanticEncoder:
 
         set_llm_call_source("compact_encoding")
         response = self._llm.generate([
-            {"role": "system", "content": COMPACT_ENCODING_SYSTEM},
+            {"role": "system", "content": get_prompt("compact_encoding", COMPACT_ENCODING_SYSTEM)},
             {"role": "user", "content": user_content},
         ])
 

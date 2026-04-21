@@ -11,6 +11,7 @@ from typing import Any
 
 import tiktoken
 
+from src.evolve.prompt_registry import get_prompt
 from src.llm.base import BaseLLM, set_llm_call_source
 
 
@@ -114,8 +115,8 @@ class WorkingMemoryCompressor:
             f"{t['role']}: {t['content']}" for t in active_to_compress
         )
         history_text = "\n".join(history_parts)
-        prompt = self.compression_prompt.format(history=history_text)
-
+        active_prompt = get_prompt("wm_compression", self.compression_prompt)
+        prompt = active_prompt.format(history=history_text)
         set_llm_call_source("wm_compression")
         summary = self.llm.generate([{"role": "user", "content": prompt}])
         return summary

@@ -12,6 +12,7 @@ from typing import Any
 
 from src.agents.base_agent import BaseAgent
 from src.agents.prompts import CONSOLIDATION_SYSTEM_PROMPT
+from src.evolve.prompt_registry import get_prompt
 from src.embedder.base import BaseEmbedder
 from src.llm.base import BaseLLM, set_llm_call_source
 from src.memory.procedural.sqlite_skill_store import SQLiteSkillStore
@@ -126,7 +127,7 @@ class ConsolidatorAgent(BaseAgent):
         set_llm_call_source("skill_extraction")
         response = self._call_llm(
             conversation_text,
-            system_content=self.prompt_template,
+            system_content=get_prompt("consolidation", self.prompt_template),
             add_time_basis=True,
         )
         analysis = self._safe_parse(response)

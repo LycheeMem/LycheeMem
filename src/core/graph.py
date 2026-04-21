@@ -43,12 +43,14 @@ class LycheePipeline:
         synthesizer: SynthesizerAgent,
         reasoner: ReasoningAgent,
         consolidator: ConsolidatorAgent,
+        evolve_loop: Any | None = None,
     ):
         self.wm_manager = wm_manager
         self.search_coordinator = search_coordinator
         self.synthesizer = synthesizer
         self.reasoner = reasoner
         self.consolidator = consolidator
+        self.evolve_loop = evolve_loop
 
         self._graph = self._build_graph()
         self._last_consolidation: dict[str, Any] | None = None
@@ -188,6 +190,9 @@ class LycheePipeline:
             "background_context": result["background_context"],
             "skill_reuse_plan": result.get("skill_reuse_plan", []),
             "provenance": result.get("provenance", []),
+            "synthesis_kept_count": result.get("kept_count", 0),
+            "synthesis_dropped_count": result.get("dropped_count", 0),
+            "synthesis_input_count": result.get("input_fragment_count", 0),
         }
 
     def _reason_node(self, state: PipelineState) -> dict[str, Any]:
@@ -351,6 +356,9 @@ class LycheePipeline:
                 session_id,
                 retrieved_context=str(result.get("novelty_retrieved_context") or ""),
                 job_id=job_id,
+                synthesis_kept=result.get("synthesis_kept_count", 0),
+                synthesis_dropped=result.get("synthesis_dropped_count", 0),
+                synthesis_input=result.get("synthesis_input_count", 0),
             )
 
         return result
@@ -371,6 +379,9 @@ class LycheePipeline:
                     session_id,
                     retrieved_context=str(result.get("novelty_retrieved_context") or ""),
                     job_id=job_id,
+                    synthesis_kept=result.get("synthesis_kept_count", 0),
+                    synthesis_dropped=result.get("synthesis_dropped_count", 0),
+                    synthesis_input=result.get("synthesis_input_count", 0),
                 )
             )
 
@@ -460,6 +471,9 @@ class LycheePipeline:
                         session_id,
                         retrieved_context=str(state.get("novelty_retrieved_context") or ""),
                         job_id=job_id,
+                        synthesis_kept=state.get("synthesis_kept_count", 0),
+                        synthesis_dropped=state.get("synthesis_dropped_count", 0),
+                        synthesis_input=state.get("synthesis_input_count", 0),
                     )
                 )
 
@@ -506,11 +520,19 @@ class LycheePipeline:
         session_id: str,
         retrieved_context: str = "",
         job_id: int = 0,
+        synthesis_kept: int = 0,
+        synthesis_dropped: int = 0,
+        synthesis_input: int = 0,
     ) -> None:
         """在守护线程中触发固化（fire-and-forget）。"""
         thread = threading.Thread(
             target=self._safe_consolidate,
             args=(session_id, retrieved_context, job_id),
+            kwargs={
+                "synthesis_kept": synthesis_kept,
+                "synthesis_dropped": synthesis_dropped,
+                "synthesis_input": synthesis_input,
+            },
             daemon=True,
         )
         thread.start()
@@ -520,6 +542,10 @@ class LycheePipeline:
         session_id: str,
         retrieved_context: str = "",
         job_id: int = 0,
+        *,
+        synthesis_kept: int = 0,
+        synthesis_dropped: int = 0,
+        synthesis_input: int = 0,
     ) -> None:
         """安全执行固化，异常不影响主流程。"""
         graphiti = getattr(self.consolidator, "graphiti_engine", None)
@@ -530,6 +556,12 @@ class LycheePipeline:
                 session_id=session_id,
                 job_id=job_id,
                 result=result,
+            )
+            self._collect_evolve_signals(
+                result=result,
+                synthesis_kept=synthesis_kept,
+                synthesis_dropped=synthesis_dropped,
+                synthesis_input=synthesis_input,
             )
         except Exception as exc:
             logger.exception("固化失败 session=%s", session_id)
@@ -546,6 +578,9 @@ class LycheePipeline:
         session_id: str,
         retrieved_context: str = "",
         job_id: int = 0,
+        synthesis_kept: int = 0,
+        synthesis_dropped: int = 0,
+        synthesis_input: int = 0,
     ) -> None:
         """异步场景下的后台固化（使用水位线，只处理新增 turns）。"""
         graphiti = getattr(self.consolidator, "graphiti_engine", None)
@@ -587,6 +622,12 @@ class LycheePipeline:
                 job_id=job_id,
                 result=result,
             )
+            self._collect_evolve_signals(
+                result=result,
+                synthesis_kept=synthesis_kept,
+                synthesis_dropped=synthesis_dropped,
+                synthesis_input=synthesis_input,
+            )
         except Exception as exc:
             logger.exception("固化失败 session=%s", session_id)
             self._finish_consolidation(
@@ -596,6 +637,31 @@ class LycheePipeline:
             )
             if strict:
                 raise
+
+    def _collect_evolve_signals(
+        self,
+        result: dict[str, Any],
+        *,
+        synthesis_kept: int = 0,
+        synthesis_dropped: int = 0,
+        synthesis_input: int = 0,
+    ) -> None:
+        """从固化结果中收集 evolve 信号。"""
+        if self.evolve_loop is None:
+            return
+        try:
+            self.evolve_loop.after_run(
+                synthesis_kept=synthesis_kept,
+                synthesis_dropped=synthesis_dropped,
+                synthesis_input=synthesis_input,
+                consolidation_records_added=result.get("entities_added", 0),
+                consolidation_records_merged=result.get("facts_added", 0),
+                consolidation_records_expired=result.get("records_expired", 0),
+                consolidation_has_novelty=bool(result.get("has_novelty")),
+                consolidation_skills_added=result.get("skills_added", 0),
+            )
+        except Exception:
+            logger.warning("Evolve signal collection failed", exc_info=True)
 
     @property
     def graph(self):

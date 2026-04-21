@@ -49,6 +49,7 @@ from src.memory.semantic.prompts import (
     RETRIEVAL_ADDITIONAL_QUERIES_SYSTEM,
     FEEDBACK_CLASSIFICATION_SYSTEM,
 )
+from src.evolve.prompt_registry import get_prompt
 from src.memory.semantic.scorer import ScoredCandidate, ScoringWeights
 from src.memory.semantic.sqlite_store import SQLiteSemanticStore
 from src.memory.semantic.synthesizer import RecordFusionEngine
@@ -381,7 +382,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
         set_llm_call_source("composite_filter")
         response = self._llm.generate([
-            {"role": "system", "content": COMPOSITE_FILTER_SYSTEM},
+            {"role": "system", "content": get_prompt("composite_filter", COMPOSITE_FILTER_SYSTEM)},
             {"role": "user", "content": user_content},
         ])
 
@@ -788,7 +789,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         )
         set_llm_call_source("adequacy_check")
         response = self._llm.generate([
-            {"role": "system", "content": RETRIEVAL_ADEQUACY_CHECK_SYSTEM},
+            {"role": "system", "content": get_prompt("retrieval_adequacy_check", RETRIEVAL_ADEQUACY_CHECK_SYSTEM)},
             {"role": "user", "content": user_content},
         ])
         try:
@@ -851,7 +852,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         )
         set_llm_call_source("additional_queries")
         response = self._llm.generate([
-            {"role": "system", "content": RETRIEVAL_ADDITIONAL_QUERIES_SYSTEM},
+            {"role": "system", "content": get_prompt("retrieval_additional_queries", RETRIEVAL_ADDITIONAL_QUERIES_SYSTEM)},
             {"role": "user", "content": user_content},
         ])
         try:
@@ -908,7 +909,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         )
         set_llm_call_source("novelty_check")
         response = self._llm.generate([
-            {"role": "system", "content": NOVELTY_CHECK_SYSTEM},
+            {"role": "system", "content": get_prompt("novelty_check", NOVELTY_CHECK_SYSTEM)},
             {"role": "user", "content": user_content},
         ])
         try:
@@ -1752,7 +1753,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         
         set_llm_call_source("feedback_classification")
         response = self._llm.generate([
-            {"role": "system", "content": FEEDBACK_CLASSIFICATION_SYSTEM},
+            {"role": "system", "content": get_prompt("feedback_classification", FEEDBACK_CLASSIFICATION_SYSTEM)},
             {"role": "user", "content": user_content},
         ])
         

@@ -15,6 +15,7 @@ from typing import Any
 
 from src.agents.base_agent import BaseAgent
 from src.agents.prompts import SYNTHESIS_SYSTEM_PROMPT
+from src.evolve.prompt_registry import get_prompt
 from src.llm.base import BaseLLM, set_llm_call_source
 
 
@@ -79,7 +80,7 @@ class SynthesizerAgent(BaseAgent):
         set_llm_call_source("synthesis_scoring")
         response = self._call_llm(
             user_content,
-            system_content=self.prompt_template,
+            system_content=get_prompt("synthesis", self.prompt_template),
             add_time_basis=True,
         )
 

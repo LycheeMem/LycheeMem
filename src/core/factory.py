@@ -45,6 +45,13 @@ def create_pipeline(
     Returns:
         组装好的 LycheePipeline 实例。
     """
+    # ── Self-Evolve: 初始化 Prompt Registry ──
+    if getattr(settings, "evolve_enabled", True):
+        from src.evolve.prompt_registry import init_registry
+
+        evolve_db = getattr(settings, "evolve_db_path", "data/prompt_evolve.db")
+        init_registry(db_path=evolve_db)
+
     wm_max_tokens = settings.wm_max_tokens
     warn_threshold = settings.wm_warn_threshold
     block_threshold = settings.wm_block_threshold
@@ -99,10 +106,27 @@ def create_pipeline(
         semantic_engine=semantic_engine,
     )
 
+    # ── Self-Evolve: 创建 EvolveLoop ──
+    evolve_loop = None
+    if getattr(settings, "evolve_enabled", True):
+        from src.evolve.evolve_loop import EvolveLoop
+        from src.evolve.prompt_registry import get_registry
+
+        registry = get_registry()
+        if registry is not None:
+            evolve_loop = EvolveLoop(
+                llm=llm,
+                store=registry.store,
+                auto_optimize=getattr(settings, "evolve_auto_optimize", False),
+                min_samples_for_optimize=getattr(settings, "evolve_min_samples", 20),
+                improvement_threshold=getattr(settings, "evolve_improvement_threshold", 0.05),
+            )
+
     return LycheePipeline(
         wm_manager=wm_manager,
         search_coordinator=search_coordinator,
         synthesizer=synthesizer,
         reasoner=reasoner,
         consolidator=consolidator,
+        evolve_loop=evolve_loop,
     )

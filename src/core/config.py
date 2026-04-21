@@ -64,6 +64,13 @@ class Settings(BaseSettings):
     skill_vector_db_path: str = "data/skill_vector"
     skill_top_k: int = 3
 
+    # ─── Self-Evolve ───
+    evolve_enabled: bool = True
+    evolve_db_path: str = "data/prompt_evolve.db"
+    evolve_auto_optimize: bool = False
+    evolve_min_samples: int = 20
+    evolve_improvement_threshold: float = 0.05
+
     # ─── API ───
     api_host: str = "0.0.0.0"
     api_port: int = 8000

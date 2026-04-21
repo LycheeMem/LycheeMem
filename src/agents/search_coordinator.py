@@ -14,12 +14,13 @@ from typing import Any
 
 from src.agents.base_agent import BaseAgent
 from src.agents.prompts import SEARCH_COORDINATOR_SYSTEM_PROMPT
+from src.evolve.prompt_registry import get_prompt
 from src.embedder.base import BaseEmbedder
 from src.llm.base import BaseLLM, set_llm_call_source
 from src.memory.procedural.sqlite_skill_store import SQLiteSkillStore
 from src.memory.semantic.base import BaseSemanticMemoryEngine
 from src.memory.semantic.models import ActionState
-from src.memory.semantic.prompts import RETRIEVAL_PLANNING_SYSTEM
+from src.memory.semantic.prompts import RETRIEVAL_PLANNING_SYSTEM as _RETRIEVAL_PLANNING_DEFAULT
 
 
 class SearchCoordinator(BaseAgent):
@@ -271,7 +272,7 @@ class SearchCoordinator(BaseAgent):
         set_llm_call_source("query_analysis_and_hyde")
         response = self._call_llm(
             user_content,
-            system_content=self.prompt_template,
+            system_content=get_prompt("search_coordinator", self.prompt_template),
             add_time_basis=True,
         )
         
@@ -302,7 +303,7 @@ class SearchCoordinator(BaseAgent):
             set_llm_call_source("retrieval_planning")
             response = self._call_llm(
                 user_content,
-                system_content=RETRIEVAL_PLANNING_SYSTEM,
+                system_content=get_prompt("retrieval_planning", _RETRIEVAL_PLANNING_DEFAULT),
                 add_time_basis=True,
             )
             raw = response.strip()

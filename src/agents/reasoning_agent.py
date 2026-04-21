@@ -14,6 +14,7 @@ from typing import Any
 
 from src.agents.base_agent import BaseAgent
 from src.agents.prompts import REASONING_SYSTEM_PROMPT
+from src.evolve.prompt_registry import get_prompt
 from src.llm.base import BaseLLM, set_llm_call_source
 
 
@@ -98,7 +99,7 @@ class ReasoningAgent(BaseAgent):
         )
         skill_plan_section = self._format_skill_plan(selected_skills)
 
-        system_prompt = self.prompt_template.format(
+        system_prompt = get_prompt("reasoning", self.prompt_template).format(
             history_section=history_section,
             background_section=background_section,
             skill_plan_section=skill_plan_section,
