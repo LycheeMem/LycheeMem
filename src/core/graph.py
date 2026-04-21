@@ -188,17 +188,23 @@ class LycheePipeline:
             diagnostics = result.get("retrieval_diagnostics") or {}
             if isinstance(diagnostics, dict):
                 try:
+                    prompt_versions_used = result.get("prompt_versions_used") or {}
                     final_ok = bool(diagnostics.get("final_is_sufficient", True))
                     rounds = int(diagnostics.get("reflection_rounds", 0) or 0)
                     if rounds > 0:
                         self.evolve_loop.collect_retrieval_adequacy(
                             is_sufficient=final_ok,
                             reflection_round=max(0, rounds - 1),
+                            prompt_versions_used=(
+                                dict(prompt_versions_used)
+                                if isinstance(prompt_versions_used, dict)
+                                else None
+                            ),
                         )
 
                     max_rounds = int(diagnostics.get("max_reflection_rounds", 0) or 0)
                     if (not final_ok) and max_rounds and rounds >= max_rounds:
-                        versions = result.get("prompt_versions_used") or {}
+                        versions = prompt_versions_used
                         planning_ver = 0
                         if isinstance(versions, dict):
                             try:
@@ -424,6 +430,7 @@ class LycheePipeline:
                 synthesis_input=result.get("synthesis_input_count", 0),
             )
 
+        self._record_request_completion()
         return result
 
     async def arun(self, user_query: str, session_id: str) -> dict[str, Any]:
@@ -448,6 +455,7 @@ class LycheePipeline:
                 )
             )
 
+        self._record_request_completion()
         return result
 
     async def astream_steps(
@@ -540,6 +548,7 @@ class LycheePipeline:
                     )
                 )
 
+            self._record_request_completion()
             yield {"type": "done", "result": dict(state)}
         finally:
             _reset_once()
@@ -725,6 +734,15 @@ class LycheePipeline:
             )
         except Exception:
             logger.warning("Evolve signal collection failed", exc_info=True)
+
+    def _record_request_completion(self) -> None:
+        """将 run_count 绑定到用户请求，而不是信号写入次数。"""
+        if self.evolve_loop is None:
+            return
+        try:
+            self.evolve_loop.record_request()
+        except Exception:
+            logger.warning("Evolve request counting failed", exc_info=True)
 
     @staticmethod
     def _snapshot_prompt_versions() -> dict[str, int]:

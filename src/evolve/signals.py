@@ -179,12 +179,13 @@ class SignalCollector:
         is_sufficient: bool,
         reflection_round: int,
         *,
-        version: int = 0,
+        adequacy_version: int = 0,
+        planning_version: int = 0,
     ) -> None:
         """收集检索充分性判断结果。"""
         self._store.record_metric(PromptMetricSnapshot(
             prompt_name="retrieval_adequacy_check",
-            version=version,
+            version=adequacy_version,
             metric_name="adequacy_pass",
             metric_value=1.0 if is_sufficient else 0.0,
             sample_count=1,
@@ -194,7 +195,7 @@ class SignalCollector:
         if not is_sufficient:
             self._store.record_metric(PromptMetricSnapshot(
                 prompt_name="retrieval_planning",
-                version=version,
+                version=planning_version,
                 metric_name="required_supplementary",
                 metric_value=1.0,
                 sample_count=1,

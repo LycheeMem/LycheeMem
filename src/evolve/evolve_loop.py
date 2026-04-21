@@ -8,7 +8,8 @@
 
 使用方式：
 - EvolveLoop 在 factory.py 中创建并注入 pipeline
-- Pipeline 每次运行后调用 loop.after_run() 收集信号
+- Pipeline 在信号产生时调用 loop.after_run() 收集信号
+- Pipeline 每次用户请求完成后调用 loop.record_request() 递增运行计数
 - loop.maybe_optimize() 在达到条件时自动触发优化
 """
 
@@ -32,9 +33,10 @@ class EvolveLoop:
     """Self-Evolve 主循环。
 
     生命周期：
-    1. after_run(): 每次 Pipeline 请求后调用，收集信号
-    2. maybe_optimize(): 检查是否满足触发条件，自动执行优化
-    3. promote_candidate() / rollback_candidate(): 手动或自动版本管理
+    1. after_run(): 在信号产生时调用，写入指标
+    2. record_request(): 每次用户请求完成后调用，递增计数并检查自动优化
+    3. maybe_optimize(): 检查是否满足触发条件，自动执行优化
+    4. promote_candidate() / rollback_candidate(): 手动或自动版本管理
     """
 
     def __init__(
@@ -98,7 +100,7 @@ class EvolveLoop:
         consolidation_has_novelty: bool = False,
         consolidation_skills_added: int = 0,
     ) -> None:
-        """Pipeline 每次请求后的信号收集 hook。"""
+        """写入一次由 Pipeline 产生的信号。"""
         versions = prompt_versions_used or self._signals.get_current_versions()
 
         if user_feedback or user_outcome != "unknown":
@@ -127,6 +129,8 @@ class EvolveLoop:
                 consolidation_version=versions.get("consolidation", 0),
             )
 
+    def record_request(self) -> None:
+        """记录一次完整用户请求，并按请求频率检查自动优化。"""
         with self._lock:
             self._run_count += 1
             count = self._run_count
@@ -139,16 +143,24 @@ class EvolveLoop:
         self,
         is_sufficient: bool,
         reflection_round: int = 0,
+        prompt_versions_used: dict[str, int] | None = None,
     ) -> None:
         """从检索充分性判断中收集信号。"""
-        from src.evolve.prompt_registry import get_registry
-        reg = get_registry()
-        version = reg.get_active_version_number("retrieval_adequacy_check") if reg else 0
+        versions = prompt_versions_used or self._signals.get_current_versions()
+        try:
+            adequacy_version = int(versions.get("retrieval_adequacy_check", 0) or 0)
+        except Exception:
+            adequacy_version = 0
+        try:
+            planning_version = int(versions.get("retrieval_planning", 0) or 0)
+        except Exception:
+            planning_version = 0
 
         self._signals.collect_retrieval_adequacy(
             is_sufficient=is_sufficient,
             reflection_round=reflection_round,
-            version=version,
+            adequacy_version=adequacy_version,
+            planning_version=planning_version,
         )
 
     # ═════════════════════════════════════════════════════════════
