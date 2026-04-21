@@ -119,6 +119,7 @@ def create_pipeline(
                 store=registry.store,
                 auto_optimize=getattr(settings, "evolve_auto_optimize", False),
                 min_samples_for_optimize=getattr(settings, "evolve_min_samples", 20),
+                optimize_interval=getattr(settings, "evolve_optimize_interval", 50),
                 improvement_threshold=getattr(settings, "evolve_improvement_threshold", 0.05),
             )
 

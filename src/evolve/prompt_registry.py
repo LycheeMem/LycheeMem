@@ -231,6 +231,21 @@ def get_prompt(name: str, fallback: str = "") -> str:
     return fallback
 
 
+def get_active_versions_snapshot() -> dict[str, int]:
+    """获取所有已注册 prompt 当前 active 版本号的快照。
+
+    返回一个独立的 dict 拷贝，调用方可安全保留；
+    后续 promote/rollback 不会影响已返回的快照。
+    """
+    reg = _registry
+    if reg is None:
+        return {}
+    result: dict[str, int] = {}
+    for name in reg.list_registered():
+        result[name] = reg.get_active_version_number(name)
+    return result
+
+
 # ── 注册所有默认 prompt ──
 
 def _register_all_defaults(registry: PromptRegistry) -> None:

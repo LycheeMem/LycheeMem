@@ -91,16 +91,11 @@ class PromptEvaluator:
             if not snapshots:
                 continue
 
-            values = [s.metric_value for s in snapshots]
-            counts = [s.sample_count for s in snapshots]
-            total_count = sum(counts)
-            total_samples += total_count
+            # 不同指标可能来自同一批请求，使用 max 而非 sum 避免重复累计样本数。
+            total_samples = max(total_samples, len(snapshots))
 
-            if total_count > 0:
-                weighted_sum = sum(v * c for v, c in zip(values, counts))
-                avg = weighted_sum / total_count
-            else:
-                avg = sum(values) / len(values) if values else 0.0
+            values = [s.metric_value for s in snapshots]
+            avg = sum(values) / len(values)
 
             metrics_summary[metric_name] = round(avg, 4)
 

@@ -67,7 +67,9 @@ class EvolveLoop:
         self._run_count = 0
         self._lock = threading.Lock()
 
-        self._pending_candidates: dict[str, int] = {}
+        # name → {version, pre_health, promoted_at_run, candidate_samples_at_promote}
+        self._pending_candidates: dict[str, dict[str, Any]] = {}
+        self._probation_check_interval = max(10, min_samples_for_optimize // 2)
 
     @property
     def signal_collector(self) -> SignalCollector:
@@ -130,10 +132,16 @@ class EvolveLoop:
             )
 
     def record_request(self) -> None:
-        """记录一次完整用户请求，并按请求频率检查自动优化。"""
+        """记录一次完整用户请求，并按请求频率检查 probation 和自动优化。"""
         with self._lock:
             self._run_count += 1
             count = self._run_count
+
+        if count > 0 and count % self._probation_check_interval == 0:
+            try:
+                self._check_probation()
+            except Exception:
+                logger.warning("Probation check failed", exc_info=True)
 
         if self._auto_optimize and count > 0 and count % self._optimize_interval == 0:
             logger.info("Run count %d reached optimize interval, triggering optimization", count)
@@ -206,11 +214,12 @@ class EvolveLoop:
         return results
 
     def _try_promote(self, result: OptimizationResult) -> None:
-        """尝试将优化结果中的候选版本提升为 active。
+        """将候选版本提升为 active 并进入 probation（试用期）。
 
         安全护栏：
         1. review_verdict 为 reject → 不提升
-        2. 需通过改善性检验（新版健康评分 > 旧版 + threshold）
+        2. 提升后进入 probation，累积 _min_samples 后自动比较改善性
+        3. 改善不足 improvement_threshold → 自动回滚
         """
         if not result.candidate_version:
             return
@@ -228,26 +237,78 @@ class EvolveLoop:
         if registry is None:
             return
 
-        old_health = self._evaluator.evaluate_prompt(result.prompt_name)
-
+        pre_health = self._evaluator.evaluate_prompt(result.prompt_name)
         candidate_version = result.candidate_version.version
-        with self._lock:
-            self._pending_candidates[result.prompt_name] = candidate_version
 
         registry.promote_candidate(
             result.prompt_name,
             candidate_version,
-            eval_score=old_health.health_score,
+            eval_score=pre_health.health_score,
         )
 
+        # 提升后立刻查询新版本的初始样本数（通常为 0）
+        # probation 检查时用"新版本当前样本数 - 此值"来判断积累了多少
+        new_version_initial_samples = self._evaluator.evaluate_prompt(
+            result.prompt_name, version=candidate_version
+        ).sample_count
+
+        with self._lock:
+            self._pending_candidates[result.prompt_name] = {
+                "version": candidate_version,
+                "pre_health": pre_health.health_score,
+                "promoted_at_run": self._run_count,
+                "candidate_samples_at_promote": new_version_initial_samples,
+            }
+
         logger.info(
-            "Promoted '%s' to v%d (previous health=%.2f). "
-            "Will monitor for improvement threshold (%.2f).",
-            result.prompt_name,
-            candidate_version,
-            old_health.health_score,
-            self._improvement_threshold,
+            "Promoted '%s' to v%d (pre-health=%.2f), entering probation. "
+            "Will auto-rollback if improvement < %.2f after %d samples.",
+            result.prompt_name, candidate_version,
+            pre_health.health_score, self._improvement_threshold,
+            self._min_samples,
         )
+
+    def _check_probation(self) -> None:
+        """检查所有处于 probation 的候选版本是否达到改善门槛。
+
+        条件满足时保留，不满足时自动回滚。
+        """
+        with self._lock:
+            pending = dict(self._pending_candidates)
+
+        if not pending:
+            return
+
+        for prompt_name, info in pending.items():
+            version = info["version"]
+            pre_health = info["pre_health"]
+            candidate_samples_at_promote = info["candidate_samples_at_promote"]
+
+            current_report = self._evaluator.evaluate_prompt(prompt_name, version=version)
+            new_samples = current_report.sample_count - candidate_samples_at_promote
+            if new_samples < self._min_samples:
+                continue
+
+            improvement = current_report.health_score - pre_health
+            if improvement >= self._improvement_threshold:
+                logger.info(
+                    "Probation PASSED for '%s' v%d: "
+                    "health %.2f → %.2f (improvement=%.3f >= threshold=%.3f)",
+                    prompt_name, version,
+                    pre_health, current_report.health_score,
+                    improvement, self._improvement_threshold,
+                )
+                with self._lock:
+                    self._pending_candidates.pop(prompt_name, None)
+            else:
+                logger.warning(
+                    "Probation FAILED for '%s' v%d: "
+                    "health %.2f → %.2f (improvement=%.3f < threshold=%.3f). Rolling back.",
+                    prompt_name, version,
+                    pre_health, current_report.health_score,
+                    improvement, self._improvement_threshold,
+                )
+                self.rollback_candidate(prompt_name, version)
 
     # ═════════════════════════════════════════════════════════════
     # 手动版本管理
@@ -282,7 +343,14 @@ class EvolveLoop:
             "run_count": self._run_count,
             "auto_optimize": self._auto_optimize,
             "optimize_interval": self._optimize_interval,
-            "pending_candidates": dict(self._pending_candidates),
+            "pending_candidates": {
+                k: {
+                    "version": v["version"],
+                    "pre_health": v["pre_health"],
+                    "runs_since_promote": self._run_count - v["promoted_at_run"],
+                }
+                for k, v in self._pending_candidates.items()
+            },
             "prompt_health": [
                 {
                     "name": r.prompt_name,

@@ -132,11 +132,12 @@ class SignalCollector:
             version=version,
             metric_name="kept_ratio",
             metric_value=kept_ratio,
-            sample_count=total,
+            sample_count=1,
             detail=json.dumps({
                 "kept": kept_count,
                 "dropped": dropped_count,
                 "input": input_fragment_count,
+                "fragments_total": total,
             }),
         ))
 
@@ -217,6 +218,33 @@ class SignalCollector:
             actual=plan_summary[:500],
             diagnosis="Retrieval plan did not yield sufficient results",
         ))
+
+    def collect_session_continuation(
+        self,
+        *,
+        prompt_versions: dict[str, int] | None = None,
+    ) -> None:
+        """记录一次会话延续信号（隐式正面反馈）。
+
+        当用户在同一 session 中发出后续消息但没有负面反馈时，
+        视为对上一轮回答的隐式认可。权重低于显式反馈。
+        """
+        versions = prompt_versions or {}
+        implicit_positive_score = 0.6
+
+        for pname in ["reasoning", "synthesis", "search_coordinator", "retrieval_planning"]:
+            ver = versions.get(pname, 0)
+            self._store.record_metric(PromptMetricSnapshot(
+                prompt_name=pname,
+                version=ver,
+                metric_name="user_feedback_positive",
+                metric_value=implicit_positive_score,
+                sample_count=1,
+                detail=json.dumps({
+                    "source": "session_continuation",
+                    "score": implicit_positive_score,
+                }),
+            ))
 
     def collect_encoding_loss(
         self,

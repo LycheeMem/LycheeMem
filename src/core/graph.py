@@ -30,6 +30,22 @@ from src.llm.base import _token_accumulator
 
 logger = logging.getLogger("src.pipeline")
 
+_SESSION_CONTINUATION_NEGATIVE_MARKERS: tuple[str, ...] = (
+    "that's wrong",
+    "that is wrong",
+    "wrong",
+    "incorrect",
+    "not what i meant",
+    "not what i asked",
+    "you misunderstood",
+    "不对",
+    "错了",
+    "有误",
+    "你理解错",
+    "你误解",
+    "不是这个意思",
+)
+
 
 class LycheePipeline:
     """LycheeMem 认知记忆 Pipeline。
@@ -183,6 +199,8 @@ class LycheePipeline:
                     )
                 except Exception:
                     logger.warning("Evolve delayed feedback ingestion failed", exc_info=True)
+            # session_continuation 不在此处记录；
+            # 移到 _record_request_completion() 以确保回复已生成后再写信号
 
         if self.evolve_loop is not None:
             diagnostics = result.get("retrieval_diagnostics") or {}
@@ -428,8 +446,10 @@ class LycheePipeline:
                 synthesis_kept=result.get("synthesis_kept_count", 0),
                 synthesis_dropped=result.get("synthesis_dropped_count", 0),
                 synthesis_input=result.get("synthesis_input_count", 0),
+                prompt_versions_snapshot=result.get("prompt_versions_used"),
             )
 
+        self._maybe_record_session_continuation(result)
         self._record_request_completion()
         return result
 
@@ -452,9 +472,11 @@ class LycheePipeline:
                     synthesis_kept=result.get("synthesis_kept_count", 0),
                     synthesis_dropped=result.get("synthesis_dropped_count", 0),
                     synthesis_input=result.get("synthesis_input_count", 0),
+                    prompt_versions_snapshot=result.get("prompt_versions_used"),
                 )
             )
 
+        self._maybe_record_session_continuation(result)
         self._record_request_completion()
         return result
 
@@ -545,9 +567,11 @@ class LycheePipeline:
                         synthesis_kept=state.get("synthesis_kept_count", 0),
                         synthesis_dropped=state.get("synthesis_dropped_count", 0),
                         synthesis_input=state.get("synthesis_input_count", 0),
+                        prompt_versions_snapshot=state.get("prompt_versions_used"),
                     )
                 )
 
+            self._maybe_record_session_continuation(state)
             self._record_request_completion()
             yield {"type": "done", "result": dict(state)}
         finally:
@@ -595,6 +619,7 @@ class LycheePipeline:
         synthesis_kept: int = 0,
         synthesis_dropped: int = 0,
         synthesis_input: int = 0,
+        prompt_versions_snapshot: dict[str, int] | None = None,
     ) -> None:
         """在守护线程中触发固化（fire-and-forget）。"""
         thread = threading.Thread(
@@ -604,6 +629,7 @@ class LycheePipeline:
                 "synthesis_kept": synthesis_kept,
                 "synthesis_dropped": synthesis_dropped,
                 "synthesis_input": synthesis_input,
+                "prompt_versions_snapshot": prompt_versions_snapshot,
             },
             daemon=True,
         )
@@ -618,6 +644,7 @@ class LycheePipeline:
         synthesis_kept: int = 0,
         synthesis_dropped: int = 0,
         synthesis_input: int = 0,
+        prompt_versions_snapshot: dict[str, int] | None = None,
     ) -> None:
         """安全执行固化，异常不影响主流程。"""
         graphiti = getattr(self.consolidator, "graphiti_engine", None)
@@ -634,6 +661,7 @@ class LycheePipeline:
                 synthesis_kept=synthesis_kept,
                 synthesis_dropped=synthesis_dropped,
                 synthesis_input=synthesis_input,
+                prompt_versions_snapshot=prompt_versions_snapshot,
             )
         except Exception as exc:
             logger.exception("固化失败 session=%s", session_id)
@@ -653,6 +681,7 @@ class LycheePipeline:
         synthesis_kept: int = 0,
         synthesis_dropped: int = 0,
         synthesis_input: int = 0,
+        prompt_versions_snapshot: dict[str, int] | None = None,
     ) -> None:
         """异步场景下的后台固化（使用水位线，只处理新增 turns）。"""
         graphiti = getattr(self.consolidator, "graphiti_engine", None)
@@ -699,6 +728,7 @@ class LycheePipeline:
                 synthesis_kept=synthesis_kept,
                 synthesis_dropped=synthesis_dropped,
                 synthesis_input=synthesis_input,
+                prompt_versions_snapshot=prompt_versions_snapshot,
             )
         except Exception as exc:
             logger.exception("固化失败 session=%s", session_id)
@@ -717,12 +747,18 @@ class LycheePipeline:
         synthesis_kept: int = 0,
         synthesis_dropped: int = 0,
         synthesis_input: int = 0,
+        prompt_versions_snapshot: dict[str, int] | None = None,
     ) -> None:
-        """从固化结果中收集 evolve 信号。"""
+        """从固化结果中收集 evolve 信号。
+
+        prompt_versions_snapshot 是在主线程请求期间拍的快照，
+        确保异步固化完成时的指标归因到正确的 prompt 版本。
+        """
         if self.evolve_loop is None:
             return
         try:
             self.evolve_loop.after_run(
+                prompt_versions_used=prompt_versions_snapshot,
                 synthesis_kept=synthesis_kept,
                 synthesis_dropped=synthesis_dropped,
                 synthesis_input=synthesis_input,
@@ -743,6 +779,52 @@ class LycheePipeline:
             self.evolve_loop.record_request()
         except Exception:
             logger.warning("Evolve request counting failed", exc_info=True)
+
+    def _maybe_record_session_continuation(self, result: dict[str, Any]) -> None:
+        """回复生成完毕后，若无显式反馈且不是首轮，记录隐式正样本。
+
+        触发条件（必须同时满足）：
+        1. evolve_loop 已启用
+        2. feedback_update 未带有 success/fail 显式 outcome
+        3. raw_recent_turns 中包含至少一条 assistant 消息——
+           说明上一轮对话已经完成，用户继续输入即视为对上轮回答的隐式认可
+        """
+        if self.evolve_loop is None:
+            return
+
+        feedback_update = result.get("feedback_update") or {}
+        outcome = str(feedback_update.get("outcome") or "").strip().lower()
+        if outcome in {"success", "fail"}:
+            return
+
+        raw_turns: list[dict[str, str]] = result.get("raw_recent_turns") or []
+        filtered = [
+            turn for turn in raw_turns
+            if isinstance(turn, dict) and str(turn.get("content") or "").strip()
+        ]
+        if len(filtered) < 2:
+            return
+
+        latest_turn = filtered[-1]
+        previous_turn = filtered[-2]
+        if str(latest_turn.get("role") or "").strip().lower() != "user":
+            return
+        if str(previous_turn.get("role") or "").strip().lower() != "assistant":
+            return
+
+        user_text = str(latest_turn.get("content") or "").strip().lower()
+        if not user_text:
+            return
+        if any(marker in user_text for marker in _SESSION_CONTINUATION_NEGATIVE_MARKERS):
+            return
+
+        try:
+            versions = result.get("prompt_versions_used") or {}
+            self.evolve_loop.signal_collector.collect_session_continuation(
+                prompt_versions=dict(versions) if isinstance(versions, dict) else None,
+            )
+        except Exception:
+            logger.warning("Evolve session continuation signal failed", exc_info=True)
 
     @staticmethod
     def _snapshot_prompt_versions() -> dict[str, int]:
