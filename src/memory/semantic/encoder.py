@@ -27,6 +27,7 @@ class CompactSemanticEncoder:
         current_turns: list[dict[str, Any]],
         *,
         previous_turns: list[dict[str, Any]] | None = None,
+        ingest_scope: str = "user_only",
         session_id: str = "",
         turn_index_offset: int = 0,
         session_date: str | None = None,
@@ -36,6 +37,8 @@ class CompactSemanticEncoder:
         Args:
             current_turns: 需要处理的当前对话轮次
             previous_turns: 最近的上文轮次（供指代消解参考，可选）
+            ingest_scope: 抽取范围；`user_only` 只固化用户内容，
+                `user_and_assistant` 允许固化满足条件的 assistant 内容
             session_id: 会话 ID
             turn_index_offset: current_turns 在完整 session 中的起始 turn 索引
             session_date: 对话发生的日期（自由文本，如 "May 8, 2023"）。
@@ -46,7 +49,13 @@ class CompactSemanticEncoder:
         Returns:
             编码完成的 MemoryRecord 列表
         """
-        raw_records = self._encode_records(current_turns, previous_turns or [], session_date=session_date)
+        normalized_scope = self._normalize_ingest_scope(ingest_scope)
+        raw_records = self._encode_records(
+            current_turns,
+            previous_turns or [],
+            ingest_scope=normalized_scope,
+            session_date=session_date,
+        )
         if not raw_records:
             return []
 
@@ -66,7 +75,17 @@ class CompactSemanticEncoder:
             normalized_text = f"{memory_type}: {semantic_text}"
 
             raw_src = raw.get("source_role", "")
-            source_role = raw_src if raw_src in ("user", "assistant", "both") else ""
+            raw_evidence_turns = raw.get("evidence_turns", [])
+            source_role = self._resolve_source_role(
+                raw_src,
+                raw_evidence_turns,
+                current_turns,
+            )
+            if normalized_scope == "user_only":
+                if source_role in ("assistant", "both"):
+                    continue
+                if not source_role:
+                    source_role = "user"
 
             record_id = self._make_record_id(semantic_text)
 
@@ -80,7 +99,7 @@ class CompactSemanticEncoder:
                 tags=raw.get("tags", []),
                 confidence=1.0,
                 evidence_turn_range=self._normalize_evidence_turns(
-                    raw.get("evidence_turns", []),
+                    raw_evidence_turns,
                     turn_index_offset=turn_index_offset,
                 ),
                 source_session=session_id,
@@ -101,6 +120,7 @@ class CompactSemanticEncoder:
         current_turns: list[dict[str, Any]],
         previous_turns: list[dict[str, Any]],
         session_date: str | None = None,
+        ingest_scope: str = "user_only",
     ) -> list[dict[str, Any]]:
         """单次 LLM 调用：输出包含全部字段的 record 列表。"""
         prev_text = self._format_section(previous_turns) if previous_turns else "(no previous turns)"
@@ -119,6 +139,7 @@ class CompactSemanticEncoder:
 
         user_content = (
             f"{date_header}"
+            f"<INGEST_SCOPE>{self._normalize_ingest_scope(ingest_scope)}</INGEST_SCOPE>\n\n"
             f"<PREVIOUS_TURNS>\n{prev_text}\n</PREVIOUS_TURNS>\n\n"
             f"<CURRENT_TURNS>\n{curr_text}\n</CURRENT_TURNS>"
         )
@@ -150,6 +171,42 @@ class CompactSemanticEncoder:
         避免时间不同的同类事件因 normalized_text 相同而产生 ID 碰撞。
         """
         return hashlib.sha256(semantic_text.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _normalize_ingest_scope(value: Any) -> str:
+        scope = str(value or "").strip().lower()
+        return "user_and_assistant" if scope == "user_and_assistant" else "user_only"
+
+    @classmethod
+    def _resolve_source_role(
+        cls,
+        raw_source_role: Any,
+        evidence_turns: Any,
+        current_turns: list[dict[str, Any]],
+    ) -> str:
+        roles: set[str] = set()
+        if isinstance(evidence_turns, list):
+            for raw_turn in evidence_turns:
+                try:
+                    turn_index = int(raw_turn)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= turn_index < len(current_turns):
+                    role = str(current_turns[turn_index].get("role", "")).strip().lower()
+                    if role in ("user", "assistant"):
+                        roles.add(role)
+
+        if roles == {"user"}:
+            return "user"
+        if roles == {"assistant"}:
+            return "assistant"
+        if roles == {"user", "assistant"}:
+            return "both"
+
+        fallback = str(raw_source_role or "").strip().lower()
+        if fallback in ("user", "assistant", "both"):
+            return fallback
+        return ""
 
     @staticmethod
     def _format_section(turns: list[dict[str, Any]]) -> str:

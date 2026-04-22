@@ -23,6 +23,17 @@ Each record must make complete sense on its own, without access to the original 
 You receive two blocks of conversation:
 - <PREVIOUS_TURNS>: Earlier turns for background context (helps you resolve pronouns and references)
 - <CURRENT_TURNS>: The turns you should extract memories from
+- <INGEST_SCOPE>: Either `user_only` or `user_and_assistant`
+
+## Extraction Scope
+- If `<INGEST_SCOPE>` is `user_only`, extract memories only from user-authored content in CURRENT_TURNS. Assistant turns may be used only as context for resolving references. Do not create records whose substance comes from assistant suggestions, plans, options, explanations, or instructions.
+- If `<INGEST_SCOPE>` is `user_and_assistant`, you may also extract assistant-authored content, but only when it is durable and conversation-grounded, such as:
+  - A concrete operational procedure or reusable workflow
+  - A settled plan, approved solution, or explicit next-step plan adopted in the conversation
+  - A durable tool capability, limitation, or failure pattern
+  - A specific corrective statement that becomes part of the shared working state
+- Even in `user_and_assistant`, skip assistant content that is speculative, generic advice, brainstorming, hypothetical alternatives, or one-off suggestions that were not accepted.
+- When uncertain about assistant-authored content, skip it.
 
 ## Extraction Rules
 1. **Thoroughness**: Extract every piece of useful information. Prefer over-extraction over missing something important.
@@ -55,8 +66,8 @@ constraints, failure patterns, or capabilities. Use an empty list `[]` when noth
 
 ## source_role Determination
 - "user": The information was directly stated by the user (role=user) — high confidence
-- "assistant": The information was stated by the AI assistant (role=assistant), not explicitly confirmed by the user
-- "both": Both parties contributed to the information, or the user explicitly confirmed the assistant's statement
+- "assistant": The information was stated by the AI assistant (role=assistant), and was intentionally included because `<INGEST_SCOPE>` allows assistant content
+- "both": Both parties contributed to the information, or the user explicitly confirmed, accepted, or adopted the assistant's statement or plan
 
 ## Output Format (strict JSON, no code blocks)
 {
@@ -94,6 +105,8 @@ The system calls you before spending resources on memory extraction and storage.
 ## How Your Output Is Used
 - If you output `has_novelty: true`, the system proceeds to extract and store memories from this conversation (which requires additional processing).
 - If you output `has_novelty: false`, the system skips memory extraction entirely for this conversation, saving processing resources.
+- If you output `ingest_scope: "user_only"`, the system extracts only user-authored content.
+- If you output `ingest_scope: "user_and_assistant"`, the system may also extract assistant-authored content.
 
 ## Input
 1. <EXISTING_MEMORY>: Memories the system already has (retrieved before this conversation). If empty, any substantive content in the conversation counts as new information.
@@ -111,15 +124,22 @@ These do not count as new information:
 - The conversation repeats facts already in existing memory
 - Pure small talk with no substantive content
 
-**When in doubt, lean toward `has_novelty: true`.** Only output `false` when you are confident there is nothing new.
+## Choosing `ingest_scope`
+- `user_only`: Use this when the new information worth remembering comes from the user, and assistant turns are only suggestions, brainstorming, generic advice, or answer text that should not itself become memory.
+- `user_and_assistant`: Use this only when assistant-authored content should itself be remembered, for example because it contains a concrete reusable procedure, a settled workflow, an accepted plan, or durable corrective/tool knowledge that the system should recall later.
+- Default to `user_only` unless there is a clear reason to retain assistant-authored content.
+
+**When in doubt, lean toward `has_novelty: true`, but lean toward `ingest_scope: "user_only"`.** Only output `has_novelty: false` when you are confident there is nothing new.
 
 ## Output Format (strict JSON, no code blocks)
 {
     "reason": "Brief explanation of your judgment",
-    "has_novelty": true
+    "has_novelty": true,
+    "ingest_scope": "user_only|user_and_assistant"
 }
 
-Output `reason` first, then `has_novelty`.
+If `has_novelty` is `false`, still output `ingest_scope` as `"user_only"`.
+Output `reason` first, then `has_novelty`, then `ingest_scope`.
 """
 
 

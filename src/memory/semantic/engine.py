@@ -539,11 +539,26 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         # 只检查最近一次 user-assistant 交换（最后 2 条），避免历史已固化轮次
         # 的重复内容干扰判断，导致"本轮新信息"被误判为"已有记忆覆盖"。
         last_exchange = turns[-2:] if len(turns) >= 2 else turns
-        has_novelty = self._check_novelty(last_exchange, retrieved_context)
+        novelty_decision = self._check_novelty(last_exchange, retrieved_context)
+        has_novelty = bool(novelty_decision.get("has_novelty", True))
+        ingest_scope = self._normalize_ingest_scope(
+            novelty_decision.get("ingest_scope"),
+        )
+        novelty_reason = str(novelty_decision.get("reason") or "").strip()
+        novelty_detail = "检测到新信息" if has_novelty else "无新信息，跳过固化"
+        if has_novelty:
+            scope_text = (
+                "仅固化用户消息"
+                if ingest_scope == "user_only"
+                else "固化用户与助手消息"
+            )
+            novelty_detail = f"{novelty_detail}，{scope_text}"
+        if novelty_reason:
+            novelty_detail += f"；{novelty_reason}"
         steps.append({
             "name": "novelty_check",
             "status": "done",
-            "detail": "检测到新信息" if has_novelty else "无新信息，跳过固化",
+            "detail": novelty_detail,
         })
         if not has_novelty:
             return ConsolidationResult(
@@ -558,6 +573,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         new_records = self._encoder.encode_conversation(
             current,
             previous_turns=previous,
+            ingest_scope=ingest_scope,
             session_id=session_id,
             turn_index_offset=turn_index_offset + max(0, len(turns) - len(current)),
             session_date=reference_timestamp,
@@ -566,7 +582,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         steps.append({
             "name": "compact_encoding",
             "status": "done",
-            "detail": f"抽取 {len(new_records)} 条 MemoryRecord",
+            "detail": f"抽取 {len(new_records)} 条 MemoryRecord（scope={ingest_scope}）",
         })
 
         if not new_records:
@@ -913,8 +929,8 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
     def _check_novelty(
         self, turns: list[dict[str, Any]], retrieved_context: str,
-    ) -> bool:
-        """LLM 判断对话是否有新信息。"""
+    ) -> dict[str, Any]:
+        """LLM 判断对话是否有新信息，以及固化范围。"""
         conversation_text = "\n".join(
             f"{t.get('role', '')}: {t.get('content', '')}" for t in turns
         )
@@ -927,11 +943,35 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             {"role": "system", "content": get_prompt("novelty_check", NOVELTY_CHECK_SYSTEM)},
             {"role": "user", "content": user_content},
         ])
+        default_decision = {
+            "reason": "",
+            "has_novelty": True,
+            "ingest_scope": "user_only",
+        }
         try:
-            parsed = json.loads(response.strip().lstrip("```json").rstrip("```").strip())
-            return bool(parsed.get("has_novelty", True))
+            parsed = self._parse_llm_json(response)
+            return {
+                "reason": str(parsed.get("reason") or "").strip(),
+                "has_novelty": bool(parsed.get("has_novelty", True)),
+                "ingest_scope": self._normalize_ingest_scope(
+                    parsed.get("ingest_scope"),
+                ),
+            }
         except (json.JSONDecodeError, ValueError):
-            return True  # 保守策略：解析失败则认为有新信息
+            return default_decision  # 保守策略：解析失败则认为有新信息，但只固化用户消息
+
+    @staticmethod
+    def _normalize_ingest_scope(value: Any) -> str:
+        scope = str(value or "").strip().lower()
+        return "user_and_assistant" if scope == "user_and_assistant" else "user_only"
+
+    @staticmethod
+    def _parse_llm_json(response: str) -> dict[str, Any]:
+        raw = str(response or "").strip()
+        if raw.startswith("```"):
+            parts = raw.split("```")
+            raw = parts[1].lstrip("json").strip() if len(parts) >= 3 else parts[-1].strip()
+        return json.loads(raw)
 
     def _dict_to_plan(self, d: dict[str, Any]) -> SearchPlan:
         """dict → SearchPlan。"""
