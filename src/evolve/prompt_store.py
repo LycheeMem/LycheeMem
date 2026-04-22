@@ -4,6 +4,9 @@
 - prompt_versions: 所有 prompt 的版本历史与状态
 - prompt_metrics:  按版本聚合的效果指标时间序列
 - prompt_failure_cases: 失败案例归档，供 Optimizer 参考
+
+额外表：
+- evolve_events: 自进化过程事件（optimize / promote / probation / rollback 等）
 """
 
 from __future__ import annotations
@@ -73,6 +76,24 @@ class PromptFailureCase:
             self.recorded_at = datetime.now(timezone.utc).isoformat()
 
 
+@dataclass
+class EvolveEvent:
+    """一次自进化过程事件（用于可观测性与前端时间线展示）。"""
+
+    event_type: str  # optimize_attempt / candidate_created / promote_probation / probation_pass / probation_fail / rollback_manual / ...
+    prompt_name: str = ""
+    from_version: int | None = None
+    to_version: int | None = None
+    summary: str = ""
+    payload: dict[str, Any] = field(default_factory=dict)
+    created_at: str = ""
+    event_id: int | None = None
+
+    def __post_init__(self):
+        if not self.created_at:
+            self.created_at = datetime.now(timezone.utc).isoformat()
+
+
 # ── SQLite 存储 ──────────────────────────────────────────────────
 
 _SCHEMA_SQL = """
@@ -119,6 +140,21 @@ CREATE TABLE IF NOT EXISTS prompt_failure_cases (
 );
 CREATE INDEX IF NOT EXISTS idx_pfc_name_version
     ON prompt_failure_cases(prompt_name, version);
+
+CREATE TABLE IF NOT EXISTS evolve_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type      TEXT NOT NULL,
+    prompt_name     TEXT DEFAULT '',
+    from_version    INTEGER,
+    to_version      INTEGER,
+    summary         TEXT DEFAULT '',
+    payload_json    TEXT DEFAULT '',
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ev_created
+    ON evolve_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ev_prompt
+    ON evolve_events(prompt_name, created_at DESC);
 """
 
 
@@ -320,6 +356,101 @@ class PromptStore:
         with self._connect() as conn:
             row = conn.execute(sql, params).fetchone()
         return int(row["cnt"]) if row else 0
+
+    # ── Evolve Events ──
+
+    def record_event(self, event: EvolveEvent) -> int:
+        """记录一条自进化过程事件，返回 event_id。"""
+        payload_json = ""
+        try:
+            payload_json = json.dumps(event.payload or {}, ensure_ascii=False)
+        except Exception:
+            payload_json = ""
+
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO evolve_events
+                   (event_type, prompt_name, from_version, to_version, summary, payload_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    event.event_type,
+                    event.prompt_name or "",
+                    event.from_version,
+                    event.to_version,
+                    event.summary or "",
+                    payload_json,
+                    event.created_at,
+                ),
+            )
+            return int(cur.lastrowid or 0)
+
+    def list_events(
+        self,
+        *,
+        limit: int = 100,
+        prompt_name: str | None = None,
+        event_type: str | None = None,
+    ) -> list[EvolveEvent]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if prompt_name:
+            clauses.append("prompt_name = ?")
+            params.append(prompt_name)
+        if event_type:
+            clauses.append("event_type = ?")
+            params.append(event_type)
+
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = f"SELECT * FROM evolve_events {where} ORDER BY id DESC LIMIT ?"
+        params.append(int(limit))
+
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+
+        result: list[EvolveEvent] = []
+        for r in rows:
+            payload: dict[str, Any] = {}
+            try:
+                payload = json.loads(r["payload_json"] or "{}")
+            except Exception:
+                payload = {}
+            result.append(
+                EvolveEvent(
+                    event_id=int(r["id"]),
+                    event_type=str(r["event_type"] or ""),
+                    prompt_name=str(r["prompt_name"] or ""),
+                    from_version=int(r["from_version"]) if r["from_version"] is not None else None,
+                    to_version=int(r["to_version"]) if r["to_version"] is not None else None,
+                    summary=str(r["summary"] or ""),
+                    payload=payload if isinstance(payload, dict) else {},
+                    created_at=str(r["created_at"] or ""),
+                )
+            )
+        return result
+
+    def get_event(self, event_id: int) -> EvolveEvent | None:
+        with self._connect() as conn:
+            r = conn.execute(
+                "SELECT * FROM evolve_events WHERE id = ?",
+                (int(event_id),),
+            ).fetchone()
+        if not r:
+            return None
+        payload: dict[str, Any] = {}
+        try:
+            payload = json.loads(r["payload_json"] or "{}")
+        except Exception:
+            payload = {}
+        return EvolveEvent(
+            event_id=int(r["id"]),
+            event_type=str(r["event_type"] or ""),
+            prompt_name=str(r["prompt_name"] or ""),
+            from_version=int(r["from_version"]) if r["from_version"] is not None else None,
+            to_version=int(r["to_version"]) if r["to_version"] is not None else None,
+            summary=str(r["summary"] or ""),
+            payload=payload if isinstance(payload, dict) else {},
+            created_at=str(r["created_at"] or ""),
+        )
 
     # ── Row Converters ──
 

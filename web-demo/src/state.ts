@@ -47,6 +47,9 @@ export interface AppState {
   // Active memory tab
   activeTab: string;
 
+  // Active page
+  activePage: "main" | "evolve-history";
+
   // Graph edge interaction
   hoveredEdge: GraphEdge | null;
   selectedEdge: GraphEdge | null;
@@ -83,6 +86,7 @@ export interface AppState {
   setSkills: (skills: SkillItem[]) => void;
   setPipelineStatus: (status: PipelineStatus) => void;
   setActiveTab: (tab: string) => void;
+  setActivePage: (page: "main" | "evolve-history") => void;
   setHoveredEdge: (edge: GraphEdge | null) => void;
   setSelectedEdge: (edge: GraphEdge | null) => void;
   setCurrentTrace: (trace: PipelineTrace | null) => void;
@@ -129,6 +133,7 @@ export const useStore = create<AppState>((set) => ({
     skill_count: 0,
   },
   activeTab: "tab-agents",
+  activePage: "main",
   hoveredEdge: null,
   selectedEdge: null,
   currentTrace: null,
@@ -156,6 +161,7 @@ export const useStore = create<AppState>((set) => ({
   setSkills: (skills) => set({ skills }),
   setPipelineStatus: (status) => set({ pipelineStatus: status }),
   setActiveTab: (tab) => set({ activeTab: tab }),
+  setActivePage: (page) => set({ activePage: page }),
   setHoveredEdge: (edge) => set({ hoveredEdge: edge }),
   setSelectedEdge: (edge) => set({ selectedEdge: edge }),
   setCurrentTrace: (trace) => set({ currentTrace: trace }),

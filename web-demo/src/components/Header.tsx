@@ -6,6 +6,8 @@ import { useStore } from "../state";
 export default function Header() {
   const pipelineStatus = useStore((s) => s.pipelineStatus);
   const setPipelineStatus = useStore((s) => s.setPipelineStatus);
+  const activePage = useStore((s) => s.activePage);
+  const setActivePage = useStore((s) => s.setActivePage);
 
   const loadAll = useCallback(async () => {
     try {
@@ -30,6 +32,16 @@ export default function Header() {
         </div>
       </div>
       <div className="header-right">
+        <div className="status-chips" style={{ marginRight: 12 }}>
+          <span
+            className="chip"
+            title="自进化历史"
+            style={{ cursor: "pointer", opacity: activePage === "evolve-history" ? 1 : 0.8 }}
+            onClick={() => setActivePage(activePage === "evolve-history" ? "main" : "evolve-history")}
+          >
+            🧬 历史
+          </span>
+        </div>
         <div className="status-chips" id="status-chips">
           <span className="chip" title="会话数">
             <FileTextOutlined /> {pipelineStatus.session_count}

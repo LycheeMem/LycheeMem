@@ -159,6 +159,12 @@ html, body {
   gap: 0;
 }
 
+/* 单页面模式（例如“自进化历史”），避免三列网格挤压内容 */
+.app-main-single {
+  grid-template-columns: 1fr !important;
+  grid-template-rows: 1fr !important;
+}
+
 /* ═══ SESSION SIDEBAR ═══ */
 #session-sidebar {
   width: 240px;

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from src.evolve.evaluator import PromptEvaluator, PromptHealthReport
-from src.evolve.prompt_store import PromptFailureCase, PromptStore, PromptVersion
+from src.evolve.prompt_store import EvolveEvent, PromptFailureCase, PromptStore, PromptVersion
 from src.evolve.prompts import (
     CANDIDATE_REVIEW_SYSTEM,
     FAILURE_DIAGNOSIS_SYSTEM,
@@ -101,6 +101,22 @@ class PromptOptimizer:
         )
         diagnosis = self._diagnose(prompt_name, current_text, health, failures)
         result.diagnosis = diagnosis
+        try:
+            self._store.record_event(EvolveEvent(
+                event_type="optimize_diagnosis",
+                prompt_name=prompt_name,
+                from_version=current_version,
+                to_version=None,
+                summary=f"诊断完成：health={health.health_score:.3f}, samples={health.sample_count}, failures={health.failure_count}",
+                payload={
+                    "health": health.__dict__,
+                    "diagnosis": diagnosis,
+                    "failures_count": len(failures),
+                },
+            ))
+        except Exception:
+            # 可观测性失败不应影响主流程
+            pass
 
         feasibility = diagnosis.get("optimization_feasibility", "low")
         if feasibility == "low" and health.health_score >= 0.8:
@@ -129,12 +145,42 @@ class PromptOptimizer:
             reason=f"Auto-optimize: {change_summary}"[:200],
         )
         result.candidate_version = candidate
+        try:
+            self._store.record_event(EvolveEvent(
+                event_type="candidate_created",
+                prompt_name=prompt_name,
+                from_version=current_version,
+                to_version=candidate.version,
+                summary=f"生成候选 v{candidate.version}（changes={len(changes)}）",
+                payload={
+                    "changes": changes,
+                    "reason": candidate.reason,
+                    "original_prompt_excerpt": current_text[:2000],
+                    "candidate_prompt_excerpt": revised_prompt[:2000],
+                },
+            ))
+        except Exception:
+            pass
 
         # 4. 评审（可选）
         if self._enable_review:
             review = self._review(current_text, revised_prompt, changes, failures)
             result.review_detail = review
             result.review_verdict = review.get("verdict", "neutral")
+            try:
+                self._store.record_event(EvolveEvent(
+                    event_type="candidate_review",
+                    prompt_name=prompt_name,
+                    from_version=current_version,
+                    to_version=candidate.version,
+                    summary=f"评审：{result.review_verdict or 'neutral'}",
+                    payload={
+                        "verdict": result.review_verdict,
+                        "detail": review,
+                    },
+                ))
+            except Exception:
+                pass
 
             if result.review_verdict == "reject":
                 result.reason = f"Review rejected: {review.get('reasoning', '')}"

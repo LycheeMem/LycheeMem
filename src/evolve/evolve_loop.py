@@ -22,7 +22,7 @@ from typing import Any
 
 from src.evolve.evaluator import PromptEvaluator, PromptHealthReport
 from src.evolve.optimizer import OptimizationResult, PromptOptimizer
-from src.evolve.prompt_store import PromptMetricSnapshot, PromptStore
+from src.evolve.prompt_store import EvolveEvent, PromptMetricSnapshot, PromptStore
 from src.evolve.signals import SignalCollector
 from src.llm.base import BaseLLM
 
@@ -259,6 +259,25 @@ class EvolveLoop:
                 "promoted_at_run": self._run_count,
                 "candidate_samples_at_promote": new_version_initial_samples,
             }
+        try:
+            self._store.record_event(EvolveEvent(
+                event_type="promote_probation",
+                prompt_name=result.prompt_name,
+                from_version=result.original_version,
+                to_version=candidate_version,
+                summary=(
+                    f"提升候选进入 probation：v{candidate_version} "
+                    f"(pre_health={pre_health.health_score:.3f}, threshold={self._improvement_threshold}, min_samples={self._min_samples})"
+                ),
+                payload={
+                    "pre_health": pre_health.__dict__,
+                    "candidate_initial_samples": new_version_initial_samples,
+                    "improvement_threshold": self._improvement_threshold,
+                    "min_samples": self._min_samples,
+                },
+            ))
+        except Exception:
+            pass
 
         logger.info(
             "Promoted '%s' to v%d (pre-health=%.2f), entering probation. "
@@ -300,6 +319,25 @@ class EvolveLoop:
                 )
                 with self._lock:
                     self._pending_candidates.pop(prompt_name, None)
+                try:
+                    self._store.record_event(EvolveEvent(
+                        event_type="probation_pass",
+                        prompt_name=prompt_name,
+                        from_version=None,
+                        to_version=version,
+                        summary=(
+                            f"probation 通过：v{version} health {pre_health:.3f} → {current_report.health_score:.3f} "
+                            f"(+{improvement:.3f}) samples+={new_samples}"
+                        ),
+                        payload={
+                            "pre_health": pre_health,
+                            "current_report": current_report.__dict__,
+                            "new_samples": new_samples,
+                            "improvement_threshold": self._improvement_threshold,
+                        },
+                    ))
+                except Exception:
+                    pass
             else:
                 logger.warning(
                     "Probation FAILED for '%s' v%d: "
@@ -308,6 +346,25 @@ class EvolveLoop:
                     pre_health, current_report.health_score,
                     improvement, self._improvement_threshold,
                 )
+                try:
+                    self._store.record_event(EvolveEvent(
+                        event_type="probation_fail",
+                        prompt_name=prompt_name,
+                        from_version=None,
+                        to_version=version,
+                        summary=(
+                            f"probation 失败并回滚：v{version} health {pre_health:.3f} → {current_report.health_score:.3f} "
+                            f"(+{improvement:.3f} < {self._improvement_threshold}) samples+={new_samples}"
+                        ),
+                        payload={
+                            "pre_health": pre_health,
+                            "current_report": current_report.__dict__,
+                            "new_samples": new_samples,
+                            "improvement_threshold": self._improvement_threshold,
+                        },
+                    ))
+                except Exception:
+                    pass
                 self.rollback_candidate(prompt_name, version)
 
     # ═════════════════════════════════════════════════════════════
@@ -331,6 +388,17 @@ class EvolveLoop:
             with self._lock:
                 self._pending_candidates.pop(prompt_name, None)
             logger.info("Rolled back '%s' v%d", prompt_name, version)
+            try:
+                self._store.record_event(EvolveEvent(
+                    event_type="rollback",
+                    prompt_name=prompt_name,
+                    from_version=None,
+                    to_version=version,
+                    summary=f"回滚版本：{prompt_name} v{version}",
+                    payload={},
+                ))
+            except Exception:
+                pass
 
     # ═════════════════════════════════════════════════════════════
     # 状态查询

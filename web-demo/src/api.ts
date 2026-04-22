@@ -404,3 +404,71 @@ export async function clearSkillMemory(): Promise<void> {
     throw new Error((data as Record<string, string>).detail || `HTTP ${r.status}`);
   }
 }
+
+// ── Self-Evolve ────────────────────────────────────────────────────────────
+
+export async function fetchEvolveStatus(): Promise<Record<string, unknown>> {
+  const r = await fetch(`${API}/evolve/status`);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    throw new Error((data as Record<string, string>)?.detail || `HTTP ${r.status}`);
+  }
+  return data as Record<string, unknown>;
+}
+
+export async function fetchEvolveHealth(
+  promptName?: string
+): Promise<Record<string, unknown>> {
+  const qs = promptName ? `?prompt_name=${encodeURIComponent(promptName)}` : "";
+  const r = await fetch(`${API}/evolve/health${qs}`);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    throw new Error((data as Record<string, string>)?.detail || `HTTP ${r.status}`);
+  }
+  return data as Record<string, unknown>;
+}
+
+export async function postEvolveOptimize(
+  promptName?: string
+): Promise<Record<string, unknown>> {
+  const qs = promptName ? `?prompt_name=${encodeURIComponent(promptName)}` : "";
+  const r = await fetch(`${API}/evolve/optimize${qs}`, { method: "POST" });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    throw new Error((data as Record<string, string>)?.detail || `HTTP ${r.status}`);
+  }
+  return data as Record<string, unknown>;
+}
+
+export async function postEvolveRollback(
+  promptName: string,
+  version: number
+): Promise<Record<string, unknown>> {
+  const qs = `?prompt_name=${encodeURIComponent(promptName)}&version=${encodeURIComponent(
+    String(version)
+  )}`;
+  const r = await fetch(`${API}/evolve/rollback${qs}`, { method: "POST" });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    throw new Error((data as Record<string, string>)?.detail || `HTTP ${r.status}`);
+  }
+  return data as Record<string, unknown>;
+}
+
+export async function fetchEvolveEvents(params?: {
+  limit?: number;
+  prompt_name?: string;
+  event_type?: string;
+}): Promise<Record<string, unknown>> {
+  const limit = params?.limit ?? 100;
+  const q: string[] = [`limit=${encodeURIComponent(String(limit))}`];
+  if (params?.prompt_name) q.push(`prompt_name=${encodeURIComponent(params.prompt_name)}`);
+  if (params?.event_type) q.push(`event_type=${encodeURIComponent(params.event_type)}`);
+  const qs = q.length ? `?${q.join("&")}` : "";
+  const r = await fetch(`${API}/evolve/events${qs}`);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    throw new Error((data as Record<string, string>)?.detail || `HTTP ${r.status}`);
+  }
+  return data as Record<string, unknown>;
+}
