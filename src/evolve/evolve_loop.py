@@ -9,8 +9,8 @@
 使用方式：
 - EvolveLoop 在 factory.py 中创建并注入 pipeline
 - Pipeline 在信号产生时调用 loop.after_run() 收集信号
-- Pipeline 每次用户请求完成后调用 loop.record_request() 递增运行计数
-- loop.maybe_optimize() 在达到条件时自动触发优化
+- 各核心 API 完成后调用 loop.record_api_call() 记录 prompt 使用
+- 手动接口仍可通过 loop.maybe_optimize() 直接触发优化
 """
 
 from __future__ import annotations
@@ -34,8 +34,8 @@ class EvolveLoop:
 
     生命周期：
     1. after_run(): 在信号产生时调用，写入指标
-    2. record_request(): 每次用户请求完成后调用，递增计数并检查自动优化
-    3. maybe_optimize(): 检查是否满足触发条件，自动执行优化
+    2. record_api_call(): 每次核心 API 完成后调用，按参与 prompt 计数
+    3. maybe_optimize(): 手动或调试场景下触发优化
     4. promote_candidate() / rollback_candidate(): 手动或自动版本管理
     """
 
@@ -65,6 +65,8 @@ class EvolveLoop:
         self._optimize_interval = optimize_interval
 
         self._run_count = 0
+        self._api_call_counts: dict[str, int] = {}
+        self._prompt_usage_counts: dict[str, dict[int, int]] = {}
         self._lock = threading.Lock()
 
         # name → {version, pre_health, promoted_at_run, candidate_samples_at_promote}
@@ -131,11 +133,36 @@ class EvolveLoop:
                 consolidation_version=versions.get("consolidation", 0),
             )
 
-    def record_request(self) -> None:
-        """记录一次完整用户请求，并按请求频率检查 probation 和自动优化。"""
+    def record_api_call(
+        self,
+        *,
+        api_name: str,
+        prompt_versions_used: dict[str, int] | None = None,
+    ) -> None:
+        """记录一次核心 API 调用，并按参与 prompt 的使用次数触发自动优化。"""
+        normalized_api_name = str(api_name or "").strip() or "unknown"
+        versions: dict[str, int] = {}
+        for raw_name, raw_version in (prompt_versions_used or {}).items():
+            name = str(raw_name or "").strip()
+            if not name:
+                continue
+            try:
+                versions[name] = int(raw_version or 0)
+            except Exception:
+                versions[name] = 0
+
+        pending_prompt_checks: list[tuple[str, int, int]] = []
         with self._lock:
             self._run_count += 1
             count = self._run_count
+            self._api_call_counts[normalized_api_name] = self._api_call_counts.get(normalized_api_name, 0) + 1
+
+            for prompt_name, version in versions.items():
+                version_counts = self._prompt_usage_counts.setdefault(prompt_name, {})
+                version_counts[version] = version_counts.get(version, 0) + 1
+                usage_count = version_counts[version]
+                if self._auto_optimize and usage_count > 0 and usage_count % self._optimize_interval == 0:
+                    pending_prompt_checks.append((prompt_name, version, usage_count))
 
         if count > 0 and count % self._probation_check_interval == 0:
             try:
@@ -143,9 +170,33 @@ class EvolveLoop:
             except Exception:
                 logger.warning("Probation check failed", exc_info=True)
 
-        if self._auto_optimize and count > 0 and count % self._optimize_interval == 0:
-            logger.info("Run count %d reached optimize interval, triggering optimization", count)
-            self.maybe_optimize()
+        for prompt_name, version, usage_count in pending_prompt_checks:
+            try:
+                self._maybe_auto_optimize_prompt(
+                    prompt_name,
+                    expected_version=version,
+                    usage_count=usage_count,
+                )
+            except Exception:
+                logger.warning(
+                    "Auto prompt optimization failed prompt=%s version=%s usage_count=%s",
+                    prompt_name,
+                    version,
+                    usage_count,
+                    exc_info=True,
+                )
+
+    def record_request(
+        self,
+        prompt_versions_used: dict[str, int] | None = None,
+        *,
+        api_name: str = "chat",
+    ) -> None:
+        """兼容旧调用方的别名，语义等同于 record_api_call()."""
+        self.record_api_call(
+            api_name=api_name,
+            prompt_versions_used=prompt_versions_used,
+        )
 
     def collect_retrieval_adequacy(
         self,
@@ -170,6 +221,60 @@ class EvolveLoop:
             adequacy_version=adequacy_version,
             planning_version=planning_version,
         )
+
+    def _maybe_auto_optimize_prompt(
+        self,
+        prompt_name: str,
+        *,
+        expected_version: int,
+        usage_count: int,
+    ) -> OptimizationResult | None:
+        """当某个 prompt 的 API 使用次数达到阈值时，尝试仅优化该 prompt。"""
+        from src.evolve.prompt_registry import get_registry
+
+        registry = get_registry()
+        if registry is None or registry.is_immutable(prompt_name):
+            return None
+
+        active_version = registry.get_active_version_number(prompt_name)
+        if active_version != expected_version:
+            logger.debug(
+                "Skipping auto optimize for '%s': expected v%d but active is v%d",
+                prompt_name,
+                expected_version,
+                active_version,
+            )
+            return None
+
+        report = self._evaluator.evaluate_prompt(prompt_name, version=expected_version)
+        if report.sample_count < self._min_samples:
+            logger.debug(
+                "Skipping auto optimize for '%s' v%d: sample_count=%d < min_samples=%d",
+                prompt_name,
+                expected_version,
+                report.sample_count,
+                self._min_samples,
+            )
+            return None
+        if report.health_score >= 0.8:
+            logger.debug(
+                "Skipping auto optimize for '%s' v%d: health_score=%.2f",
+                prompt_name,
+                expected_version,
+                report.health_score,
+            )
+            return None
+
+        logger.info(
+            "Prompt '%s' v%d usage count reached %d, triggering auto optimization",
+            prompt_name,
+            expected_version,
+            usage_count,
+        )
+        result = self._optimizer.optimize(prompt_name)
+        if result.success and result.candidate_version:
+            self._try_promote(result)
+        return result
 
     # ═════════════════════════════════════════════════════════════
     # 优化触发
@@ -409,6 +514,11 @@ class EvolveLoop:
         reports = self._evaluator.evaluate_all()
         return {
             "run_count": self._run_count,
+            "api_call_counts": dict(self._api_call_counts),
+            "prompt_usage_counts": {
+                name: {str(version): count for version, count in sorted(version_counts.items())}
+                for name, version_counts in self._prompt_usage_counts.items()
+            },
             "auto_optimize": self._auto_optimize,
             "optimize_interval": self._optimize_interval,
             "pending_candidates": {

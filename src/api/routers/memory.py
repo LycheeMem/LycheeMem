@@ -26,10 +26,25 @@ from src.api.models import (
     MemorySynthesizeResponse,
     SkillsResponse,
 )
+from src.evolve.prompt_registry import select_prompt_versions
 
 logger = logging.getLogger("src.api")
 
 router = APIRouter()
+
+_MEMORY_SEARCH_API_PROMPTS: frozenset[str] = frozenset({
+    "search_coordinator",
+    "retrieval_planning",
+    "composite_filter",
+    "retrieval_adequacy_check",
+})
+_MEMORY_SYNTHESIZE_API_PROMPTS: frozenset[str] = frozenset({"synthesis"})
+_MEMORY_REASON_API_PROMPTS: frozenset[str] = frozenset({"reasoning"})
+_MEMORY_CONSOLIDATE_API_PROMPTS: frozenset[str] = frozenset({
+    "novelty_check",
+    "compact_encoding",
+    "consolidation",
+})
 
 
 def _normalize_graph_id(value: Any) -> str:
@@ -433,6 +448,24 @@ def _build_memory_search_context(
     }
 
 
+def _record_evolve_api_usage(
+    pipeline,
+    *,
+    api_name: str,
+    prompt_names: list[str] | tuple[str, ...] | set[str] | frozenset[str],
+    snapshot: dict[str, int] | None = None,
+) -> None:
+    """将一次 API 调用记到实际参与的 prompt 上。"""
+    recorder = getattr(pipeline, "record_api_usage", None)
+    if not callable(recorder):
+        return
+    prompt_versions_used = select_prompt_versions(prompt_names, snapshot=snapshot)
+    recorder(
+        api_name=api_name,
+        prompt_versions_used=prompt_versions_used,
+    )
+
+
 def run_memory_search(
     pipeline,
     req: MemorySearchRequest,
@@ -623,6 +656,9 @@ def run_memory_append_turn(
 def run_memory_consolidate(
     pipeline,
     req: MemoryConsolidateRequest,
+    *,
+    prompt_versions_snapshot: dict[str, int] | None = None,
+    api_name: str = "memory/consolidate",
 ) -> MemoryConsolidateResponse:
     """执行长期记忆固化，供 HTTP Router 与 MCP 共享。
 
@@ -659,6 +695,12 @@ def run_memory_consolidate(
                     skip_skills=req.skip_skills,
                     session_date=req.session_date,
                 )
+                _record_evolve_api_usage(
+                    pipeline,
+                    api_name=api_name,
+                    prompt_names=_MEMORY_CONSOLIDATE_API_PROMPTS,
+                    snapshot=prompt_versions_snapshot,
+                )
                 # 后台线程固化成功后推进水位线
                 store.set_last_consolidated_turn_index(req.session_id, raw_total)
             except Exception:
@@ -679,6 +721,12 @@ def run_memory_consolidate(
         turn_index_offset=effective_watermark,
         skip_skills=req.skip_skills,
         session_date=req.session_date,
+    )
+    _record_evolve_api_usage(
+        pipeline,
+        api_name=api_name,
+        prompt_names=_MEMORY_CONSOLIDATE_API_PROMPTS,
+        snapshot=prompt_versions_snapshot,
     )
     # 同步固化成功后推进水位线
     store.set_last_consolidated_turn_index(req.session_id, raw_total)
@@ -742,7 +790,15 @@ def _run_memory_reason(
 @router.post("/memory/search", response_model=MemorySearchResponse)
 async def memory_search(req: MemorySearchRequest, pipeline=Depends(get_pipeline)):
     """统一记忆检索：同时查询图谱和技能库。"""
-    return await run_in_threadpool(run_memory_search, pipeline, req)
+    prompt_versions_snapshot = select_prompt_versions(_MEMORY_SEARCH_API_PROMPTS)
+    response = await run_in_threadpool(run_memory_search, pipeline, req)
+    _record_evolve_api_usage(
+        pipeline,
+        api_name="memory/search",
+        prompt_names=_MEMORY_SEARCH_API_PROMPTS,
+        snapshot=prompt_versions_snapshot,
+    )
+    return response
 
 
 @router.post("/memory/smart-search", response_model=MemorySmartSearchResponse)
@@ -751,7 +807,18 @@ async def memory_smart_search(
     pipeline=Depends(get_pipeline),
 ):
     """实验性 one-shot 检索包装器：search，可选自动 synthesize。"""
-    return await run_in_threadpool(run_memory_smart_search, pipeline, req)
+    prompt_names = set(_MEMORY_SEARCH_API_PROMPTS)
+    if req.synthesize and req.mode != "raw":
+        prompt_names.update(_MEMORY_SYNTHESIZE_API_PROMPTS)
+    prompt_versions_snapshot = select_prompt_versions(prompt_names)
+    response = await run_in_threadpool(run_memory_smart_search, pipeline, req)
+    _record_evolve_api_usage(
+        pipeline,
+        api_name="memory/smart-search",
+        prompt_names=prompt_names,
+        snapshot=prompt_versions_snapshot,
+    )
+    return response
 
 
 # ── Memory: Synthesize ──
@@ -767,7 +834,15 @@ async def memory_synthesize(
     典型用法：衔接 POST /memory/search 的响应，将 graph_results / skill_results 传入。
     输出的 background_context 和 skill_reuse_plan 可直接传给 POST /memory/reason。
     """
-    return await run_in_threadpool(run_memory_synthesize, pipeline, req)
+    prompt_versions_snapshot = select_prompt_versions(_MEMORY_SYNTHESIZE_API_PROMPTS)
+    response = await run_in_threadpool(run_memory_synthesize, pipeline, req)
+    _record_evolve_api_usage(
+        pipeline,
+        api_name="memory/synthesize",
+        prompt_names=_MEMORY_SYNTHESIZE_API_PROMPTS,
+        snapshot=prompt_versions_snapshot,
+    )
+    return response
 
 
 # ── Memory: Append Turn ──
@@ -798,7 +873,15 @@ async def memory_reason(
 
     当 append_to_session=False 时：仅读取历史，不写入会话。
     """
-    return await run_in_threadpool(_run_memory_reason, pipeline, req)
+    prompt_versions_snapshot = select_prompt_versions(_MEMORY_REASON_API_PROMPTS)
+    response = await run_in_threadpool(_run_memory_reason, pipeline, req)
+    _record_evolve_api_usage(
+        pipeline,
+        api_name="memory/reason",
+        prompt_names=_MEMORY_REASON_API_PROMPTS,
+        snapshot=prompt_versions_snapshot,
+    )
+    return response
 
 
 # ── Memory: Consolidate ──
@@ -819,7 +902,14 @@ async def memory_consolidate(
         与 Pipeline 内部行为一致，适合生产调用（固化耗时通常超过 60 秒）。
     background=False：同步等待完成后返回详细结果，适合调试/验证。
     """
-    return await run_in_threadpool(run_memory_consolidate, pipeline, req)
+    prompt_versions_snapshot = select_prompt_versions(_MEMORY_CONSOLIDATE_API_PROMPTS)
+    return await run_in_threadpool(
+        run_memory_consolidate,
+        pipeline,
+        req,
+        prompt_versions_snapshot=prompt_versions_snapshot,
+        api_name="memory/consolidate",
+    )
 
 
 # ── Memory: Graph ──

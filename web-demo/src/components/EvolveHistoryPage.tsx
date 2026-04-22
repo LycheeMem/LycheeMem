@@ -17,6 +17,16 @@ const COMMON_PROMPTS = [
   "retrieval_additional_queries",
 ] as const;
 
+function preserveHardLineBreaks(text: string): string {
+  // react-markdown 默认会折叠单个换行；用“两个空格 + 换行”强制硬换行，
+  // 从而让 prompt（通常是纯文本）完整可读且不会看起来“被截断”。
+  return String(text || "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => `${line}  `)
+    .join("\n");
+}
+
 type EvolveEvent = {
   id: number;
   created_at: string;
@@ -183,7 +193,7 @@ function EventPreview({ ev }: { ev: EvolveEvent }) {
               <div>
                 <div className="trace-meta" style={{ marginBottom: 6 }}>原始</div>
                 <div className="evolve-prompt-md">
-                  <MarkdownRenderer content={origFull} />
+                  <MarkdownRenderer content={preserveHardLineBreaks(origFull)} />
                 </div>
               </div>
             )}
@@ -191,7 +201,7 @@ function EventPreview({ ev }: { ev: EvolveEvent }) {
               <div>
                 <div className="trace-meta" style={{ marginBottom: 6 }}>候选</div>
                 <div className="evolve-prompt-md">
-                  <MarkdownRenderer content={candFull} />
+                  <MarkdownRenderer content={preserveHardLineBreaks(candFull)} />
                 </div>
               </div>
             )}

@@ -25,10 +25,19 @@ from src.agents.search_coordinator import SearchCoordinator
 from src.agents.synthesizer_agent import SynthesizerAgent
 from src.agents.wm_manager import WMManager
 from src.core.state import PipelineState
-from src.evolve.prompt_registry import get_active_versions_snapshot
+from src.evolve.prompt_registry import get_active_versions_snapshot, select_prompt_versions
 from src.llm.base import _token_accumulator
 
 logger = logging.getLogger("src.pipeline")
+
+_CHAT_API_PROMPTS: frozenset[str] = frozenset({
+    "search_coordinator",
+    "retrieval_planning",
+    "composite_filter",
+    "retrieval_adequacy_check",
+    "synthesis",
+    "reasoning",
+})
 
 _SESSION_CONTINUATION_NEGATIVE_MARKERS: tuple[str, ...] = (
     "that's wrong",
@@ -450,7 +459,7 @@ class LycheePipeline:
             )
 
         self._maybe_record_session_continuation(result)
-        self._record_request_completion()
+        self._record_request_completion(result)
         return result
 
     async def arun(self, user_query: str, session_id: str) -> dict[str, Any]:
@@ -477,7 +486,7 @@ class LycheePipeline:
             )
 
         self._maybe_record_session_continuation(result)
-        self._record_request_completion()
+        self._record_request_completion(result)
         return result
 
     async def astream_steps(
@@ -572,7 +581,7 @@ class LycheePipeline:
                 )
 
             self._maybe_record_session_continuation(state)
-            self._record_request_completion()
+            self._record_request_completion(state)
             yield {"type": "done", "result": dict(state)}
         finally:
             _reset_once()
@@ -771,14 +780,33 @@ class LycheePipeline:
         except Exception:
             logger.warning("Evolve signal collection failed", exc_info=True)
 
-    def _record_request_completion(self) -> None:
-        """将 run_count 绑定到用户请求，而不是信号写入次数。"""
+    def _record_request_completion(self, result: dict[str, Any]) -> None:
+        """按 chat API 实际参与的 prompt 记录一次使用。"""
+        versions = select_prompt_versions(
+            _CHAT_API_PROMPTS,
+            snapshot=result.get("prompt_versions_used") if isinstance(result, dict) else None,
+        )
+        self.record_api_usage(
+            api_name="chat",
+            prompt_versions_used=versions,
+        )
+
+    def record_api_usage(
+        self,
+        *,
+        api_name: str,
+        prompt_versions_used: dict[str, int] | None = None,
+    ) -> None:
+        """对外暴露：记录一次 API 调用涉及的 prompt 使用。"""
         if self.evolve_loop is None:
             return
         try:
-            self.evolve_loop.record_request()
+            self.evolve_loop.record_api_call(
+                api_name=api_name,
+                prompt_versions_used=prompt_versions_used,
+            )
         except Exception:
-            logger.warning("Evolve request counting failed", exc_info=True)
+            logger.warning("Evolve API usage recording failed api=%s", api_name, exc_info=True)
 
     def _maybe_record_session_continuation(self, result: dict[str, Any]) -> None:
         """回复生成完毕后，若无显式反馈且不是首轮，记录隐式正样本。

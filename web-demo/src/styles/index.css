@@ -532,10 +532,54 @@ html, body {
   border-radius: var(--radius-sm);
   padding: 12px 14px;
   background: var(--bg-surface);
+  /* 超长 prompt：在容器内独立滚动，避免整页滚动失控 */
+  max-height: 55vh;
+  overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 .evolve-prompt-md .md-body {
+  font-size: 15px;
+  line-height: 1.75;
+}
+
+/* 自进化历史页整体字号/可读性提升（只影响该页面） */
+.evolve-history-outer {
+  font-size: 14px;
+  line-height: 1.7;
+}
+.evolve-history-outer .panel-header h2 {
+  font-size: 15px;
+}
+.evolve-history-outer .trace-step-label {
+  font-size: 14px;
+}
+.evolve-history-outer .trace-step-summary {
+  font-size: 13px;
+}
+.evolve-history-outer .trace-meta {
+  font-size: 12px;
+}
+.evolve-history-outer .trace-section-title {
+  font-size: 12px;
+}
+.evolve-history-outer .chip {
+  font-size: 12px;
+}
+.evolve-history-outer input {
+  font-size: 13px;
+}
+.evolve-history-outer .md-code-block code {
   font-size: 13px;
   line-height: 1.65;
+}
+
+/* 自进化历史页：超长 JSON 也独立滚动 */
+.evolve-history-outer .md-code-block {
+  max-height: 55vh;
+  overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* 引用块 */

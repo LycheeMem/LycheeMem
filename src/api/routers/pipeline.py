@@ -6,8 +6,15 @@ from fastapi import APIRouter, Depends, Query
 
 from src.api.dependencies import get_pipeline
 from src.api.models import DeleteResponse, PipelineStatusResponse
+from src.evolve.prompt_registry import select_prompt_versions
 
 router = APIRouter()
+
+_MEMORY_CONSOLIDATE_API_PROMPTS: frozenset[str] = frozenset({
+    "novelty_check",
+    "compact_encoding",
+    "consolidation",
+})
 
 
 @router.get("/pipeline/status", response_model=PipelineStatusResponse)
@@ -80,7 +87,14 @@ async def last_consolidation(
 @router.post("/memory/consolidate/{session_id}", response_model=DeleteResponse)
 async def trigger_consolidation(session_id: str, pipeline=Depends(get_pipeline)):
     """手动触发指定会话的固化（实体→图谱，技能→技能库）。"""
+    prompt_versions_snapshot = select_prompt_versions(_MEMORY_CONSOLIDATE_API_PROMPTS)
     result = pipeline.consolidate(session_id)
+    recorder = getattr(pipeline, "record_api_usage", None)
+    if callable(recorder) and not result.get("skipped_reason"):
+        recorder(
+            api_name="memory/consolidate/session",
+            prompt_versions_used=prompt_versions_snapshot,
+        )
     entities = result.get("entities_added", 0)
     skills = result.get("skills_added", 0)
     return DeleteResponse(

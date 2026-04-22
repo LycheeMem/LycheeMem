@@ -246,6 +246,32 @@ def get_active_versions_snapshot() -> dict[str, int]:
     return result
 
 
+def select_prompt_versions(
+    prompt_names: list[str] | tuple[str, ...] | set[str] | frozenset[str],
+    *,
+    snapshot: dict[str, int] | None = None,
+) -> dict[str, int]:
+    """从快照中筛选指定 prompt 的版本号。
+
+    若未提供 snapshot，则读取当前 active 版本快照。
+    返回独立 dict，便于调用方长期保留用于归因或计数。
+    """
+    source = snapshot if isinstance(snapshot, dict) else get_active_versions_snapshot()
+    if not source:
+        return {}
+
+    selected: dict[str, int] = {}
+    for raw_name in prompt_names:
+        name = str(raw_name or "").strip()
+        if not name or name not in source:
+            continue
+        try:
+            selected[name] = int(source.get(name, 0) or 0)
+        except Exception:
+            selected[name] = 0
+    return selected
+
+
 # ── 注册所有默认 prompt ──
 
 def _register_all_defaults(registry: PromptRegistry) -> None:
