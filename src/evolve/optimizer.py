@@ -112,6 +112,7 @@ class PromptOptimizer:
                     "health": health.__dict__,
                     "diagnosis": diagnosis,
                     "failures_count": len(failures),
+                    "active_prompt": current_text,
                 },
             ))
         except Exception:
@@ -155,8 +156,11 @@ class PromptOptimizer:
                 payload={
                     "changes": changes,
                     "reason": candidate.reason,
-                    "original_prompt_excerpt": current_text[:2000],
-                    "candidate_prompt_excerpt": revised_prompt[:2000],
+                    # 历史记录中保存完整 prompt，便于审计（不再截断）
+                    "original_prompt": current_text,
+                    "candidate_prompt": revised_prompt,
+                    "original_prompt_excerpt": current_text,
+                    "candidate_prompt_excerpt": revised_prompt,
                 },
             ))
         except Exception:
@@ -177,6 +181,8 @@ class PromptOptimizer:
                     payload={
                         "verdict": result.review_verdict,
                         "detail": review,
+                        "original_prompt": current_text,
+                        "candidate_prompt": revised_prompt,
                     },
                 ))
             except Exception:

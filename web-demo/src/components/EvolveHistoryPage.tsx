@@ -1,6 +1,21 @@
-import { ReloadOutlined } from "@ant-design/icons";
+import { PlayCircleOutlined, ReloadOutlined } from "@ant-design/icons";
 import { useEffect, useMemo, useState } from "react";
-import { fetchEvolveEvents } from "../api";
+import { fetchEvolveEvents, postEvolveOptimize } from "../api";
+import MarkdownRenderer from "./MarkdownRenderer";
+
+/** 与后端 registry 注册的 prompt 名一致，便于一键选择 */
+const COMMON_PROMPTS = [
+  "reasoning",
+  "synthesis",
+  "search_coordinator",
+  "retrieval_planning",
+  "retrieval_adequacy_check",
+  "compact_encoding",
+  "consolidation",
+  "wm_compression",
+  "composite_filter",
+  "retrieval_additional_queries",
+] as const;
 
 type EvolveEvent = {
   id: number;
@@ -89,6 +104,7 @@ function MiniKv({ k, v }: { k: string; v: React.ReactNode }) {
 
 function EventPreview({ ev }: { ev: EvolveEvent }) {
   const payload = safeObj(ev.payload);
+  const activePromptDiag = pickString(payload.active_prompt);
 
   // Common: health report (when available)
   const health = safeObj(payload.health);
@@ -96,9 +112,11 @@ function EventPreview({ ev }: { ev: EvolveEvent }) {
   const samples = pickNumber(health.sample_count);
   const failures = pickNumber(health.failure_count);
 
-  // Candidate excerpts
-  const origExcerpt = pickString(payload.original_prompt_excerpt);
-  const candExcerpt = pickString(payload.candidate_prompt_excerpt);
+  // 完整 prompt：新事件用 original_prompt / candidate_prompt；旧库可能仅有 *_excerpt
+  const origFull =
+    pickString(payload.original_prompt) || pickString(payload.original_prompt_excerpt);
+  const candFull =
+    pickString(payload.candidate_prompt) || pickString(payload.candidate_prompt_excerpt);
   const changes = Array.isArray(payload.changes) ? (payload.changes as unknown[]) : [];
 
   // Probation numbers
@@ -110,6 +128,14 @@ function EventPreview({ ev }: { ev: EvolveEvent }) {
 
   return (
     <div className="trace-detail">
+      {activePromptDiag && (
+        <>
+          <div className="trace-section-title">诊断时 Active Prompt（完整）</div>
+          <div className="evolve-prompt-md">
+            <MarkdownRenderer content={activePromptDiag} />
+          </div>
+        </>
+      )}
       {(healthScore != null || samples != null || failures != null) && (
         <>
           {healthScore != null && (
@@ -139,31 +165,34 @@ function EventPreview({ ev }: { ev: EvolveEvent }) {
 
       {changes.length > 0 && (
         <>
-          <div className="trace-section-title">变更要点</div>
-          {(changes.slice(0, 5) as Record<string, unknown>[]).map((c, idx) => (
+          <div className="trace-section-title">变更要点（全部）</div>
+          {(changes as Record<string, unknown>[]).map((c, idx) => (
             <div key={idx} className="trace-item">
               <span className="trace-item-name">{pickString(c.reason) || `Change#${idx + 1}`}</span>
               {pickString(c.type) && <span className="trace-tag">{pickString(c.type)}</span>}
             </div>
           ))}
-          {changes.length > 5 && <div className="trace-meta">… 还有 {changes.length - 5} 条</div>}
         </>
       )}
 
-      {(origExcerpt || candExcerpt) && (
+      {(origFull || candFull) && (
         <>
-          <div className="trace-section-title">Prompt 对比（节选）</div>
+          <div className="trace-section-title">Prompt 对比（完整）</div>
           <div className="trace-detail" style={{ gap: 10 }}>
-            {origExcerpt && (
+            {origFull && (
               <div>
-                <div className="trace-meta" style={{ marginBottom: 6 }}>原始（节选）</div>
-                <JsonBlock value={origExcerpt} />
+                <div className="trace-meta" style={{ marginBottom: 6 }}>原始</div>
+                <div className="evolve-prompt-md">
+                  <MarkdownRenderer content={origFull} />
+                </div>
               </div>
             )}
-            {candExcerpt && (
+            {candFull && (
               <div>
-                <div className="trace-meta" style={{ marginBottom: 6 }}>候选（节选）</div>
-                <JsonBlock value={candExcerpt} />
+                <div className="trace-meta" style={{ marginBottom: 6 }}>候选</div>
+                <div className="evolve-prompt-md">
+                  <MarkdownRenderer content={candFull} />
+                </div>
               </div>
             )}
           </div>
@@ -181,6 +210,10 @@ export default function EvolveHistoryPage() {
   const [typeFilter, setTypeFilter] = useState<string>("");
   const [limit, setLimit] = useState<number>(200);
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
+
+  const [optimizePrompt, setOptimizePrompt] = useState("");
+  const [optimizing, setOptimizing] = useState(false);
+  const [optimizeHint, setOptimizeHint] = useState<string>("");
 
   async function load() {
     setLoading(true);
@@ -229,9 +262,42 @@ export default function EvolveHistoryPage() {
     setTypeFilter((cur) => (cur === t ? "" : t));
   }
 
+  async function runOptimize() {
+    setOptimizing(true);
+    setOptimizeHint("");
+    setError("");
+    try {
+      const name = optimizePrompt.trim();
+      const res = await postEvolveOptimize(name || undefined);
+      const enabled = (res as Record<string, unknown>).enabled;
+      if (enabled === false) {
+        setOptimizeHint("当前未启用 evolve（后端未注入 evolve_loop）。");
+        return;
+      }
+      const results = (res as Record<string, unknown>).results;
+      if (Array.isArray(results) && results.length > 0) {
+        const lines = results.map((r: Record<string, unknown>) => {
+          const pn = String(r.prompt_name ?? "");
+          const ok = r.success === true ? "成功" : "未成功";
+          const cv = r.candidate_version != null ? ` 候选 v${r.candidate_version}` : "";
+          const msg = r.message != null ? ` — ${String(r.message)}` : "";
+          return `${pn || "?"}: ${ok}${cv}${msg}`;
+        });
+        setOptimizeHint(lines.join("\n"));
+      } else {
+        setOptimizeHint(String((res as Record<string, unknown>).error || "已请求优化，请查看下方事件列表。"));
+      }
+      await load();
+    } catch (e) {
+      setError((e as Error)?.message || String(e));
+    } finally {
+      setOptimizing(false);
+    }
+  }
+
   return (
-    <div style={{ padding: 14, width: "100%" }}>
-      <div className="panel" style={{ width: "100%" }}>
+    <div className="evolve-history-outer" style={{ padding: 14, width: "100%" }}>
+      <div className="panel evolve-history-panel" style={{ width: "100%" }}>
         <div className="panel-header">
           <h2>🧬 自进化历史</h2>
           <div className="panel-actions" style={{ marginLeft: "auto", alignItems: "center" }}>
@@ -254,6 +320,75 @@ export default function EvolveHistoryPage() {
         </div>
 
         {error && <div className="trace-empty" style={{ color: "#ff4d4f" }}>{error}</div>}
+
+        <div
+          style={{
+            margin: "12px 12px 0",
+            padding: "12px 14px",
+            borderRadius: "var(--radius-sm)",
+            border: "1px solid var(--border)",
+            background: "var(--bg-card)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+          }}
+        >
+          <div className="trace-section-title" style={{ margin: 0 }}>
+            手动优化
+          </div>
+          <div className="trace-meta">
+            留空则由后端按 health 自动选择；或点选下方快捷名，再点「运行优化」。
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+            <input
+              value={optimizePrompt}
+              onChange={(e) => setOptimizePrompt(e.target.value)}
+              placeholder="优化模块（可空）"
+              style={{
+                minWidth: 220,
+                flex: "1 1 200px",
+                padding: "6px 10px",
+                borderRadius: "var(--radius-xs)",
+                border: "1px solid var(--border-light)",
+                background: "var(--bg-surface)",
+                color: "var(--text-primary)",
+              }}
+            />
+            <button
+              type="button"
+              className="crud-btn crud-btn-primary crud-btn-sm"
+              onClick={() => void runOptimize()}
+              disabled={optimizing || loading}
+            >
+              <PlayCircleOutlined /> {optimizing ? "运行中…" : "运行优化"}
+            </button>
+          </div>
+          <div className="status-chips" style={{ flexWrap: "wrap" }}>
+            <span className="chip" style={{ opacity: 0.85 }}>快捷：</span>
+            {COMMON_PROMPTS.map((p) => (
+              <span
+                key={p}
+                className="chip"
+                style={{
+                  cursor: "pointer",
+                  borderColor: optimizePrompt === p ? "rgba(99,102,241,0.8)" : undefined,
+                  color: optimizePrompt === p ? "#c7d2fe" : undefined,
+                }}
+                onClick={() => setOptimizePrompt((cur) => (cur === p ? "" : p))}
+                title="填入 / 取消"
+              >
+                {p}
+              </span>
+            ))}
+          </div>
+          {optimizeHint && (
+            <div className="md-code-block" style={{ margin: 0 }}>
+              <pre style={{ margin: 0, padding: "10px 12px" }}>
+                <code style={{ whiteSpace: "pre-wrap" }}>{optimizeHint}</code>
+              </pre>
+            </div>
+          )}
+        </div>
 
         {/* Quick filters (chips) */}
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", padding: "10px 12px 0" }}>
@@ -369,7 +504,7 @@ export default function EvolveHistoryPage() {
               </summary>
               <div className="trace-step-body" style={{ gap: 10 }}>
                 <EventPreview ev={ev} />
-                <div className="trace-section-title">原始细节（展开可用于排查）</div>
+                <div className="trace-section-title">完整事件数据（JSON）</div>
                 <JsonBlock value={ev.payload} />
               </div>
             </details>

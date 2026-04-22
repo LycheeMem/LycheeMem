@@ -10,6 +10,7 @@ export default defineConfig({
       "/sessions": "http://localhost:8000",
       "/memory": "http://localhost:8000",
       "/pipeline": "http://localhost:8000",
+      "/evolve": "http://localhost:8000",
     },
   },
 });

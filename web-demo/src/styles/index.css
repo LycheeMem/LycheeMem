@@ -162,7 +162,25 @@ html, body {
 /* 单页面模式（例如“自进化历史”），避免三列网格挤压内容 */
 .app-main-single {
   grid-template-columns: 1fr !important;
-  grid-template-rows: 1fr !important;
+  /* minmax(0,1fr) 避免 grid 行被内容撑开导致整页无法出现滚动条 */
+  grid-template-rows: minmax(0, 1fr) !important;
+  /* 关键：在 #app-body overflow:hidden 下，子项需 min-height:0 才会出现可滚动区 */
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  align-content: start;
+}
+
+#app-main.app-main-single > * {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* 自进化历史页内 panel 勿再 hidden，否则长列表在内部无法滚动/裁切；由 #app-main 负责滚动 */
+#app-main.app-main-single .evolve-history-panel {
+  overflow: visible;
+  min-height: min-content;
 }
 
 /* ═══ SESSION SIDEBAR ═══ */
@@ -506,6 +524,18 @@ html, body {
   border: none;
   border-top: 1px solid var(--border);
   margin: 0.8em 0;
+}
+
+/* 自进化历史：Prompt 对比用 Markdown 渲染的容器 */
+.evolve-prompt-md {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  background: var(--bg-surface);
+}
+.evolve-prompt-md .md-body {
+  font-size: 13px;
+  line-height: 1.65;
 }
 
 /* 引用块 */
