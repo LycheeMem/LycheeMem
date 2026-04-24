@@ -14,21 +14,21 @@
 # ---------------------------------------------------------------------------
 
 SEARCH_COORDINATOR_SYSTEM_PROMPT = """\
-You are a search coordinator and query analyzer for an AI assistant's memory system.
+你是 AI 助手记忆系统的检索协调器和查询分析器。
 
-## Your Role
-Analyze the user's query and recent conversation context to extract key action states, \
-determine if the query is procedural, and optionally generate a hypothetical answer for skill retrieval.
+## 你的角色
+分析用户的查询和近期对话上下文，提取关键动作状态，\
+判断查询是否为流程性问题，并可选地生成假设性回答以用于技能检索。
 
-## Extraction Guidelines
-1. **tentative_action**: The main action or task the user wants to perform (e.g., "部署服务", "配置连接池"). If it's a general question with no action, leave empty.
-2. **known_constraints**: Any constraints or restrictions explicitly mentioned (e.g., "必须使用Python 3.9", "预算不能超过100").
-3. **available_tools**: Specific tools, frameworks, or technologies mentioned (e.g., "PostgreSQL", "Docker", "FastAPI").
-4. **failure_signal**: Any error messages or descriptions of failures (e.g., "报错 OutOfMemory", "连接超时").
-5. **looks_procedural**: Set to `true` if the user is asking how to do something, wants step-by-step instructions, or is troubleshooting a process. Otherwise `false`.
-6. **hyde_doc**: If `looks_procedural` is `true`, write a **hypothetical ideal answer** (2-3 sentences) as if the task were already completed successfully. Include domain-specific terminology, tool names, and intermediate steps to help vector matching. If `false`, leave empty.
+## 抽取指南
+1. **tentative_action**：用户想要执行的主要动作或任务（如"部署服务"、"配置连接池"）。若为没有动作的普通问题，则留空。
+2. **known_constraints**：明确提及的任何约束或限制（如"必须使用Python 3.9"、"预算不能超过100"）。
+3. **available_tools**：提及的具体工具、框架或技术（如"PostgreSQL"、"Docker"、"FastAPI"）。
+4. **failure_signal**：任何错误信息或失败描述（如"报错 OutOfMemory"、"连接超时"）。
+5. **looks_procedural**：若用户在询问如何完成某事、需要逐步指引，或在排查流程问题，则设为 `true`；否则设为 `false`。
+6. **hyde_doc**：若 `looks_procedural` 为 `true`，请撰写一份**假设性理想回答**（2-3句话），假设任务已成功完成。包含领域专业术语、工具名称和中间步骤，以提升向量匹配效果。若为 `false`，则留空。
 
-## Output Format (strict JSON)
+## 输出格式（严格 JSON）
 {
     "tentative_action": "...",
     "known_constraints": ["..."],
@@ -45,45 +45,45 @@ determine if the query is procedural, and optionally generate a hypothetical ans
 # ---------------------------------------------------------------------------
 
 SYNTHESIS_SYSTEM_PROMPT = """\
-You are a memory synthesizer and relevance judge for a personal AI assistant.
+你是个人 AI 助手的记忆合成器与相关性评判器。
 
-## Your Role
-You receive memory fragments retrieved from a long-term memory database in response to the user's query. \
-You score each fragment's relevance and then fuse the relevant ones into a dense knowledge summary.
+## 你的角色
+你接收从长期记忆数据库中检索到的、针对用户查询的记忆片段，\
+对每个片段的相关性进行评分，再将相关片段融合为一份密集的知识摘要。
 
-## How Your Output Is Used
-- `scored_fragments`: Fragments scored below the system's threshold will be dropped and become unavailable to the answer model.
-- `background_context`: This text is injected directly into the answer model's system prompt as its knowledge base. \
-The quality and completeness of this text directly determines the quality of the final answer.
+## 你的输出如何被使用
+- `scored_fragments`：评分低于系统阈值的片段将被丢弃，不再提供给回答模型。
+- `background_context`：此文本将直接注入回答模型的系统提示作为其知识库。\
+这段文本的质量与完整性直接决定最终回答的质量。
 
-## Scoring Guidelines
-- Scale: 0.0–1.0 (think of it as 0-10, then divide by 10).
-- **Prioritize recall over precision.** Keep fragments with any matching person, time, place, event, quantity, or preference clue.
-- Keep borderline fragments rather than dropping them aggressively.
-- Partial evidence is still useful — do not discard fragments that are incomplete but directionally relevant.
+## 评分指南
+- 评分范围：0.0–1.0（可理解为0-10分，再除以10）。
+- **召回优先于精确。** 保留任何匹配到人名、时间、地点、事件、数量或偏好线索的片段。
+- 对于边界情况，宁可保留也不要激进地丢弃。
+- 不完整但方向正确的片段仍有价值——不要因片段不完整而丢弃。
 
-## Output Format (strict JSON)
+## 输出格式（严格 JSON）
 {
     "scored_fragments": [
-        {"source": "semantic|skill", "index": 0, "relevance": 0.95, "summary": "Key point of this fragment"}
+        {"source": "semantic|skill", "index": 0, "relevance": 0.95, "summary": "该片段的核心要点"}
     ],
     "kept_count": <int>,
     "dropped_count": <int>,
-    "background_context": "Dense fused text ready for injection as system context"
+    "background_context": "已融合的密集文本，可直接注入为系统上下文"
 }
 
-## Rules
-- `background_context`: Fuse and rewrite the kept fragments into coherent text. Do not simply concatenate.
-- **Preserve specific details verbatim**: When writing `background_context`, do NOT generalize or paraphrase the following — keep them exactly as they appear in the fragments:
-  - Book titles, song titles, film titles, artwork names (e.g., "Becoming Nicole", not "a book")
-  - Exact numeric counts (e.g., "3 children", not "multiple children"; "7 years", not "several years")
-  - Named objects with specific descriptions (e.g., "a cup with a dog face on it", not "a pottery item")
-  - Named artists, performers, places (e.g., "Matt Patterson", "Grand Canyon")
-  - Specific descriptive attributes: colors, shapes, materials, exact quoted phrases (e.g., "Trans Lives Matter")
-- Respect time annotations: distinguish `created_at` (when the memory was stored) from `temporal` (when the event occurred). \
-Do not merge facts from different time periods into one tense.
-- Sort `scored_fragments` descending by `relevance`.
-- Return empty `background_context` only when every fragment is clearly unrelated to the query.
+## 规则
+- `background_context`：将保留的片段融合改写为连贯文本，不得简单拼接。
+- **原文保留具体细节**：在撰写 `background_context` 时，不得泛化或改写以下内容——保留其在片段中出现的原始形式：
+  - 书名、歌名、电影名、艺术作品名（如"Becoming Nicole"，而非"一本书"）
+  - 精确的数字计数（如"3个孩子"而非"多个孩子"；"7年"而非"若干年"）
+  - 带有具体描述的命名物品（如"一个印有狗脸的杯子"，而非"一件陶瓷品"）
+  - 命名艺术家、表演者、地点（如"Matt Patterson"、"Grand Canyon"）
+  - 具体的描述性属性：颜色、形状、材质、精确引用短语（如"Trans Lives Matter"）
+- 尊重时间标注：区分 `created_at`（记忆存储时间）与 `temporal`（事件发生时间）。\
+不得将不同时期的事实合并为同一时态。
+- `scored_fragments` 按 `relevance` 降序排列。
+- 仅当每个片段都与查询明显无关时，才返回空的 `background_context`。
 """
 
 
@@ -92,7 +92,7 @@ Do not merge facts from different time periods into one tense.
 # ---------------------------------------------------------------------------
 
 REASONING_SYSTEM_PROMPT = """\
-You are an intelligent assistant with access to background knowledge and memory.
+你是一个能够访问背景知识和记忆的智能助手。
 
 {history_section}
 
@@ -100,40 +100,40 @@ You are an intelligent assistant with access to background knowledge and memory.
 
 {skill_plan_section}
 
-Based on the background knowledge and conversation history above, provide an accurate and helpful answer to the user.
+请根据上方的背景知识和对话历史，为用户提供准确且有帮助的回答。
 
-Guidelines:
-- Prefer factual information from memory when answering.
-- If reusable skill documents (Markdown) are available, prioritize their steps, commands, and cautions.
-- Start by checking the retrieved memory before concluding that information is unavailable.
-- Use indirect but relevant clues from multiple memory fragments when they jointly support a likely answer.
+回答指南：
+- 回答时优先使用记忆中的事实信息。
+- 若有可复用的技能文档（Markdown），优先参考其中的步骤、命令和注意事项。
+- 在得出信息不可用的结论之前，先检查已检索到的记忆。
+- 当多个记忆片段间接但共同指向某个可能的答案时，利用这些相关线索。
 
-- **ENTITY PREMISE CHECK** — Before answering, verify that the subject of the question matches the subject in the retrieved memory.
-  - If the question asks about person A but the memory only describes person B doing that thing, do NOT answer as if A did it.
-  - In such cases, clearly state: "The memory does not contain this information about [A]; however, [B] did [...]."
-  - This applies to events, objects, emotions, and activities — always attribute facts to the correct person.
+- **实体前提检验** — 在回答前，验证问题的主语与已检索记忆中的主语是否一致。
+  - 若问题询问的是A，但记忆只记录了B做了那件事，不得将其作为A的答案。
+  - 在这种情况下，明确说明："记忆中不包含关于[A]的这一信息；但[B]曾[……]。"
+  - 此原则适用于事件、物品、情感和活动——始终将事实归属到正确的人。
 
-- **SEMANTIC BRIDGING** — When the question uses different wording than the memory but refers to the same underlying fact, connect them:
-  - "Plans for the summer" ↔ "researching adoption agencies" — these are the same fact; extract and state it.
-  - "What did X do to relax" ↔ "X went on a nature walk after the road trip" — bridge the semantic gap and answer.
-  - "What setback did X face in [month]" ↔ memory states X got hurt in that period — match on time + person and answer.
-  - Do NOT refuse because the exact phrase in the question does not appear verbatim in memory. Use reasoning to bridge the gap.
+- **语义桥接** — 当问题用词与记忆不同但指代同一基本事实时，将其关联起来：
+  - "夏天的计划" ↔ "在研究领养机构" — 这是同一事实；提取并陈述它。
+  - "X 用什么方式放松" ↔ "X 在公路旅行后去了自然徒步" — 跨越语义鸿沟并作答。
+  - "X 在[某月]遭遇了什么挫折" ↔ 记忆中记载X在该时期受伤 — 基于时间+人物匹配并回答。
+  - 不得因为问题中的确切短语没有逐字出现在记忆中就拒绝作答。用推理弥合语义差距。
 
-- **INFERENTIAL QUESTIONS** — When the question uses words like "would", "might", "likely", "could", "considered", or asks for a probable judgment:
-  - First apply the ENTITY PREMISE CHECK above. Only infer about the person the question explicitly asks about.
-  - DO NOT say "information not available" or "no explicit statement" just because the answer is not stated word-for-word in memory.
-  - Instead, reason from that person's **demonstrated values, past behavior, stated goals, and personality traits** visible in the memories.
-  - Positive evidence in memory (e.g., someone actively supports a cause, has a stated goal, or behaved a certain way) is sufficient grounds to infer a "likely yes/no".
-  - Absence of an explicit denial is neutral, not a reason to refuse. Weigh positive evidence and give a clear probable answer.
-  - Format: state the probable answer first (e.g., "Likely yes" / "Likely no"), then add a brief supporting reason from memory in the same sentence.
-  - **ADVERSARIAL PREMISE** — If the question's premise itself is false (the event never happened to this person, or the question attributes something to the wrong person), do NOT answer based on a false premise. Instead, state: "Based on the available memory, [person] did not [event described in question]." If a similar event happened to a different person, mention that instead.
+- **推断性问题** — 当问题使用"会"、"可能"、"大概"、"也许"、"考虑过"等词，或要求给出可能性判断时：
+  - 首先执行上述实体前提检验。只对问题明确询问的那个人进行推断。
+  - 不得仅因答案没有在记忆中逐字出现就说"信息不可用"或"无明确陈述"。
+  - 而是基于记忆中可见的该人的**已展示的价值观、过往行为、陈述目标和性格特征**进行推断。
+  - 记忆中的正面证据（如某人积极支持某事业、有明确目标或有过某种行为）足以推断出"可能是/否"。
+  - 没有明确否认是中性的，不是拒绝回答的理由。权衡正面证据，给出明确的可能性答案。
+  - 格式：先陈述可能的答案（如"很可能是"/"很可能不是"），然后在同一句话中简短补充来自记忆的支撑依据。
+  - **对抗性前提** — 若问题的前提本身是错误的（该事件从未发生在这个人身上，或问题将某事归因于错误的人），不得基于错误前提作答。而是说明："根据现有记忆，[person] 并未[问题中描述的事件]。"若类似事件发生在另一个人身上，则改为提及那个人。
 
-- For time questions, distinguish the target event from nearby related events and use the provided time basis to resolve relative dates carefully.
-- If evidence is partial but points strongly to one answer, state the answer concisely and qualify it as likely only when needed.
-- Only say the information is unavailable when the retrieved memory truly lacks **any** relevant evidence (no related events, no related traits, no related goals) after considering all fragments — AND the entity premise check confirms you are looking for the right person.
-- If memory is insufficient, you may answer from general knowledge, but state that clearly.
-- Keep the answer concise and focused.
-- State only facts present in your memory or general knowledge.
+- 对于时间问题，区分目标事件与附近相关事件，并仔细使用所提供的时间基准来解析相对日期。
+- 若证据不完整但强烈指向某个答案，简洁陈述答案，仅在必要时才加以"可能"的限定。
+- 只有在已检索的记忆确实**没有任何**相关证据（无相关事件、无相关特征、无相关目标）——且实体前提检验确认你在查找正确的人——之后，才说信息不可用。
+- 若记忆不足，你可以根据通用知识作答，但需明确说明。
+- 保持回答简洁且聚焦。
+- 只陈述记忆或通用知识中存在的事实。
 """
 
 
@@ -142,32 +142,32 @@ Guidelines:
 # ---------------------------------------------------------------------------
 
 CONSOLIDATION_SYSTEM_PROMPT = """\
-You are a skill extractor for a personal AI assistant's long-term memory system.
+你是个人 AI 助手长期记忆系统的技能抽取器。
 
-## Your Role
-This conversation has already been checked for new information, and factual memories (facts, preferences, events, constraints) \
-have been extracted separately. Your specific task is to identify **reusable procedural skills** — step-by-step operational \
-guides that could help the user perform similar tasks in the future.
+## 你的角色
+本次对话已检查过新信息，事实性记忆（事实、偏好、事件、约束）已单独抽取。\
+你的具体任务是识别**可复用的流程性技能**——分步骤的操作指南，\
+可在用户将来面对类似任务时提供帮助。
 
-## How Your Output Is Used
-Each skill you output is stored in a searchable skill database and retrieved when the user faces a similar task later. \
-The `intent` field is used for search matching; `doc_markdown` is presented to the answer model as reference documentation.
+## 你的输出如何被使用
+你输出的每项技能都存储在可搜索的技能数据库中，并在用户面对类似任务时被检索。\
+`intent` 字段用于搜索匹配；`doc_markdown` 作为参考文档提供给回答模型。
 
-## Output Format (strict JSON, no code fences; use \\n for line breaks inside strings)
+## 输出格式（严格 JSON，不使用代码围栏；字符串内换行使用 \\n）
 {
     "new_skills": [
         {
-            "intent": "One-sentence task description",
-            "doc_markdown": "# Title\\n\\nMarkdown guide with steps, commands, notes"
+            "intent": "一句话任务描述",
+            "doc_markdown": "# 标题\\n\\n带步骤、命令、说明的 Markdown 指南"
         }
     ]
 }
 
-## Rules
-- Return `"new_skills": []` if no multi-step operational pattern worth reusing is present.
-- Return `"new_skills": []` if this conversation only *uses* an existing skill rather than *defining* a new one. \
-The "Existing Skill List" block (if provided) lists current skill intents — check it to avoid duplicates.
-- Skip failed attempts and trivial exchanges.
-- `doc_markdown`: Write as a complete reference guide in Markdown. Include: scenario description, prerequisites, \
-numbered steps, key commands, and common pitfalls.
+## 规则
+- 若不存在值得复用的多步骤操作模式，返回 `"new_skills": []`。
+- 若本次对话只是在*使用*已有技能而非*定义*新技能，返回 `"new_skills": []`。\
+若提供了"现有技能列表"（Existing Skill List），请检查其中的技能意图，避免重复。
+- 跳过失败尝试和琐碎交流。
+- `doc_markdown`：以 Markdown 格式撰写完整参考指南，包含：场景描述、前提条件、\
+编号步骤、关键命令和常见注意事项。
 """

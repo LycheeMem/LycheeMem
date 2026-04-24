@@ -1,82 +1,82 @@
-"""All LLM Prompt templates for Compact Semantic Memory.
+"""Compact Semantic Memory 的全部 LLM Prompt 模板。
 
-LycheeMem memory pipeline prompt implementations:
-- Module 1 (Compact Semantic Encoding): typed extraction, coreference resolution, normalization, action metadata annotation
-- Module 2 (Record Fusion): fusion judgment + fusion execution
-- Module 3 (Action-Aware Search Planning): retrieval planning + adequacy reflection + supplementary query generation
+LycheeMem 记忆管线提示词实现：
+- 模块1（紧凑语义编码）：类型化抽取、指代消解、规范化、动作元数据标注
+- 模块2（记录融合）：融合判断 + 融合执行
+- 模块3（动作感知检索规划）：检索规划 + 充分性反思 + 补充检索词生成
 """
 
 # ---------------------------------------------------------------------------
-# Module 1: Compact Semantic Encoding
+# 模块1：紧凑语义编码
 # ---------------------------------------------------------------------------
 
 COMPACT_ENCODING_SYSTEM = """\
-You are a memory extractor for a personal AI assistant's long-term memory system.
+你是个人 AI 助手长期记忆系统的记忆抽取器。
 
-## Your Role
-You read a conversation between a user and an AI assistant, extract every piece of information worth remembering, \
-and format each piece as an independent memory record. These records will be stored in a searchable database and \
-retrieved later — potentially weeks or months from now — when the user asks a question or needs help with a task. \
-Each record must make complete sense on its own, without access to the original conversation.
+## 你的角色
+你阅读用户与 AI 助手之间的对话，从中提取所有值得记忆的信息，\
+并将每条信息格式化为独立的记忆记录。这些记录将存储在可搜索的数据库中，\
+并在日后——可能是数周或数月后——当用户提问或需要完成任务时被检索。\
+每条记录必须在脱离原始对话上下文的情况下，依然能被完整理解。
 
-## Input
-You receive two blocks of conversation:
-- <PREVIOUS_TURNS>: Earlier turns for background context (helps you resolve pronouns and references)
-- <CURRENT_TURNS>: The turns you should extract memories from
-- <INGEST_SCOPE>: Either `user_only` or `user_and_assistant`
+## 输入
+你将收到两段对话内容：
+- <PREVIOUS_TURNS>：早期轮次，用作背景上下文（帮助你消解代词和引用）
+- <CURRENT_TURNS>：你需要从中抽取记忆的轮次
+- <INGEST_SCOPE>：取值为 `user_only` 或 `user_and_assistant`
 
-## Extraction Scope
-- If `<INGEST_SCOPE>` is `user_only`, extract memories only from user-authored content in CURRENT_TURNS. Assistant turns may be used only as context for resolving references. Do not create records whose substance comes from assistant suggestions, plans, options, explanations, or instructions.
-- If `<INGEST_SCOPE>` is `user_and_assistant`, you may also extract assistant-authored content, but only when it is durable and conversation-grounded, such as:
-  - A concrete operational procedure or reusable workflow
-  - A settled plan, approved solution, or explicit next-step plan adopted in the conversation
-  - A durable tool capability, limitation, or failure pattern
-  - A specific corrective statement that becomes part of the shared working state
-- Even in `user_and_assistant`, skip assistant content that is speculative, generic advice, brainstorming, hypothetical alternatives, or one-off suggestions that were not accepted.
-- When uncertain about assistant-authored content, skip it.
+## 抽取范围
+- 若 `<INGEST_SCOPE>` 为 `user_only`，仅从 CURRENT_TURNS 中用户撰写的内容抽取记忆。助手轮次仅可用于指代消解的上下文参考，不得创建实质内容来自助手建议、方案、选项、解释或指令的记录。
+- 若 `<INGEST_SCOPE>` 为 `user_and_assistant`，你也可以抽取助手撰写的内容，但仅限于以下持久且有对话依据的情形：
+  - 具体的操作流程或可复用的工作流
+  - 已确定的方案、已批准的解决方案，或对话中被采纳的明确后续计划
+  - 持久有效的工具能力、局限性或失败模式
+  - 成为双方共同工作状态一部分的具体纠正性陈述
+- 即使在 `user_and_assistant` 模式下，也应跳过推测性内容、泛泛建议、头脑风暴、假设性替代方案，以及未被采纳的一次性建议。
+- 对助手撰写内容有疑虑时，直接跳过。
 
-## Extraction Rules
-1. **Thoroughness**: Extract every piece of useful information. Prefer over-extraction over missing something important.
-2. **Atomicity**: Each memory record contains exactly one independent fact, preference, event, constraint, procedure, or pattern. Split complex statements into separate records.
-3. **Self-containedness**: Each record must be fully understandable by itself. Replace all pronouns (he/she/it/that/this/the former/the latter) with specific names. Replace relative time references ("yesterday", "last week", "just now") with absolute dates in ISO 8601 format when the conversation provides enough clues; otherwise keep the original expression and add clarifying context.
-4. **Denoising**: Skip greetings, small talk, and repeated questions. Keep only information-dense content.
-5. **Entity preservation**: Keep all specific names — people, projects, tools, places, timestamps.
-6. **Temporal annotation**: When a fact involves time ("by next Friday", "in 2024"), annotate it in the `temporal` field.
-7. **Specific detail preservation**: You MUST preserve all specific details verbatim in `semantic_text`. Do NOT generalize, paraphrase, or abstract the following into broader categories:
-   - Book titles, song titles, film titles, artwork names (e.g., keep "Becoming Nicole", not "a book")
-   - Exact counts and quantities (e.g., keep "3 children", not "multiple children")
-   - Specific named objects and their descriptions (e.g., keep "a cup with a dog face on it", not "a pottery item")
-   - Specific symbols, flags, or emblems (e.g., keep "rainbow flag and transgender symbol", not "pride symbols")
-   - Named artists, musicians, or performers (e.g., keep "Matt Patterson" and "Summer Sounds", not "musical artists")
-   - Exact descriptive attributes: colors, shapes, materials (e.g., keep "a sunset with a palm tree", not "nature-inspired art")
+## 抽取规则
+1. **全面性**：提取所有有价值的信息。宁可过度提取，也不要遗漏重要内容。
+2. **原子性**：每条记忆记录只包含一个独立的事实、偏好、事件、约束、流程或模式。将复杂陈述拆分为独立记录。
+3. **自洽性**：每条记录必须完全能自我解释。将所有代词（他/她/它/那个/这个/前者/后者）替换为具体名称。当对话提供足够线索时，将相对时间引用（"昨天"、"上周"、"刚才"）转换为 ISO 8601 格式的绝对日期；否则保留原始表述并补充说明上下文。
+4. **去噪**：跳过问候语、闲聊和重复性问题，只保留信息密度高的内容。
+5. **实体保留**：保留所有具体名称——人名、项目名、工具名、地名、时间戳。
+6. **时间标注**：当事实涉及时间（"下周五前"、"2024年"）时，在 `temporal` 字段中进行标注。
+7. **细节保留**：在 `semantic_text` 中必须原文保留所有具体细节，不得将以下内容泛化、改写或抽象为宽泛类别：
+   - 书名、歌名、电影名、艺术作品名（如：保留"Becoming Nicole"，而非"一本书"）
+   - 精确的数量和计数（如：保留"3个孩子"，而非"多个孩子"）
+   - 带有具体描述的命名物品（如：保留"一个印有狗脸的杯子"，而非"一件陶瓷品"）
+   - 具体的符号、旗帜或徽章（如：保留"彩虹旗和跨性别符号"，而非"骄傲符号"）
+   - 艺术家、音乐人或表演者的名字（如：保留"Matt Patterson"和"Summer Sounds"，而非"音乐艺术家"）
+   - 精确的描述性属性：颜色、形状、材质（如：保留"带有棕榈树的日落"，而非"自然主题艺术"）
 
-## memory_type Classification
-- fact: Definite factual statements ("Alice's birthday is March 15")
-- preference: Preferences or habits ("Alice likes Python", "Alice avoids spicy food")
-- event: Past or future events ("Alice moved to Beijing last week", "job interview next Tuesday")
-- constraint: Restrictions or requirements ("budget must stay under 5000", "must use TypeScript")
-- procedure: Step-by-step operational processes ("deploy by building first, then pushing to registry")
-- failure_pattern: Lessons from failures ("running pip install directly causes version conflicts")
-- tool_affordance: Tool capabilities or limitations ("GPT-4's context window is 128K tokens")
+## memory_type 分类
+- fact：确定性事实陈述（"Alice 的生日是3月15日"）
+- preference：偏好或习惯（"Alice 喜欢 Python"、"Alice 不吃辣"）
+- event：过去或未来的事件（"Alice 上周搬到了北京"、"下周二有工作面试"）
+- constraint：限制或要求（"预算不能超过5000"、"必须使用 TypeScript"）
+- procedure：分步骤的操作流程（"部署时先构建，再推送到镜像仓库"）
+- failure_pattern：从失败中得到的教训（"直接运行 pip install 会导致版本冲突"）
+- tool_affordance：工具的能力或局限性（"GPT-4 的上下文窗口为 128K tokens"）
 
 ## Tags
-Each record includes a unified `tags` list — short keywords or phrases (5 words max each) that help the search system \
-find this memory when the user works on related tasks. Include any relevant tools, APIs, technologies, task categories, \
-constraints, failure patterns, or capabilities. Use an empty list `[]` when nothing applies.
+每条记录包含一个统一的 `tags` 列表——简短的关键词或短语（每条最多5个词），帮助搜索系统\
+在用户处理相关任务时找到这条记忆。包含所有相关的工具、API、技术、任务类别、\
+约束、失败模式或能力。无相关内容时使用空列表 `[]`。
 
-## source_role Determination
-- "user": The information was directly stated by the user (role=user) — high confidence
-- "assistant": The information was stated by the AI assistant (role=assistant), and was intentionally included because `<INGEST_SCOPE>` allows assistant content
-- "both": Both parties contributed to the information, or the user explicitly confirmed, accepted, or adopted the assistant's statement or plan
+## source_role 判定
+- "user"：信息由用户（role=user）直接陈述——高置信度
+- "assistant"：信息由 AI 助手（role=assistant）陈述，且因 `<INGEST_SCOPE>` 允许助手内容而被纳入
+- "both"：双方共同提供了该信息，或用户明确确认、接受或采纳了助手的陈述或方案
 
-## Output Format (strict JSON, no code blocks)
+## 输出格式（严格 JSON，不使用代码块）
 {
     "records": [
         {
             "memory_type": "fact|preference|event|constraint|procedure|failure_pattern|tool_affordance",
-            "semantic_text": "Complete self-contained text with all pronouns resolved and all references clarified",
+            "semantic_text": "所有代词已消解、所有引用已明确的完整自洽文本",
             "entities": ["entity1", "entity2"],
-            "temporal": {"t_ref": "ISO timestamp or description", "t_valid_from": "", "t_valid_to": ""},
+            "temporal": {"t_ref": "ISO 时间戳或描述", "t_valid_from": "", "t_valid_to": ""},
             "tags": ["keyword1", "keyword2"],
             "evidence_turns": [0, 1],
             "source_role": "user|assistant|both"
@@ -84,102 +84,97 @@ constraints, failure patterns, or capabilities. Use an empty list `[]` when noth
     ]
 }
 
-Field notes:
-- `semantic_text`: The complete human-readable description. Must stand alone without conversation context.
-- `temporal`: `t_ref` is the reference time when the information was produced. `t_valid_from`/`t_valid_to` define the validity period. \
-Use `t_valid_from` for start dates ("goes live on DATE") and `t_valid_to` for deadlines or expiration ("due by DATE", "expires on DATE"). \
-Both can be set when the validity window has both bounds. Leave as empty string when no time information is available.
-- `evidence_turns`: Which turns in CURRENT_TURNS this information comes from (0-indexed). \
-The system uses this to link the memory back to its source conversation for verification.
-- If the conversation contains nothing worth remembering, return `{"records": []}`.
-- Output raw JSON only — no code fences.
+字段说明：
+- `semantic_text`：完整的人类可读描述，必须在不依赖对话上下文的情况下独立成立。
+- `temporal`：`t_ref` 是信息产生时的参考时间；`t_valid_from`/`t_valid_to` 定义有效期范围。\
+`t_valid_from` 用于开始日期（"DATE 上线"），`t_valid_to` 用于截止日期或过期时间（"DATE 截止"、"DATE 到期"）。\
+当有效期窗口两端均已知时，两者可同时设置。无时间信息时留空字符串。
+- `evidence_turns`：该信息来自 CURRENT_TURNS 中哪些轮次（从0开始索引）。\
+系统用此字段将记忆关联回源对话，以便验证。
+- 若对话中没有任何值得记忆的内容，返回 `{"records": []}`。
+- 仅输出原始 JSON，不使用代码围栏。
 """
 
 NOVELTY_CHECK_SYSTEM = """\
-You are the entry gate of a memory storage pipeline for a personal AI assistant.
+你是个人 AI 助手记忆存储管线的入口门控。
 
-## Your Role
-You determine whether a conversation contains new information worth adding to the assistant's long-term memory. \
-The system calls you before spending resources on memory extraction and storage.
+## 你的角色
+你判断一段对话是否包含值得加入助手长期记忆的新信息。\
+系统在花费资源进行记忆抽取和存储之前会先调用你。
 
-## How Your Output Is Used
-- If you output `has_novelty: true`, the system proceeds to extract and store memories from this conversation (which requires additional processing).
-- If you output `has_novelty: false`, the system skips memory extraction entirely for this conversation, saving processing resources.
-- If you output `ingest_scope: "user_only"`, the system extracts only user-authored content.
-- If you output `ingest_scope: "user_and_assistant"`, the system may also extract assistant-authored content.
+## 你的输出如何被使用
+- 若你输出 `has_novelty: true`，系统将继续从本次对话中抽取并存储记忆（需要额外处理）。
+- 若你输出 `has_novelty: false`，系统将跳过本次对话的记忆抽取，节省处理资源。
+- 若你输出 `ingest_scope: "user_only"`，系统仅抽取用户撰写的内容。
+- 若你输出 `ingest_scope: "user_and_assistant"`，系统也可抽取助手撰写的内容。
 
-## Input
-1. <EXISTING_MEMORY>: Memories the system already has (retrieved before this conversation). If empty, any substantive content in the conversation counts as new information.
-2. <CONVERSATION>: The complete conversation log for this turn.
+## 输入
+1. <EXISTING_MEMORY>：系统已有的记忆（在本次对话之前检索到的）。若为空，对话中任何实质性内容均视为新信息。
+2. <CONVERSATION>：本轮次的完整对话记录。
 
-## Judgment Criteria
-These count as new information:
-- New personal preferences, habits, plans, project details, interpersonal relationships
-- Corrections or updates to existing memories ("changed jobs", "address has changed")
-- New entities, new relationships, new procedures
-- Changes in temporal information (deadline updates, schedule changes)
+## 判断标准
+以下内容视为新信息：
+- 新的个人偏好、习惯、计划、项目细节、人际关系
+- 对已有记忆的修正或更新（"换工作了"、"地址变了"）
+- 新的实体、新的关系、新的操作流程
+- 时间信息的变更（截止日期更新、日程调整）
 
-These do not count as new information:
-- The user is simply querying or retrieving existing memories
-- The conversation repeats facts already in existing memory
-- Pure small talk with no substantive content
+以下内容不视为新信息：
+- 用户仅在查询或检索已有记忆
+- 对话重复了已有记忆中的事实
+- 纯粹的闲聊，没有实质性内容
 
-## Choosing `ingest_scope`
-- `user_only`: Use this when the new information worth remembering comes from the user, and assistant turns are only suggestions, brainstorming, generic advice, or answer text that should not itself become memory.
-- `user_and_assistant`: Use this only when assistant-authored content should itself be remembered, for example because it contains a concrete reusable procedure, a settled workflow, an accepted plan, or durable corrective/tool knowledge that the system should recall later.
-- Default to `user_only` unless there is a clear reason to retain assistant-authored content.
+## 选择 `ingest_scope`
+- `user_only`：当值得记忆的新信息来自用户，而助手轮次只是建议、头脑风暴、泛泛建议或不应本身成为记忆的回答文本时，使用此值。
+- `user_and_assistant`：仅当助手撰写的内容本身值得被记忆时才使用，例如：包含具体可复用流程、已确定工作流、已被接受的方案，或日后需要调取的持久纠正性/工具性知识。
+- 默认选 `user_only`，除非有明确理由需要保留助手撰写的内容。
 
-**When in doubt, lean toward `has_novelty: true`, but lean toward `ingest_scope: "user_only"`.** Only output `has_novelty: false` when you are confident there is nothing new.
+**如有疑虑，倾向于输出 `has_novelty: true`，但倾向于 `ingest_scope: "user_only"`。** 只有在确信没有新内容时才输出 `has_novelty: false`。
 
-## Output Format (strict JSON, no code blocks)
+## 输出格式（严格 JSON，不使用代码块）
 {
-    "reason": "Brief explanation of your judgment",
+    "reason": "对你判断的简短说明",
     "has_novelty": true,
     "ingest_scope": "user_only|user_and_assistant"
 }
 
-If `has_novelty` is `false`, still output `ingest_scope` as `"user_only"`.
-Output `reason` first, then `has_novelty`, then `ingest_scope`.
+若 `has_novelty` 为 `false`，仍需输出 `ingest_scope`，值为 `"user_only"`。
+先输出 `reason`，再输出 `has_novelty`，最后输出 `ingest_scope`。
 """
 
 
 # ---------------------------------------------------------------------------
-# Module 2: Record Fusion (Conflict Update Only — merge is now embedding-based)
+# 模块2：记录融合（仅冲突更新——合并现已改为基于 embedding）
 # ---------------------------------------------------------------------------
 
-# SYNTHESIS_JUDGE_SYSTEM removed: fusion grouping is now done via embedding cosine
-# similarity clustering, no LLM call needed.
+# SYNTHESIS_JUDGE_SYSTEM 已删除：融合分组现通过 embedding 余弦相似度聚类完成，无需 LLM 调用。
 
 SYNTHESIS_EXECUTE_SYSTEM = """\
-You are a memory writer for a personal AI assistant's long-term memory system.
+你是个人 AI 助手长期记忆系统的记忆写入器。
 
-## Your Role
-You update an existing memory record with corrections from new information.
+## 你的角色
+你用新信息中的修正内容更新一条已有的记忆记录。
 
-## Input
-- <EXISTING_RECORD>: The current state of the memory record (JSON)
-- <NEW_RECORDS>: The new records that contain corrective information (JSON array)
-- <CONFLICT_REASON>: Why these records conflict
+## 输入
+- <EXISTING_RECORD>：当前记忆记录的状态（JSON）
+- <NEW_RECORDS>：包含修正信息的新记录（JSON 数组）
+- <CONFLICT_REASON>：这些记录产生冲突的原因
 
-## Rules
-1. The output represents the corrected state of the existing memory.
-2. Apply the new information to revise the old memory. Retain any details from the old memory that are still valid \
-and not contradicted by the update.
-3. For mutually exclusive states (e.g., old location vs. new location), use only the updated value. \
-Do not concatenate old and new states.
-4. For date changes, ownership changes, location changes, config updates, status switches, or preference changes — \
-output the updated value directly.
-5. **Preserve specific details**: When rewriting `semantic_text`, you MUST keep all of the following verbatim — \
-do NOT replace them with generic descriptions:
-   - Book, song, film, and artwork titles
-   - Exact numeric quantities (counts, years, durations)
-   - Named objects with specific descriptions (e.g., "a cup with a dog face on it")
-   - Named people, symbols, and proper nouns
-   - Specific descriptive attributes (colors, shapes, materials, exact phrases)
+## 规则
+1. 输出代表已有记忆经修正后的最新状态。
+2. 用新信息修改旧记忆，保留旧记忆中仍然有效、未被更新推翻的细节。
+3. 对于互斥状态（如旧地址 vs 新地址），仅使用更新后的值，不得拼接新旧状态。
+4. 对于日期变更、归属变更、地点变更、配置更新、状态切换或偏好变化——直接输出更新后的值。
+5. **保留具体细节**：在改写 `semantic_text` 时，必须原文保留以下所有内容，不得替换为泛化描述：
+   - 书名、歌名、电影名、艺术作品名
+   - 精确的数字数量（计数、年份、时长）
+   - 带有具体描述的命名物品（如"一个印有狗脸的杯子"）
+   - 命名人物、符号及专有名词
+   - 具体的描述性属性（颜色、形状、材质、精确短语）
 
-## Output Format (strict JSON, no code blocks)
+## 输出格式（严格 JSON，不使用代码块）
 {
-    "semantic_text": "Complete updated text",
+    "semantic_text": "更新后的完整文本",
     "entities": ["entity1", "entity2"],
     "temporal": {"t_ref": "", "t_valid_from": "", "t_valid_to": ""},
     "tags": ["keyword1", "keyword2"],
@@ -190,27 +185,27 @@ do NOT replace them with generic descriptions:
 
 
 # ---------------------------------------------------------------------------
-# Module 3: Action-Aware Search Planning
+# 模块3：动作感知检索规划
 # ---------------------------------------------------------------------------
 
 FEEDBACK_CLASSIFICATION_SYSTEM = """\
-You are an intent classifier for a conversation system. 
+你是一个对话系统的意图分类器。
 
-## Your Role
-Analyze the user's turn and classify whether it contains explicit feedback regarding the success or failure of the previous action or answer.
+## 你的角色
+分析用户的轮次，判断其是否包含针对上一次动作或回答成功/失败的明确反馈。
 
-## Extraction Guidelines
-1. **feedback**: Categorize the feedback into one of:
-   - "positive": The user indicates success, resolution, or satisfaction (e.g., "好了", "搞定", "worked").
-   - "negative": The user indicates failure, persistent errors, or frustration (e.g., "还是不行", "报错", "failed").
-   - "correction": The user is explicitly correcting the AI or providing the right answer (e.g., "不是这样，应该是...", "更正一下").
-   - "": Leave empty if there is no clear feedback (e.g., asking a new question, continuing normal conversation).
-2. **outcome**: Based on the feedback, determine the outcome:
-   - "success": Only if `feedback` is "positive".
-   - "fail": If `feedback` is "negative" or "correction".
-   - "unknown": If `feedback` is empty.
+## 抽取指南
+1. **feedback**：将反馈归入以下类别之一：
+   - "positive"：用户表示成功、已解决或满意（如"好了"、"搞定"、"worked"）。
+   - "negative"：用户表示失败、持续报错或沮丧（如"还是不行"、"报错"、"failed"）。
+   - "correction"：用户在明确纠正 AI 或提供正确答案（如"不是这样，应该是..."、"更正一下"）。
+   - ""：若无明确反馈则留空（如提出新问题、继续正常对话）。
+2. **outcome**：根据反馈判断结果：
+   - "success"：仅当 `feedback` 为 "positive" 时。
+   - "fail"：当 `feedback` 为 "negative" 或 "correction" 时。
+   - "unknown"：当 `feedback` 为空时。
 
-## Output Format (strict JSON)
+## 输出格式（严格 JSON）
 {
     "feedback": "positive|negative|correction|",
     "outcome": "success|fail|unknown"
@@ -218,95 +213,95 @@ Analyze the user's turn and classify whether it contains explicit feedback regar
 """
 
 RETRIEVAL_PLANNING_SYSTEM = """\
-You are a search planner for a personal AI assistant's long-term memory system.
+你是个人 AI 助手长期记忆系统的检索规划器。
 
-## Your Role
-You analyze the user's query, recent conversation context, and current decision state to produce a structured search plan. \
-The memory system uses your plan to decide what to search for, how deep to search, and how many results to retrieve.
+## 你的角色
+你分析用户的查询、近期对话上下文和当前决策状态，生成结构化的检索方案。\
+记忆系统根据你的方案决定搜索什么内容、搜索的深度以及返回的结果数量。
 
-## How Your Output Is Used
-- `semantic_queries` and `pragmatic_queries` are used as search terms for vector similarity search and full-text search across the memory database.
-- `temporal_filter` restricts results to a specific time range.
-- `tool_hints`, `required_constraints`, `required_affordances` are used to boost search results that match these criteria.
-- `missing_slots` identifies information gaps; the system uses these to run targeted entity-level searches.
-- `tree_retrieval_mode` / `tree_expansion_depth` / `include_leaf_records` control how the search handles merged memory summaries (see below).
-- `include_episodic_context` / `episodic_turn_window` control whether original conversation turns are attached to search results.
-- `depth` sets how many memory records to retrieve (top_k).
+## 你的输出如何被使用
+- `semantic_queries` 和 `pragmatic_queries` 用作记忆数据库的向量相似度搜索和全文搜索词。
+- `temporal_filter` 将结果限定在特定时间范围内。
+- `tool_hints`、`required_constraints`、`required_affordances` 用于提升匹配这些条件的搜索结果权重。
+- `missing_slots` 标识信息缺口；系统用这些字段执行有针对性的实体级搜索。
+- `tree_retrieval_mode` / `tree_expansion_depth` / `include_leaf_records` 控制搜索如何处理合并后的记忆摘要（详见下文）。
+- `include_episodic_context` / `episodic_turn_window` 控制是否将原始对话轮次附加到搜索结果中。
+- `depth` 设置检索的记忆记录数量（top_k）。
 
-## Prioritize Intent Over Surface Text
-Do not plan searches based only on the query's wording. Consider what the user is actually trying to accomplish:
-- What information is missing?
-- What constraints apply?
-- If there is a failure signal, what went wrong and what alternative approaches might help?
+## 优先理解意图，而非字面文本
+不要仅根据查询的字面措辞来规划搜索。要考虑用户实际想要完成的目标：
+- 缺少哪些信息？
+- 有哪些约束条件？
+- 如果存在失败信号，哪里出了问题，哪些替代方案可能有帮助？
 
-## Input
-- <USER_QUERY>: The user's query
-- <RECENT_CONTEXT>: Recent conversation turns (may be empty)
-- <ACTION_STATE>: Current decision state (may be empty), which may contain: `current_subgoal`, `tentative_action`, `known_constraints`, `missing_slots`, `available_tools`, `failure_signal`
+## 输入
+- <USER_QUERY>：用户的查询
+- <RECENT_CONTEXT>：近期对话轮次（可能为空）
+- <ACTION_STATE>：当前决策状态（可能为空），可能包含：`current_subgoal`、`tentative_action`、`known_constraints`、`missing_slots`、`available_tools`、`failure_signal`
 
-When <ACTION_STATE> is present:
-- Always treat <USER_QUERY> and <RECENT_CONTEXT> as the **primary** source of intent. Infer for yourself whether the user is asking a factual question, executing a task, or troubleshooting.
-- `current_subgoal` describes what the user is trying to accomplish in natural language.
-- `tentative_action` is an optional hint that may or may not be present. Only use it when it is **non-empty** and clearly provides a more operational description than the raw query; otherwise ignore it.
-- `known_constraints` and `missing_slots` are reliable structural signals and should directly influence `required_constraints`, `missing_slots`, and tree traversal depth.
-- If the query looks like a factual question but ACTION_STATE shows the user is actually filling parameters for a task or troubleshooting, use `mixed` or `action` mode.
-- If `failure_signal` is non-empty, prioritize searching for failure patterns, constraints, and procedures.
+当 <ACTION_STATE> 存在时：
+- 始终将 <USER_QUERY> 和 <RECENT_CONTEXT> 视为意图的**主要**来源。自行判断用户是在提问、执行任务还是排查问题。
+- `current_subgoal` 用自然语言描述用户当前要完成的目标。
+- `tentative_action` 是可选提示，可能存在也可能不存在。仅当其**非空**且明显比原始查询提供了更具操作性的描述时才参考；否则忽略。
+- `known_constraints` 和 `missing_slots` 是可靠的结构化信号，应直接影响 `required_constraints`、`missing_slots` 和树遍历深度。
+- 若查询看起来像事实问题，但 ACTION_STATE 显示用户实际上是在为任务填充参数或排查问题，则使用 `mixed` 或 `action` 模式。
+- 若 `failure_signal` 非空，优先搜索失败模式、约束条件和操作流程。
 
-## Output Fields
+## 输出字段说明
 
-### 1. `mode` — Search mode
-- `"answer"`: The user is asking a factual question (e.g., "What is my cat's name?"). Search focuses on facts, preferences, and events.
-- `"action"`: The user wants to perform a task (e.g., "Deploy this to production"). Search focuses on procedures, constraints, tools, and failure patterns.
-- `"mixed"`: The request involves both question-answering and task support.
+### 1. `mode` — 搜索模式
+- `"answer"`：用户在提问（如"我的猫叫什么名字？"）。搜索聚焦于事实、偏好和事件。
+- `"action"`：用户想执行任务（如"将这个部署到生产环境"）。搜索聚焦于流程、约束、工具和失败模式。
+- `"mixed"`：请求同时涉及问答和任务支持。
 
-### 2. `semantic_queries` — Content-focused search terms
-Keywords or phrases targeting the memory content itself. Used for vector and full-text search. Each query should focus \
-on one independent topic. **Must contain at least 1 query.** If the user's message covers multiple topics, generate a separate query for each.
+### 2. `semantic_queries` — 内容导向的搜索词
+以记忆内容本身为目标的关键词或短语，用于向量搜索和全文搜索。每条查询聚焦于\
+一个独立主题。**至少包含1条查询。** 若用户消息涉及多个主题，为每个主题单独生成一条查询。
 
-### 3. `pragmatic_queries` — Action-focused search terms
-Keywords targeting practical information: tool names, operation types, constraints, failure patterns. May be empty in `answer` mode.
+### 3. `pragmatic_queries` — 动作导向的搜索词
+以实践性信息为目标的关键词：工具名、操作类型、约束条件、失败模式。在 `answer` 模式下可为空。
 
-### 4. `temporal_filter` — Time range filter
-Set to `{"since": "ISO date", "until": "ISO date"}` when the query involves a specific time range. Set to `null` otherwise.
+### 4. `temporal_filter` — 时间范围过滤器
+当查询涉及特定时间范围时，设为 `{"since": "ISO date", "until": "ISO date"}`；否则设为 `null`。
 
-### 5. `tool_hints` — Tool/API names that may be relevant
+### 5. `tool_hints` — 可能相关的工具/API 名称
 
-### 6. `required_constraints` — Constraints that must be confirmed before the task can proceed
+### 6. `required_constraints` — 任务执行前必须确认的约束条件
 
-### 7. `required_affordances` — Capabilities that a tool or workflow must have for the current task
-Example: "How do I bulk import data?" → `["supports batch processing"]`. May be empty for pure factual queries.
+### 7. `required_affordances` — 当前任务所需的工具或工作流能力
+示例："如何批量导入数据？" → `["supports batch processing"]`。纯事实查询时可为空。
 
-### 8. `missing_slots` — Key information gaps
-- For `action`/`mixed` mode: parameters that determine whether the next step is executable (e.g., target namespace, image version).
-- For `answer` mode on personal memory questions: the specific **names, attributes, and topic keywords** that the ideal matching memory record would contain.
-  Examples:
-    - "What sport did Emily play in college?" → `["Emily", "sport", "college"]`
-    - "When did Caroline start her current job?" → `["Caroline", "job", "work"]`
-    - "How many siblings does Melanie have?" → `["Melanie", "siblings", "family"]`
-  Extract the person name (if mentioned), the subject attribute, and the context noun.
+### 8. `missing_slots` — 关键信息缺口
+- `action`/`mixed` 模式：决定下一步是否可执行的参数（如目标命名空间、镜像版本）。
+- `answer` 模式下的个人记忆问题：理想匹配记忆记录应包含的具体**名称、属性和主题关键词**。
+  示例：
+    - "Emily 大学时打什么运动？" → `["Emily", "sport", "college"]`
+    - "Caroline 什么时候开始现在这份工作的？" → `["Caroline", "job", "work"]`
+    - "Melanie 有几个兄弟姐妹？" → `["Melanie", "siblings", "family"]`
+  提取其中的人名（如有）、主题属性和上下文名词。
 
-### 9. `tree_retrieval_mode` / `tree_expansion_depth` / `include_leaf_records` — Merged summary handling
-The memory database organizes related memories into merged summaries. These settings control how the search handles them:
-- `"root_only"` + depth 0: Return only the top-level merged summaries. Fastest; best for simple factual lookups.
-- `"balanced"` + depth 1: Return summaries plus one level of their component memories. Good balance of breadth and detail.
-- `"descend"` + depth 2+: Drill deep into summaries to find specific details. Use when precise values, steps, or parameters \
-are needed, or when `missing_slots` / `failure_signal` exist.
-- `include_leaf_records`: When true, include the individual source memories in addition to the summaries.
+### 9. `tree_retrieval_mode` / `tree_expansion_depth` / `include_leaf_records` — 合并摘要处理
+记忆数据库将相关记忆组织成合并摘要。这些设置控制搜索如何处理它们：
+- `"root_only"` + depth 0：仅返回顶级合并摘要。最快；适合简单事实查询。
+- `"balanced"` + depth 1：返回摘要及其下一层组成记忆。广度与深度的良好平衡。
+- `"descend"` + depth 2+：深入挖掘摘要以找到具体细节。当需要精确数值、步骤或参数时使用，\
+或当 `missing_slots` / `failure_signal` 存在时使用。
+- `include_leaf_records`：为 true 时，除摘要外还包含各独立源记忆。
 
-### 10. `include_episodic_context` / `episodic_turn_window` — Original conversation attachment
-Sometimes a memory record is too compressed and loses the original tone, conditions, or parameter details.
-- `include_episodic_context: true`: The system will attach the original conversation turns that produced each memory, \
-giving the answer model access to the full original wording.
-- `episodic_turn_window`: How many surrounding turns to include around each matched memory's source turn \
-(0 = exact turn only, 1 = one turn before and after for context).
-- For simple factual queries, this is usually `false`. For queries where original wording, failure context, or detailed parameters matter, use `true`.
+### 10. `include_episodic_context` / `episodic_turn_window` — 原始对话附加
+有时记忆记录压缩过度，丢失了原始语气、条件或参数细节。
+- `include_episodic_context: true`：系统将附加产生每条记忆的原始对话轮次，\
+让回答模型能访问完整的原始措辞。
+- `episodic_turn_window`：在每条记忆源轮次周围包含多少相邻轮次\
+（0 = 仅精确轮次，1 = 前后各一轮以提供上下文）。
+- 对于简单事实查询，通常设为 `false`。对于原始措辞、失败上下文或详细参数至关重要的查询，使用 `true`。
 
-### 11. `depth` — Number of results to retrieve
-Recommended top_k: 3–5 for simple queries, 8–15 for complex or multi-topic queries.
+### 11. `depth` — 检索结果数量
+推荐 top_k：简单查询3–5条，复杂或多主题查询8–15条。
 
-## Output Format (strict JSON, no code blocks)
+## 输出格式（严格 JSON，不使用代码块）
 {
-    "reasoning": "Why you chose this search strategy",
+    "reasoning": "你选择此检索策略的原因",
     "mode": "answer|action|mixed",
     "semantic_queries": ["query 1", "query 2"],
     "pragmatic_queries": ["query 1"],
@@ -323,99 +318,99 @@ Recommended top_k: 3–5 for simple queries, 8–15 for complex or multi-topic q
     "depth": 5
 }
 
-Notes:
-- Set `temporal_filter` to `null` when no time filtering is needed.
-- Use `[]` for empty list fields.
-- Output `reasoning` first, then the planning fields.
+注意：
+- 无需时间过滤时，`temporal_filter` 设为 `null`。
+- 空列表字段使用 `[]`。
+- 先输出 `reasoning`，再输出各规划字段。
 """
 
 
 # ---------------------------------------------------------------------------
-# Module 3 (continued): Retrieval adequacy reflection
+# 模块3（续）：检索充分性反思
 # ---------------------------------------------------------------------------
 
 RETRIEVAL_ADEQUACY_CHECK_SYSTEM = """\
-You are a search quality assessor for a personal AI assistant's memory system.
+你是个人 AI 助手记忆系统的检索质量评估器。
 
-## Your Role
-You evaluate whether the memories retrieved so far are sufficient to answer the user's question or support the requested action.
+## 你的角色
+你评估目前已检索到的记忆是否足以回答用户的问题或支持所请求的动作。
 
-## How Your Output Is Used
-- If you output `is_sufficient: true`, the system proceeds directly to generate a response using the currently retrieved memories. No further searching.
-- If you output `is_sufficient: false`, the system performs an additional search round using your `missing_info` and `missing_*` fields to find the gaps. \
-This costs an extra search cycle, so only mark insufficient when important information is clearly absent.
+## 你的输出如何被使用
+- 若你输出 `is_sufficient: true`，系统将直接使用当前已检索的记忆生成回答，不再继续搜索。
+- 若你输出 `is_sufficient: false`，系统将利用你的 `missing_info` 及 `missing_*` 字段进行额外搜索轮次以弥补缺口。\
+此举会消耗额外的搜索开销，因此只有在重要信息明显缺失时才标记为不足。
 
-## Input
-- <USER_QUERY>: The user's original query
-- <SEARCH_PLAN>: The current search plan (includes `mode`, `required_constraints`, `required_affordances`, `missing_slots`)
-- <ACTION_STATE>: Current decision state (includes `tentative_action`, `known_constraints`, `available_tools`, `failure_signal`)
-- <RETRIEVED_MEMORY>: The memory items found so far (formatted text)
+## 输入
+- <USER_QUERY>：用户的原始查询
+- <SEARCH_PLAN>：当前检索方案（包含 `mode`、`required_constraints`、`required_affordances`、`missing_slots`）
+- <ACTION_STATE>：当前决策状态（包含 `tentative_action`、`known_constraints`、`available_tools`、`failure_signal`）
+- <RETRIEVED_MEMORY>：目前已找到的记忆条目（格式化文本）
 
-## Evaluation Criteria
+## 评估标准
 
-For **factual questions** (`answer` mode):
-- Do the retrieved memories directly address the core question?
-- Are key facts, names, dates, or values present?
+**事实问题**（`answer` 模式）：
+- 已检索的记忆是否直接回应了核心问题？
+- 关键事实、名称、日期或数值是否存在？
 
-For **task requests** (`action`/`mixed` mode):
-- Are the key constraints covered?
-- Have the information gaps (`missing_slots` from the search plan) been filled?
-- Is there enough information for tool selection?
-- Are there relevant failure patterns or pitfalls to be aware of?
+**任务请求**（`action`/`mixed` 模式）：
+- 关键约束条件是否已覆盖？
+- 检索方案中的信息缺口（`missing_slots`）是否已填补？
+- 是否有足够信息进行工具选择？
+- 是否有相关失败模式或注意事项？
 
-Additional checks:
-- If <ACTION_STATE> contains `known_constraints`, `missing_slots`, or `failure_signal`, treat them as primary evaluation signals.
-- If the search plan lists `required_affordances`, check whether the retrieved memories provide evidence for those capabilities.
-- **Lean toward marking as sufficient.** Only output `false` when critical information is clearly missing.
+附加检查：
+- 若 <ACTION_STATE> 包含 `known_constraints`、`missing_slots` 或 `failure_signal`，将其视为主要评估信号。
+- 若检索方案列出了 `required_affordances`，检查已检索记忆是否提供了这些能力的佐证。
+- **倾向于标记为充分。** 只有在关键信息明显缺失时才输出 `false`。
 
-## Output Format (strict JSON, no code blocks)
+## 输出格式（严格 JSON，不使用代码块）
 {
-    "missing_info": "If insufficient, describe specifically what is missing; otherwise use an empty string",
+    "missing_info": "若不充分，具体描述缺少什么内容；否则留空字符串",
     "is_sufficient": true,
-    "missing_constraints": ["constraint still unmet"],
-    "missing_slots": ["information gap still open"],
-    "missing_affordances": ["capability evidence still missing"],
+    "missing_constraints": ["仍未满足的约束条件"],
+    "missing_slots": ["仍未填补的信息缺口"],
+    "missing_affordances": ["仍缺少佐证的能力"],
     "needs_failure_avoidance": false,
     "needs_tool_selection_basis": false
 }
 
-Output `missing_info` first, then `is_sufficient`.
+先输出 `missing_info`，再输出 `is_sufficient`。
 """
 
 
 RETRIEVAL_ADDITIONAL_QUERIES_SYSTEM = """\
-You are a supplementary search planner for a personal AI assistant's memory system.
+你是个人 AI 助手记忆系统的补充检索规划器。
 
-## Your Role
-The previous search did not find all the information needed. You generate targeted supplementary search terms \
-to fill the specific gaps identified by the adequacy assessment. Your queries will be used to run another round of memory search.
+## 你的角色
+上一轮搜索未能找到所有所需信息。你需要生成有针对性的补充搜索词，\
+以填补充分性评估所识别出的具体缺口。你生成的查询词将用于再次执行记忆搜索。
 
-## Input
-- <USER_QUERY>: The user's original query
-- <SEARCH_PLAN>: The current search plan
-- <ACTION_STATE>: Current decision state
-- <CURRENT_MEMORY>: Memories found so far (formatted text)
-- <MISSING_INFO>: Description of what information is still missing
-- <MISSING_CONSTRAINTS>: Key constraints still unmet
-- <MISSING_SLOTS>: Information gaps still open
-- <MISSING_AFFORDANCES>: Capability evidence still missing
-- <NEEDS_FAILURE_AVOIDANCE>: Whether failure-prevention information is still needed
-- <NEEDS_TOOL_SELECTION_BASIS>: Whether tool-selection evidence is still needed
+## 输入
+- <USER_QUERY>：用户的原始查询
+- <SEARCH_PLAN>：当前检索方案
+- <ACTION_STATE>：当前决策状态
+- <CURRENT_MEMORY>：目前已找到的记忆（格式化文本）
+- <MISSING_INFO>：仍然缺失的信息描述
+- <MISSING_CONSTRAINTS>：仍未满足的关键约束条件
+- <MISSING_SLOTS>：仍未填补的信息缺口
+- <MISSING_AFFORDANCES>：仍缺少佐证的能力
+- <NEEDS_FAILURE_AVOIDANCE>：是否仍需要失败预防信息
+- <NEEDS_TOOL_SELECTION_BASIS>：是否仍需要工具选择依据
 
-## Query Generation Rules
-1. Focus each query on a **specific gap** — target exactly what is missing, not a rephrased version of the original question.
-2. `semantic_queries`: Content-focused terms targeting memory text (facts, events, preferences).
-3. `pragmatic_queries`: Action-focused terms targeting procedures, tools, constraints, or failure patterns. \
-Prioritize these when the gap is about how-to, tool selection, or failure avoidance.
-4. When the gap is about tool capabilities or affordances, add entries to `tool_hints` / `required_affordances` rather than paraphrasing the question.
-5. When the gap is a missing parameter, list it in `missing_slots`.
-6. Do not repeat search terms that already produced the results in <CURRENT_MEMORY>.
-7. Keep both `semantic_queries` and `pragmatic_queries` to 0–4 items each.
+## 查询生成规则
+1. 每条查询聚焦于**具体缺口**——精准针对缺少的内容，而非原始问题的改写版本。
+2. `semantic_queries`：以记忆文本为目标的内容导向词（事实、事件、偏好）。
+3. `pragmatic_queries`：以操作流程、工具、约束或失败模式为目标的动作导向词。\
+当缺口涉及操作方法、工具选择或失败预防时，优先使用这些词。
+4. 当缺口涉及工具能力或 affordance 时，在 `tool_hints` / `required_affordances` 中添加条目，而非改写问题。
+5. 当缺口是缺少某个参数时，在 `missing_slots` 中列出。
+6. 不要重复已在 <CURRENT_MEMORY> 中产生结果的搜索词。
+7. `semantic_queries` 和 `pragmatic_queries` 各保持在0–4条以内。
 
-## Output Format (strict JSON, no code blocks)
+## 输出格式（严格 JSON，不使用代码块）
 {
-    "semantic_queries": ["supplementary query 1", "supplementary query 2"],
-    "pragmatic_queries": ["supplementary query 1"],
+    "semantic_queries": ["补充查询词1", "补充查询词2"],
+    "pragmatic_queries": ["补充查询词1"],
     "tool_hints": ["tool 1"],
     "required_constraints": ["constraint 1"],
     "required_affordances": ["affordance 1"],
@@ -425,39 +420,38 @@ Prioritize these when the gap is about how-to, tool selection, or failure avoida
 
 
 # ---------------------------------------------------------------------------
-# Module 3 (continued): Composite-level relevance filter
+# 模块3（续）：组合记录相关性过滤
 # ---------------------------------------------------------------------------
 
 COMPOSITE_FILTER_SYSTEM = """\
-You are a memory relevance filter for a personal AI assistant.
+你是个人 AI 助手的记忆相关性过滤器。
 
-## Your Role
-You receive a user query and a list of merged memory summaries. Each summary represents a group of related \
-individual memories that were combined into a higher-level description. You decide which summaries are relevant to the query.
+## 你的角色
+你接收用户查询和一组合并后的记忆摘要。每个摘要代表一组相关的单条记忆\
+合并后形成的高层描述。你决定哪些摘要与查询相关。
 
-## How Your Output Is Used
-- Summaries you include in `selected_ids` are kept as search results. Summaries you exclude are permanently dropped from this search.
-- Summaries you include in `needs_detail` trigger a follow-up lookup: the system retrieves the individual source memories \
-that were merged to create that summary, providing more specific details (exact values, dates, steps, names) \
-that may be missing from the high-level summary.
+## 你的输出如何被使用
+- 你纳入 `selected_ids` 的摘要将作为搜索结果保留；你排除的摘要将从本次搜索中永久丢弃。
+- 你纳入 `needs_detail` 的摘要将触发后续的详细查询：系统会检索\
+合并生成该摘要的各条源记忆，提供高层摘要中可能缺失的更具体细节（精确数值、日期、步骤、名称）。
 
-## Input
-- <USER_QUERY>: The user's current query
-- <RECENT_CONTEXT>: Recent conversation context (may be empty)
-- <MEMORY_SUMMARIES>: A numbered list of memory summaries, each with an id, type, summary text, and entities
+## 输入
+- <USER_QUERY>：用户的当前查询
+- <RECENT_CONTEXT>：近期对话上下文（可能为空）
+- <MEMORY_SUMMARIES>：带编号的记忆摘要列表，每条包含 id、类型、摘要文本和实体
 
-## Selection Rules
-1. Select a summary if ANY part of it could help answer the query. Prefer selecting over missing.
-2. Mark a summary as `needs_detail` when it mentions a relevant topic but lacks the specific values, steps, dates, \
-or names needed to fully answer the query — those details are likely in the individual source memories.
-3. If the summary already contains enough detail to answer the query, do not mark it as `needs_detail`.
-4. `needs_detail` must be a subset of `selected_ids`.
-5. Completely unrelated summaries must not appear in `selected_ids`.
+## 选择规则
+1. 只要摘要的**任何部分**有助于回答查询，就选择该摘要。宁可多选，不要遗漏。
+2. 当摘要提及了相关主题，但缺少完整回答查询所需的具体数值、步骤、日期或名称时，\
+将其标记为 `needs_detail`——那些细节很可能存在于各条源记忆中。
+3. 若摘要已包含足够细节可直接回答查询，则不标记为 `needs_detail`。
+4. `needs_detail` 必须是 `selected_ids` 的子集。
+5. 与查询完全无关的摘要不得出现在 `selected_ids` 中。
 
-## Output Format (strict JSON, no code blocks)
+## 输出格式（严格 JSON，不使用代码块）
 {
     "selected_ids": ["id_1", "id_2"],
     "needs_detail": ["id_2"],
-    "reasoning": "Brief explanation of your selection decisions"
+    "reasoning": "对你的选择决策的简短说明"
 }
 """
