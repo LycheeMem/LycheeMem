@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
 
@@ -160,18 +161,23 @@ class RecordFusionEngine:
         }
         now_iso = datetime.now(timezone.utc).isoformat()
 
-        for record in new_records:
-            if record.expired or not record.record_id:
-                continue
+        valid_records = [r for r in new_records if not r.expired and r.record_id]
 
-            # ANN 搜索相似的已有记录
+        # 并行查询：每条 record 独立调用 vector.search（只读，并发安全）
+        def _search_dedup(rec: MemoryRecord) -> tuple[str, list[dict]]:
             results = self._vector.search(
-                record.semantic_text,
-                column="vector",
-                limit=10,
-                include_expired=False,
+                rec.semantic_text, column="vector", limit=10, include_expired=False,
             )
+            return rec.record_id, results
 
+        dedup_search_map: dict[str, list[dict]] = {}
+        if valid_records:
+            with ThreadPoolExecutor(max_workers=min(8, len(valid_records))) as _pool:
+                for _rid, _results in _pool.map(_search_dedup, valid_records):
+                    dedup_search_map[_rid] = _results
+
+        for record in valid_records:
+            results = dedup_search_map.get(record.record_id, [])
             for hit in results:
                 hit_id = str(hit.get("record_id", "")).strip()
                 dist = float(hit.get("_distance", 999.0))
@@ -232,16 +238,20 @@ class RecordFusionEngine:
         }
         new_ids = set(candidate_map.keys())
 
-        # 用每个新记录做 ANN 搜索，建立相似度边
+        # 并行 ANN 搜索，建立相似度边
+        def _search_cluster(rec: MemoryRecord) -> tuple[str, list[dict]]:
+            return rec.record_id, self._vector.search(
+                rec.semantic_text, column="vector", limit=15, include_expired=False,
+            )
+
+        cluster_search_map: dict[str, list[dict]] = {}
+        with ThreadPoolExecutor(max_workers=min(8, len(new_records))) as _pool:
+            for _rid, _results in _pool.map(_search_cluster, new_records):
+                cluster_search_map[_rid] = _results
+
         edges: list[tuple[str, str]] = []
         for record in new_records:
-            results = self._vector.search(
-                record.semantic_text,
-                column="vector",
-                limit=15,
-                include_expired=False,
-            )
-            for hit in results:
+            for hit in cluster_search_map.get(record.record_id, []):
                 hit_id = str(hit.get("record_id", "")).strip()
                 dist = float(hit.get("_distance", 999.0))
 

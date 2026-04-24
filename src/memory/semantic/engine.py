@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from src.llm.base import set_llm_call_source
 from collections import deque
@@ -598,77 +600,106 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         actually_added = 0
         sensitive_skipped = 0
         persisted_records: list[MemoryRecord] = []
+        _engine_logger = logging.getLogger("src.memory.semantic.engine")
+
+        # 3a. 敏感信息过滤
+        filtered_records: list[MemoryRecord] = []
         for record in new_records:
-            # 3a. 敏感信息过滤：密码/API key/私钥/信用卡号不写入长期记忆
             check_text = record.semantic_text + " " + record.normalized_text
             if self._is_sensitive_text(check_text):
-                import logging as _logging
-                _logging.getLogger("src.memory.semantic.engine").warning(
+                _engine_logger.warning(
                     "Skipping sensitive content record %s (memory_type=%s)",
                     record.record_id, record.memory_type,
                 )
                 sensitive_skipped += 1
-                continue
+            else:
+                filtered_records.append(record)
 
-            # 3b. FTS 候选 + 向量候选合并去重
-            similar = self._sqlite.find_similar_by_normalized_text(
-                record.semantic_text, limit=3,
-            )
-            # 向量补充去重：FTS 对中文近重复召回弱，用 vector（semantic_text）兜底
+        # 3b. 并行 FTS + 向量搜索（只读，并发安全）
+        def _fetch_candidates(
+            rec: MemoryRecord,
+        ) -> tuple[MemoryRecord, list, list[dict]]:
+            fts = self._sqlite.find_similar_by_normalized_text(rec.semantic_text, limit=3)
             try:
-                vec_hits = self._vector.search(
-                    record.semantic_text,
-                    column="vector",
-                    limit=5,
-                )
-                seen_dedup_ids = {s.record_id for s in similar}
-                for vh in vec_hits:
-                    rid = vh.get("record_id", "")
-                    if rid and rid not in seen_dedup_ids:
-                        full_rec = self._sqlite.get_record(rid)
-                        if full_rec and not full_rec.expired:
-                            similar.append(full_rec)
-                            seen_dedup_ids.add(rid)
+                vec = self._vector.search(rec.semantic_text, column="vector", limit=5)
             except Exception:
-                pass
+                vec = []
+            return rec, fts, vec
+
+        candidates_map: dict[str, tuple[list, list[dict]]] = {}
+        if filtered_records:
+            _workers = min(8, len(filtered_records))
+            with ThreadPoolExecutor(max_workers=_workers) as _pool:
+                _futs = {_pool.submit(_fetch_candidates, r): r.record_id for r in filtered_records}
+                for _fut in as_completed(_futs):
+                    _rec, _fts, _vec = _fut.result()
+                    candidates_map[_rec.record_id] = (_fts, _vec)
+
+        # 3c. 去重判断 + SQLite 写入（串行）
+        # ANN 返回的 L2 距离对归一化向量满足: cosine_sim = 1 - dist/2
+        # 直接用该距离替换逐对 embed 调用，消除 N×M 次冗余 API 请求。
+        records_to_upsert: list[MemoryRecord] = []
+        for record in filtered_records:
+            fts_similar, vec_hits = candidates_map.get(record.record_id, ([], []))
+
+            dist_map: dict[str, float] = {
+                vh["record_id"]: float(vh.get("_distance", 999.0))
+                for vh in vec_hits
+                if vh.get("record_id")
+            }
+            seen_ids: set[str] = {s.record_id for s in fts_similar}
+            similar = list(fts_similar)
+            for vh in vec_hits:
+                rid = vh.get("record_id", "")
+                if rid and rid not in seen_ids:
+                    full_rec = self._sqlite.get_record(rid)
+                    if full_rec and not full_rec.expired:
+                        similar.append(full_rec)
+                        seen_ids.add(rid)
 
             is_duplicate = False
             for s in similar:
                 if s.record_id == record.record_id:
                     is_duplicate = True
                     break
-                # 用向量相似度判断重复（使用 semantic_text，保留完整语义）
-                try:
-                    vecs = self._embedder.embed([record.semantic_text, s.semantic_text])
-                    sim = self._cosine_similarity(vecs[0], vecs[1])
-                    if sim >= self._dedup_threshold:
-                        is_duplicate = True
-                        # 更新已有条目而非插入新的；合并 temporal，以新记录为准补充缺失字段
-                        s.updated_at = datetime.now(timezone.utc).isoformat()
-                        s.confidence = min(1.0, s.confidence + 0.1)
-                        s.temporal = self._merge_temporal(s.temporal, record.temporal)
-                        self._sqlite.upsert_record(s)
-                        break
-                except Exception:
-                    pass
+                dist = dist_map.get(s.record_id)
+                if dist is not None:
+                    sim = 1.0 - dist / 2.0           # L2 → cosine，无需额外 embed
+                else:
+                    # FTS 独有候选（向量索引未命中）：回退到 embed 计算
+                    try:
+                        vecs = self._embedder.embed([record.semantic_text, s.semantic_text])
+                        sim = self._cosine_similarity(vecs[0], vecs[1])
+                    except Exception:
+                        sim = 0.0
+                if sim >= self._dedup_threshold:
+                    is_duplicate = True
+                    s.updated_at = datetime.now(timezone.utc).isoformat()
+                    s.confidence = min(1.0, s.confidence + 0.1)
+                    s.temporal = self._merge_temporal(s.temporal, record.temporal)
+                    self._sqlite.upsert_record(s)
+                    break
 
             if not is_duplicate:
                 self._sqlite.upsert_record(record)
-                try:
-                    self._vector.upsert(
-                        record_id=record.record_id,
-                        memory_type=record.memory_type,
-                        semantic_text=record.semantic_text,
-                        normalized_text=record.normalized_text,
-                    )
-                except Exception:
-                    # 向量写入失败不阻断固化；已写 SQLite，FTS 仍可召回
-                    import logging
-                    logging.getLogger("src.memory.semantic.engine").warning(
-                        "vector upsert failed for record %s", record.record_id, exc_info=True
-                    )
-                actually_added += 1
+                records_to_upsert.append(record)
                 persisted_records.append(record)
+
+        # 3d. 批量写入向量索引（一次 embed API 调用替代逐条调用）
+        if records_to_upsert:
+            try:
+                self._vector.upsert_batch([
+                    {
+                        "record_id": r.record_id,
+                        "memory_type": r.memory_type,
+                        "semantic_text": r.semantic_text,
+                        "normalized_text": r.normalized_text,
+                    }
+                    for r in records_to_upsert
+                ])
+            except Exception:
+                _engine_logger.warning("batch vector upsert failed", exc_info=True)
+            actually_added = len(records_to_upsert)
 
         sensitive_note = f"，{sensitive_skipped} 条含敏感信息跳过" if sensitive_skipped else ""
         steps.append({

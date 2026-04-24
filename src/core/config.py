@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     evolve_db_path: str = "data/prompt_evolve.db"
     evolve_auto_optimize: bool = True
     evolve_min_samples: int = 5
-    evolve_optimize_interval: int = 10
+    evolve_optimize_interval: int = 5  # 每 N 次对话后触发一次优化
     evolve_improvement_threshold: float = 0.01
 
     # ─── API ───

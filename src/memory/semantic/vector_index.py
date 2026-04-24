@@ -16,7 +16,7 @@ from typing import Any
 import lancedb
 import pyarrow as pa
 
-from src.embedder.base import BaseEmbedder
+from src.embedder.base import BaseEmbedder, set_embed_call_source
 
 
 def _make_record_schema(dim: int) -> pa.Schema:
@@ -104,13 +104,23 @@ class LanceVectorIndex:
             if table_name not in existing:
                 self._db.create_table(table_name, schema=schema)
             elif self._embedding_dim > 0:
-                # 检查现有 vector 列类型是否为 FixedSizeList
+                # 检查现有 vector 列类型是否为匹配维度的 FixedSizeList
                 try:
                     tbl = self._db.open_table(table_name)
                     existing_schema = tbl.schema
                     vec_field = existing_schema.field("vector")
-                    if not pa.types.is_fixed_size_list(vec_field.type):
-                        # 旧 variable-length schema — 重建
+                    is_wrong_schema = (
+                        not pa.types.is_fixed_size_list(vec_field.type)
+                        or vec_field.type.list_size != self._embedding_dim
+                    )
+                    if is_wrong_schema:
+                        # 变长 list 或维度不匹配 — 删除旧表并用正确 schema 重建
+                        import logging as _logging
+                        _logging.getLogger(__name__).warning(
+                            "LanceDB table %r has mismatched vector schema "
+                            "(found %s, expected FixedSizeList(%d)). Rebuilding.",
+                            table_name, vec_field.type, self._embedding_dim,
+                        )
                         self._db.drop_table(table_name)
                         self._db.create_table(table_name, schema=schema)
                 except Exception:
@@ -139,6 +149,7 @@ class LanceVectorIndex:
         if semantic_vector is None or normalized_vector is None:
             if self._embedder is None:
                 raise RuntimeError("LanceVectorIndex: embedder 未设置且未提供向量")
+            set_embed_call_source("memory_upsert")
             vecs = self._embedder.embed([semantic_text, normalized_text])
             semantic_vector = semantic_vector or vecs[0]
             normalized_vector = normalized_vector or vecs[1]
@@ -183,6 +194,7 @@ class LanceVectorIndex:
         if texts_to_embed:
             if self._embedder is None:
                 raise RuntimeError("LanceVectorIndex: embedder 未设置且未提供向量")
+            set_embed_call_source("memory_upsert")
             embedded = self._embedder.embed(texts_to_embed)
             for (idx, kind), vec in zip(embed_indices, embedded):
                 if kind == "semantic":
@@ -228,6 +240,7 @@ class LanceVectorIndex:
         if query_vector is None:
             if self._embedder is None:
                 raise RuntimeError("LanceVectorIndex: embedder 未设置且未提供查询向量")
+            set_embed_call_source("memory_search")
             query_vector = self._embedder.embed_query(query_text)
 
         table = self._db.open_table(self.MEMORY_TABLE)
@@ -277,6 +290,7 @@ class LanceVectorIndex:
         if semantic_vector is None or normalized_vector is None:
             if self._embedder is None:
                 raise RuntimeError("LanceVectorIndex: embedder 未设置且未提供向量")
+            set_embed_call_source("composite_upsert")
             vecs = self._embedder.embed([semantic_text, normalized_text])
             semantic_vector = semantic_vector or vecs[0]
             normalized_vector = normalized_vector or vecs[1]
@@ -304,6 +318,7 @@ class LanceVectorIndex:
         if query_vector is None:
             if self._embedder is None:
                 raise RuntimeError("LanceVectorIndex: embedder 未设置且未提供查询向量")
+            set_embed_call_source("composite_search")
             query_vector = self._embedder.embed_query(query_text)
 
         table = self._db.open_table(self.SYNTH_TABLE)
@@ -359,6 +374,7 @@ class LanceVectorIndex:
             _EMBED_CHUNK = 8
             all_embedded: list[list[float]] = []
             for _i in range(0, len(texts_to_embed), _EMBED_CHUNK):
+                set_embed_call_source("turns_upsert")
                 all_embedded.extend(self._embedder.embed(texts_to_embed[_i : _i + _EMBED_CHUNK]))
             for idx, vec in zip(embed_indices, all_embedded):
                 turns[idx]["vector"] = vec
@@ -397,6 +413,7 @@ class LanceVectorIndex:
         if query_vector is None:
             if self._embedder is None:
                 raise RuntimeError("LanceVectorIndex: embedder 未设置且未提供查询向量")
+            set_embed_call_source("turns_search")
             query_vector = self._embedder.embed_query(query_text)
 
         table = self._db.open_table(self.EPISODE_TABLE)

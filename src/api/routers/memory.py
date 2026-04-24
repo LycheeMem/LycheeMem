@@ -466,9 +466,84 @@ def _record_evolve_api_usage(
     )
 
 
+def _collect_evolve_search_signals(
+    pipeline,
+    diagnostics: dict,
+    *,
+    prompt_versions_snapshot: dict[str, int] | None = None,
+) -> None:
+    """将检索充分性诊断写入自进化信号（adequacy_pass / required_supplementary）。"""
+    evolve_loop = getattr(pipeline, "evolve_loop", None)
+    if evolve_loop is None:
+        return
+    if not isinstance(diagnostics, dict):
+        return
+    try:
+        rounds = int(diagnostics.get("reflection_rounds", 0) or 0)
+        if rounds > 0:
+            final_ok = bool(diagnostics.get("final_is_sufficient", True))
+            evolve_loop.collect_retrieval_adequacy(
+                is_sufficient=final_ok,
+                reflection_round=max(0, rounds - 1),
+                prompt_versions_used=prompt_versions_snapshot,
+            )
+    except Exception:
+        logger.warning("Failed to collect evolve search signals", exc_info=True)
+
+
+def _collect_evolve_synthesis_signals(
+    pipeline,
+    kept_count: int,
+    dropped_count: int,
+    input_count: int,
+    *,
+    prompt_versions_snapshot: dict[str, int] | None = None,
+) -> None:
+    """将合成 kept/dropped 统计写入自进化信号（kept_ratio）。"""
+    evolve_loop = getattr(pipeline, "evolve_loop", None)
+    if evolve_loop is None:
+        return
+    if kept_count + dropped_count == 0:
+        return
+    try:
+        evolve_loop.after_run(
+            prompt_versions_used=prompt_versions_snapshot,
+            synthesis_kept=kept_count,
+            synthesis_dropped=dropped_count,
+            synthesis_input=input_count,
+        )
+    except Exception:
+        logger.warning("Failed to collect evolve synthesis signals", exc_info=True)
+
+
+def _collect_evolve_consolidation_signals(
+    pipeline,
+    result: dict,
+    *,
+    prompt_versions_snapshot: dict[str, int] | None = None,
+) -> None:
+    """将固化结果写入自进化信号（records_added / skills_added / has_novelty）。"""
+    evolve_loop = getattr(pipeline, "evolve_loop", None)
+    if evolve_loop is None:
+        return
+    try:
+        evolve_loop.after_run(
+            prompt_versions_used=prompt_versions_snapshot,
+            consolidation_records_added=int(result.get("entities_added") or 0),
+            consolidation_records_merged=int(result.get("facts_added") or 0),
+            consolidation_records_expired=int(result.get("records_expired") or 0),
+            consolidation_has_novelty=bool(result.get("has_novelty")),
+            consolidation_skills_added=int(result.get("skills_added") or 0),
+        )
+    except Exception:
+        logger.warning("Failed to collect evolve consolidation signals", exc_info=True)
+
+
 def run_memory_search(
     pipeline,
     req: MemorySearchRequest,
+    *,
+    prompt_versions_snapshot: dict[str, int] | None = None,
 ) -> MemorySearchResponse:
     """执行统一记忆检索，返回可直接供 Synthesizer 消费的 richer 结构。"""
     sc = pipeline.search_coordinator
@@ -508,6 +583,12 @@ def run_memory_search(
     if callable(build_novelty_context):
         novelty_retrieved_context = str(build_novelty_context(semantic_results) or "")
 
+    # 收集检索充分性自进化信号
+    diagnostics = search_result.get("retrieval_diagnostics") or {}
+    _collect_evolve_search_signals(
+        pipeline, diagnostics, prompt_versions_snapshot=prompt_versions_snapshot
+    )
+
     return MemorySearchResponse(
         query=req.query,
         graph_results=graph_results,
@@ -521,6 +602,8 @@ def run_memory_search(
 def run_memory_synthesize(
     pipeline,
     req: MemorySynthesizeRequest,
+    *,
+    prompt_versions_snapshot: dict[str, int] | None = None,
 ) -> MemorySynthesizeResponse:
     """执行检索结果压缩，供 HTTP Router 与 MCP 共享。"""
     semantic_results = req.semantic_results or req.graph_results
@@ -542,6 +625,12 @@ def run_memory_synthesize(
     kept_count = int(result.get("kept_count") or len(provenance_flat))
     dropped_count = int(result.get("dropped_count") or max(0, input_count - kept_count))
 
+    # 收集合成自进化信号
+    _collect_evolve_synthesis_signals(
+        pipeline, kept_count, dropped_count, input_count,
+        prompt_versions_snapshot=prompt_versions_snapshot,
+    )
+
     return MemorySynthesizeResponse(
         background_context=result.get("background_context", ""),
         skill_reuse_plan=result.get("skill_reuse_plan", []),
@@ -554,6 +643,8 @@ def run_memory_synthesize(
 def run_memory_smart_search(
     pipeline,
     req: MemorySmartSearchRequest,
+    *,
+    prompt_versions_snapshot: dict[str, int] | None = None,
 ) -> MemorySmartSearchResponse:
     """执行 one-shot 检索；可选自动 synthesize，便于宿主快速试验效果。"""
     search_result = run_memory_search(
@@ -565,6 +656,7 @@ def run_memory_smart_search(
             include_graph=req.include_graph,
             include_skills=req.include_skills,
         ),
+        prompt_versions_snapshot=prompt_versions_snapshot,
     )
 
     if not req.synthesize:
@@ -599,6 +691,7 @@ def run_memory_smart_search(
             semantic_results=search_result.semantic_results,
             skill_results=search_result.skill_results,
         ),
+        prompt_versions_snapshot=prompt_versions_snapshot,
     )
     if req.mode == "compact":
         return MemorySmartSearchResponse(
@@ -687,13 +780,16 @@ def run_memory_consolidate(
     if req.background:
         def _run() -> None:
             try:
-                pipeline.consolidator.run(
+                _result = pipeline.consolidator.run(
                     turns=turns,
                     session_id=req.session_id,
                     retrieved_context=req.retrieved_context,
                     turn_index_offset=effective_watermark,
                     skip_skills=req.skip_skills,
                     session_date=req.session_date,
+                )
+                _collect_evolve_consolidation_signals(
+                    pipeline, _result, prompt_versions_snapshot=prompt_versions_snapshot
                 )
                 _record_evolve_api_usage(
                     pipeline,
@@ -721,6 +817,9 @@ def run_memory_consolidate(
         turn_index_offset=effective_watermark,
         skip_skills=req.skip_skills,
         session_date=req.session_date,
+    )
+    _collect_evolve_consolidation_signals(
+        pipeline, result, prompt_versions_snapshot=prompt_versions_snapshot
     )
     _record_evolve_api_usage(
         pipeline,
@@ -791,7 +890,10 @@ def _run_memory_reason(
 async def memory_search(req: MemorySearchRequest, pipeline=Depends(get_pipeline)):
     """统一记忆检索：同时查询图谱和技能库。"""
     prompt_versions_snapshot = select_prompt_versions(_MEMORY_SEARCH_API_PROMPTS)
-    response = await run_in_threadpool(run_memory_search, pipeline, req)
+    response = await run_in_threadpool(
+        run_memory_search, pipeline, req,
+        prompt_versions_snapshot=prompt_versions_snapshot,
+    )
     _record_evolve_api_usage(
         pipeline,
         api_name="memory/search",
@@ -811,7 +913,10 @@ async def memory_smart_search(
     if req.synthesize and req.mode != "raw":
         prompt_names.update(_MEMORY_SYNTHESIZE_API_PROMPTS)
     prompt_versions_snapshot = select_prompt_versions(prompt_names)
-    response = await run_in_threadpool(run_memory_smart_search, pipeline, req)
+    response = await run_in_threadpool(
+        run_memory_smart_search, pipeline, req,
+        prompt_versions_snapshot=prompt_versions_snapshot,
+    )
     _record_evolve_api_usage(
         pipeline,
         api_name="memory/smart-search",
@@ -835,7 +940,10 @@ async def memory_synthesize(
     输出的 background_context 和 skill_reuse_plan 可直接传给 POST /memory/reason。
     """
     prompt_versions_snapshot = select_prompt_versions(_MEMORY_SYNTHESIZE_API_PROMPTS)
-    response = await run_in_threadpool(run_memory_synthesize, pipeline, req)
+    response = await run_in_threadpool(
+        run_memory_synthesize, pipeline, req,
+        prompt_versions_snapshot=prompt_versions_snapshot,
+    )
     _record_evolve_api_usage(
         pipeline,
         api_name="memory/synthesize",

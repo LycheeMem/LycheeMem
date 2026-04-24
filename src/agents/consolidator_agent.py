@@ -13,7 +13,7 @@ from typing import Any
 from src.agents.base_agent import BaseAgent
 from src.agents.prompts import CONSOLIDATION_SYSTEM_PROMPT
 from src.evolve.prompt_registry import get_prompt
-from src.embedder.base import BaseEmbedder
+from src.embedder.base import BaseEmbedder, set_embed_call_source
 from src.llm.base import BaseLLM, set_llm_call_source
 from src.memory.procedural.sqlite_skill_store import SQLiteSkillStore
 from src.memory.semantic.base import BaseSemanticMemoryEngine
@@ -147,6 +147,7 @@ class ConsolidatorAgent(BaseAgent):
                 doc_markdown = skill.get("doc_markdown", "")
                 if not intent or not doc_markdown:
                     continue
+                set_embed_call_source("skill_search")
                 embedding = self.embedder.embed_query(intent)
                 # 代码层兜底：向量相似度去重 / 合并
                 top_existing = self.skill_store.search(
