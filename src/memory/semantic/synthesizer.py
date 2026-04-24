@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
 
+from src.embedder.base import BaseEmbedder, set_embed_call_source
 from src.memory.semantic.models import (
     MemoryRecord,
     CompositeRecord,
@@ -32,6 +33,7 @@ class RecordFusionEngine:
         sqlite_store: SQLiteSemanticStore,
         vector_index: LanceVectorIndex,
         *,
+        embedder: BaseEmbedder | None = None,
         synthesis_similarity: float = 0.75,
         dedup_threshold: float = 0.85,
         min_records_for_synthesis: int = 2,
@@ -40,6 +42,7 @@ class RecordFusionEngine:
     ):
         self._sqlite = sqlite_store
         self._vector = vector_index
+        self._embedder = embedder
 
         # 将余弦相似度阈值转换为 L2 距离阈值
         # 对归一化向量: L2_distance = 2 * (1 - cosine_similarity)
@@ -163,15 +166,25 @@ class RecordFusionEngine:
 
         valid_records = [r for r in new_records if not r.expired and r.record_id]
 
-        # 并行查询：每条 record 独立调用 vector.search（只读，并发安全）
-        def _search_dedup(rec: MemoryRecord) -> tuple[str, list[dict]]:
-            results = self._vector.search(
-                rec.semantic_text, column="vector", limit=10, include_expired=False,
-            )
-            return rec.record_id, results
-
+        # 批量 embed 所有文本（1 次 API 调用），再并行做纯 ANN 搜索（无额外 embed）
         dedup_search_map: dict[str, list[dict]] = {}
         if valid_records:
+            texts = [r.semantic_text for r in valid_records]
+            if self._embedder is not None:
+                set_embed_call_source("synthesizer_dedup")
+                batch_vecs = self._embedder.embed(texts)
+                vec_map = {r.record_id: batch_vecs[i] for i, r in enumerate(valid_records)}
+            else:
+                vec_map = {}
+
+            def _search_dedup(rec: MemoryRecord) -> tuple[str, list[dict]]:
+                qv = vec_map.get(rec.record_id)
+                results = self._vector.search(
+                    rec.semantic_text, column="vector", limit=10,
+                    include_expired=False, query_vector=qv,
+                )
+                return rec.record_id, results
+
             with ThreadPoolExecutor(max_workers=min(8, len(valid_records))) as _pool:
                 for _rid, _results in _pool.map(_search_dedup, valid_records):
                     dedup_search_map[_rid] = _results
@@ -238,10 +251,19 @@ class RecordFusionEngine:
         }
         new_ids = set(candidate_map.keys())
 
-        # 并行 ANN 搜索，建立相似度边
+        # 批量 embed 所有文本（1 次 API 调用），再并行做纯 ANN 搜索（无额外 embed）
+        if self._embedder is not None:
+            set_embed_call_source("synthesizer_cluster")
+            cluster_batch_vecs = self._embedder.embed([r.semantic_text for r in new_records])
+            cluster_vec_map = {r.record_id: cluster_batch_vecs[i] for i, r in enumerate(new_records)}
+        else:
+            cluster_vec_map = {}
+
         def _search_cluster(rec: MemoryRecord) -> tuple[str, list[dict]]:
+            qv = cluster_vec_map.get(rec.record_id)
             return rec.record_id, self._vector.search(
-                rec.semantic_text, column="vector", limit=15, include_expired=False,
+                rec.semantic_text, column="vector", limit=15,
+                include_expired=False, query_vector=qv,
             )
 
         cluster_search_map: dict[str, list[dict]] = {}

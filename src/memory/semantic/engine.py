@@ -663,15 +663,10 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                     is_duplicate = True
                     break
                 dist = dist_map.get(s.record_id)
-                if dist is not None:
-                    sim = 1.0 - dist / 2.0           # L2 → cosine，无需额外 embed
-                else:
-                    # FTS 独有候选（向量索引未命中）：回退到 embed 计算
-                    try:
-                        vecs = self._embedder.embed([record.semantic_text, s.semantic_text])
-                        sim = self._cosine_similarity(vecs[0], vecs[1])
-                    except Exception:
-                        sim = 0.0
+                if dist is None:
+                    # FTS 独有候选（ANN 未命中）：ANN 已在全向量空间检索，
+                    continue
+                sim = 1.0 - dist / 2.0               # L2 → cosine，无需额外 embed
                 if sim >= self._dedup_threshold:
                     is_duplicate = True
                     s.updated_at = datetime.now(timezone.utc).isoformat()
