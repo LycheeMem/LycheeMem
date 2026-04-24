@@ -49,3 +49,8 @@ class PipelineState(TypedDict, total=False):
     # ─── 本轮 token 统计（主流程所有 LLM 调用之和，不含后台固化） ───
     turn_input_tokens: int   # 输入 token 总量
     turn_output_tokens: int  # 输出 token 总量
+
+    # ─── 多模态 / 视觉记忆 ───
+    input_images: list[str] = []  # Base64 编码的输入图片列表（当前轮次）
+    retrieved_visual_memories: list[dict[str, Any]] = []  # 检索到的视觉记忆
+    visual_context: str = ""  # 融合后的视觉记忆上下文（供 Reasoner 使用）

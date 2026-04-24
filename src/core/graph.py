@@ -153,6 +153,165 @@ class LycheePipeline:
             "wm_token_usage": result["wm_token_usage"],
         }
 
+    def _visual_memory_node(self, state: PipelineState) -> dict[str, Any]:
+        """视觉记忆处理节点：提取、存储输入图片，检索相关视觉记忆。"""
+        input_images = state.get("input_images") or []
+        session_id = state.get("session_id", "")
+        user_query = state.get("user_query", "")
+
+        retrieved_visual = []
+        visual_context = ""
+
+        # 如果有图片输入，处理存储
+        if input_images and hasattr(self, "visual_extractor"):
+            import asyncio
+            import hashlib
+            from datetime import datetime, timezone
+            from src.memory.visual.models import VisualMemoryRecord
+
+            stored_records = []  # 记录本次存储的 record_id
+
+            async def _process_images():
+                stored = []
+                for img_b64 in input_images:
+                    try:
+                        extraction = await self.visual_extractor.extract_from_base64(
+                            image_b64=img_b64,
+                            mime_type="image/jpeg",
+                            session_id=session_id,
+                        )
+                        image_path = self.visual_store.save_image_file(
+                            image_b64=img_b64,
+                            image_hash=extraction["image_hash"],
+                            mime_type=extraction.get("image_mime_type", "image/jpeg"),
+                            session_id=session_id,
+                        )
+                        record_id = hashlib.sha256(
+                            f"{extraction['image_hash']}:{session_id}:{datetime.now(timezone.utc).isoformat()}".encode()
+                        ).hexdigest()[:32]
+
+                        record = VisualMemoryRecord(
+                            record_id=record_id,
+                            session_id=session_id,
+                            timestamp=datetime.now(timezone.utc).isoformat(),
+                            image_path=image_path,
+                            image_hash=extraction["image_hash"],
+                            image_size=extraction.get("image_size", 0),
+                            image_mime_type=extraction.get("image_mime_type", "image/jpeg"),
+                            caption=extraction.get("caption", ""),
+                            entities=extraction.get("entities", []),
+                            scene_type=extraction.get("scene_type", "other"),
+                            structured_data=extraction.get("structured_data", {}),
+                            importance_score=extraction.get("importance_score", 0.5),
+                            source_role="user",
+                        )
+                        
+                        # 生成双嵌入：caption embedding + visual embedding
+                        # 1. Caption embedding（文本嵌入，向后兼容）
+                        if self.visual_store.embedder:
+                            embedding = self.visual_store.embedder.embed_query(record.caption)
+                            if embedding:
+                                record.caption_embedding = embedding
+                        
+                        # 2. Visual embedding（CLIP 视觉嵌入，新增，支持跨模态检索）
+                        if hasattr(self.visual_store, 'multimodal_embedder') and self.visual_store.multimodal_embedder:
+                            try:
+                                # 临时保存图像以生成嵌入
+                                import base64
+                                from pathlib import Path
+                                import tempfile
+                                
+                                # 解码图像
+                                image_bytes = base64.b64decode(img_b64)
+                                
+                                # 使用临时文件生成视觉嵌入
+                                with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
+                                    tmp.write(image_bytes)
+                                    tmp_path = tmp.name
+                                
+                                try:
+                                    # 生成 CLIP 视觉嵌入（与文本同一空间）
+                                    visual_embedding = self.visual_store.multimodal_embedder.embed_image(tmp_path)
+                                    if visual_embedding:
+                                        record.visual_embedding = visual_embedding
+                                        logger.info("Visual embedding generated: dim=%d", len(visual_embedding))
+                                finally:
+                                    # 清理临时文件
+                                    Path(tmp_path).unlink(missing_ok=True)
+                                    
+                            except Exception as e:
+                                logger.warning("Failed to generate visual embedding: %s", e)
+
+                        stored_id = self.visual_store.store(record)
+                        if stored_id:
+                            stored.append(stored_id)
+                            logger.info("Visual memory stored: id=%s, caption=%s", stored_id, record.caption[:60])
+                    except Exception as e:
+                        logger.error("Failed to process image: %s", e)
+                return stored
+
+            try:
+                loop = asyncio.new_event_loop()
+                try:
+                    stored_records = loop.run_until_complete(_process_images())
+                finally:
+                    loop.close()
+            except Exception as e:
+                logger.error("Visual processing failed: %s", e)
+
+        # 检索视觉记忆
+        if hasattr(self, "visual_retriever"):
+            try:
+                if input_images:
+                    # 有图片输入时：优先使用本次存储的记录，否则获取会话的所有视觉记忆
+                    if stored_records:
+                        # 直接获取本次存储的记录
+                        for rec_id in stored_records:
+                            rec = self.visual_store.get_by_id(rec_id)
+                            if rec and not rec.expired:
+                                retrieved_visual.append({
+                                    "record_id": rec.record_id,
+                                    "caption": rec.caption,
+                                    "image_path": rec.image_path,
+                                    "image_hash": rec.image_hash,
+                                    "scene_type": rec.scene_type,
+                                    "timestamp": rec.timestamp,
+                                    "importance_score": rec.importance_score,
+                                    "session_id": rec.session_id,
+                                    "entities": rec.entities,
+                                    "structured_data": rec.structured_data,
+                                    "source_role": rec.source_role,
+                                })
+                        logger.info("Using %d newly stored visual memories", len(retrieved_visual))
+                    else:
+                        # 没有新存储的记录，获取会话的所有视觉记忆
+                        retrieved_visual = self.visual_retriever.retrieve_by_session(
+                            session_id=session_id, top_k=10
+                        )
+                elif user_query:
+                    # 纯文本查询时，检索相关视觉记忆
+                    retrieved_visual = self.visual_retriever.retrieve_for_context(
+                        query=user_query, top_k=3
+                    )
+
+                if retrieved_visual:
+                    parts = []
+                    for i, vm in enumerate(retrieved_visual, 1):
+                        parts.append(
+                            f"[视觉记忆{i}] {vm.get('caption', '')} "
+                            f"(类型: {vm.get('scene_type', '')}, "
+                            f"重要性: {vm.get('importance_score', 0):.2f})"
+                        )
+                    visual_context = "\n".join(parts)
+                    logger.info("Retrieved %d visual memories", len(retrieved_visual))
+            except Exception as e:
+                logger.warning("Visual retrieval failed: %s", e)
+
+        return {
+            "retrieved_visual_memories": retrieved_visual,
+            "visual_context": visual_context,
+        }
+
     def _search_node(self, state: PipelineState) -> dict[str, Any]:
         """检索协调节点：从图谱和技能库检索相关记忆。"""
         result = self.search_coordinator.run(
@@ -179,16 +338,61 @@ class LycheePipeline:
 
     def _synthesize_node(self, state: PipelineState) -> dict[str, Any]:
         """整合排序节点：融合多源检索结果为 background_context + skill_reuse_plan。"""
-        result = self.synthesizer.run(
-            user_query=state["user_query"],
-            retrieved_graph_memories=state.get("retrieved_graph_memories", []),
-            retrieved_skills=state.get("retrieved_skills", []),
-        )
-        return {
-            "background_context": result["background_context"],
-            "skill_reuse_plan": result.get("skill_reuse_plan", []),
-            "provenance": result.get("provenance", []),
-        }
+        visual_context = state.get("visual_context", "")
+        input_images = state.get("input_images") or []
+
+        # 如果用户上传了新图片，视觉记忆是唯一权威来源
+        # 直接忽略图谱记忆中的旧视觉描述
+        if visual_context and input_images:
+            # 新图片上传时，视觉记忆直接作为 background_context
+            # 不使用 Synthesizer 过滤，避免旧记忆干扰
+            logger.info("New image uploaded - using visual memory as authoritative source")
+            return {
+                "background_context": visual_context,
+                "skill_reuse_plan": [],
+                "provenance": [{"source": "visual_memory", "index": 0, "relevance": 1.0, "summary": "Newly uploaded image"}],
+            }
+
+        # 没有新图片但有视觉记忆（后续追问）
+        if visual_context:
+            graph_memories = state.get("retrieved_graph_memories", [])[:]
+            # 将视觉记忆放在最前面
+            graph_memories.insert(0, {
+                "constructed_context": visual_context,
+                "anchor": {"node_id": "visual_memory", "type": "visual"},
+            })
+            logger.info("Visual context injected as first memory source")
+
+            result = self.synthesizer.run(
+                user_query=state["user_query"],
+                retrieved_graph_memories=graph_memories,
+                retrieved_skills=state.get("retrieved_skills", []),
+            )
+
+            bg_context = result.get("background_context", "")
+            # 确保视觉记忆不被 Synthesizer 过滤掉
+            visual_key_info = visual_context[:80] if visual_context else ""
+            if visual_key_info and visual_key_info not in bg_context[:300]:
+                bg_context = visual_context + "\n\n" + bg_context
+                logger.info("Visual context was filtered out, prepending manually")
+
+            return {
+                "background_context": bg_context,
+                "skill_reuse_plan": result.get("skill_reuse_plan", []),
+                "provenance": result.get("provenance", []),
+            }
+        else:
+            # 没有视觉记忆，正常合成
+            result = self.synthesizer.run(
+                user_query=state["user_query"],
+                retrieved_graph_memories=state.get("retrieved_graph_memories", []),
+                retrieved_skills=state.get("retrieved_skills", []),
+            )
+            return {
+                "background_context": result["background_context"],
+                "skill_reuse_plan": result.get("skill_reuse_plan", []),
+                "provenance": result.get("provenance", []),
+            }
 
     def _reason_node(self, state: PipelineState) -> dict[str, Any]:
         """推理节点：生成最终回答（含技能复用计划）。"""
@@ -232,13 +436,15 @@ class LycheePipeline:
 
         # 注册节点
         g.add_node("wm_manager", self._wm_manager_node)
+        g.add_node("visual_memory", self._visual_memory_node)
         g.add_node("search", self._search_node)
         g.add_node("synthesize", self._synthesize_node)
         g.add_node("reason", self._reason_node)
 
-        # 线性连接
+        # 线性连接: START → wm_manager → visual_memory → search → synthesize → reason → END
         g.add_edge(START, "wm_manager")
-        g.add_edge("wm_manager", "search")
+        g.add_edge("wm_manager", "visual_memory")
+        g.add_edge("visual_memory", "search")
         g.add_edge("search", "synthesize")
         g.add_edge("synthesize", "reason")
         g.add_edge("reason", END)
@@ -320,12 +526,13 @@ class LycheePipeline:
     # Public API
     # ──────────────────────────────────────
 
-    def run(self, user_query: str, session_id: str) -> dict[str, Any]:
+    def run(self, user_query: str, session_id: str, input_images: list[str] | None = None) -> dict[str, Any]:
         """同步运行 Pipeline。
 
         Args:
             user_query: 用户输入。
             session_id: 会话 ID。
+            input_images: Base64 编码的图片列表（可选）。
 
         Returns:
             完整的 PipelineState（包含 final_response 等所有字段）。
@@ -336,6 +543,7 @@ class LycheePipeline:
             initial_state: dict[str, Any] = {
                 "user_query": user_query,
                 "session_id": session_id,
+                "input_images": input_images or [],
             }
             result = self._graph.invoke(initial_state)
         finally:
@@ -356,11 +564,12 @@ class LycheePipeline:
 
         return result
 
-    async def arun(self, user_query: str, session_id: str) -> dict[str, Any]:
+    async def arun(self, user_query: str, session_id: str, input_images: list[str] | None = None) -> dict[str, Any]:
         """异步运行 Pipeline。"""
         initial_state: dict[str, Any] = {
             "user_query": user_query,
             "session_id": session_id,
+            "input_images": input_images or [],
         }
         result = await self._graph.ainvoke(initial_state)
 
@@ -378,7 +587,7 @@ class LycheePipeline:
         return result
 
     async def astream_steps(
-        self, user_query: str, session_id: str
+        self, user_query: str, session_id: str, input_images: list[str] | None = None
     ) -> AsyncIterator[dict[str, Any]]:
         """逐节点执行 Pipeline，每步完成后 yield 进度事件。
 
@@ -397,7 +606,11 @@ class LycheePipeline:
                 _token_accumulator.reset(tok)
 
         try:
-            state: dict[str, Any] = {"user_query": user_query, "session_id": session_id}
+            state: dict[str, Any] = {
+                "user_query": user_query,
+                "session_id": session_id,
+                "input_images": input_images or [],
+            }
 
             patch = await asyncio.to_thread(self._wm_manager_node, state)
             state.update(patch)
@@ -408,6 +621,10 @@ class LycheePipeline:
                 "wm_token_usage": patch.get("wm_token_usage", 0),
                 "patch": patch,
             }
+
+            patch = await asyncio.to_thread(self._visual_memory_node, state)
+            state.update(patch)
+            yield {"type": "step", "step": "visual_memory", "status": "done", "patch": patch}
 
             patch = await asyncio.to_thread(self._search_node, state)
             state.update(patch)

@@ -1,5 +1,5 @@
-import { MessageOutlined } from "@ant-design/icons";
-import { useCallback, useEffect, useRef } from "react";
+import { MessageOutlined, PictureOutlined, CloseCircleOutlined } from "@ant-design/icons";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchGraphData, fetchGraphEdges, fetchPipelineStatus, fetchSessionTurns, fetchSessions, fetchSkills, streamChatMessage } from "../api";
 import { useStore } from "../state";
 import MarkdownRenderer from "./MarkdownRenderer";
@@ -31,9 +31,10 @@ export default function ChatPanel() {
   const setStreamingContent = useStore((s) => s.setStreamingContent);
   const appendStreamingContent = useStore((s) => s.appendStreamingContent);
 
+  const [pendingImages, setPendingImages] = useState<{ base64: string; preview: string; mimeType: string }[]>([]);
   const messagesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  // rAF token batching：将高频 token 事件缓冲至每帧最多一次 state 更新
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const tokenBufferRef = useRef<string>("");
   const rafRef = useRef<number | null>(null);
 
@@ -44,18 +45,69 @@ export default function ChatPanel() {
     }
   }, [messages, isTyping, streamingContent]);
 
+  // 处理图片选择 - 使用 Promise 确保异步正确性
+  const handleImageSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    const promises: Promise<{ base64: string; preview: string; mimeType: string }>[] = [];
+    Array.from(files).forEach((file) => {
+      if (!file.type.startsWith("image/")) return;
+      if (file.size > 10 * 1024 * 1024) return;
+
+      const promise = new Promise<{ base64: string; preview: string; mimeType: string }>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+          const result = evt.target?.result as string;
+          const base64 = result.split(",")[1] || result;
+          resolve({ base64, preview: result, mimeType: file.type });
+        };
+        reader.readAsDataURL(file);
+      });
+      promises.push(promise);
+    });
+
+    Promise.all(promises).then((results) => {
+      if (results.length > 0) {
+        setPendingImages((prev) => [...prev, ...results]);
+      }
+    });
+
+    // 重置 input
+    e.target.value = "";
+  }, []);
+
+  const removePendingImage = useCallback((index: number) => {
+    setPendingImages((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
       const input = inputRef.current;
       if (!input) return;
       const text = input.value.trim();
-      if (!text || isStreaming) return;
+      if ((!text && pendingImages.length === 0) || isStreaming) return;
 
       input.value = "";
       input.style.height = "auto";
 
-      addMessage({ role: "user", content: text, meta: null });
+      // 保存当前图片
+      const imagesToSend = [...pendingImages];
+      setPendingImages([]);
+
+      // 用户消息内容
+      let messageContent = text;
+      if (imagesToSend.length > 0 && !text) {
+        messageContent = "[图片]";
+      }
+
+      addMessage({
+        role: "user",
+        content: messageContent,
+        meta: null,
+        images: imagesToSend.map((img) => img.preview),
+      });
       setIsTyping(true);
       setIsStreaming(true);
       setStreamingContent("");
@@ -63,64 +115,67 @@ export default function ChatPanel() {
       setPartialTrace(null);
       setCompletedSteps([]);
 
-      // Track accumulated state across SSE callbacks
       const doneSteps: string[] = [];
 
       try {
-        await streamChatMessage(sessionId, text, {
-          onStep(step, data) {
-            doneSteps.push(step);
-            setCompletedSteps([...doneSteps]);
-            const fragment = data.trace_fragment;
-            if (fragment && typeof fragment === "object") {
-              mergePartialTrace(fragment as Record<string, unknown>);
-            }
-          },
-          onToken(token) {
-            // 首个 token 到达时关闭 typing 指示器，改为真实流式渲染
-            setIsTyping(false);
-            // 缓冲 token，通过 rAF 每帧批量刷新一次，避免逐字符 re-render 导致的生硬闪烁
-            tokenBufferRef.current += token;
-            if (rafRef.current === null) {
-              rafRef.current = requestAnimationFrame(() => {
+        console.log("[ChatPanel] Sending message with images:", imagesToSend.length);
+        await streamChatMessage(
+          sessionId,
+          text || "[图片]",
+          {
+            onStep(step, data) {
+              doneSteps.push(step);
+              setCompletedSteps([...doneSteps]);
+              const fragment = data.trace_fragment;
+              if (fragment && typeof fragment === "object") {
+                mergePartialTrace(fragment as Record<string, unknown>);
+              }
+            },
+            onToken(token) {
+              setIsTyping(false);
+              tokenBufferRef.current += token;
+              if (rafRef.current === null) {
+                rafRef.current = requestAnimationFrame(() => {
+                  appendStreamingContent(tokenBufferRef.current);
+                  tokenBufferRef.current = "";
+                  rafRef.current = null;
+                });
+              }
+            },
+            onAnswer(_answer) {
+              setIsTyping(false);
+            },
+            onDone(data) {
+              if (rafRef.current !== null) {
+                cancelAnimationFrame(rafRef.current);
+                rafRef.current = null;
+              }
+              if (tokenBufferRef.current) {
                 appendStreamingContent(tokenBufferRef.current);
                 tokenBufferRef.current = "";
-                rafRef.current = null;
+              }
+              setWmTokenUsage(data.wm_token_usage || 0);
+              console.log("[ChatPanel] Done, memories retrieved:", data.memories_retrieved);
+              addMessage({
+                role: "assistant",
+                content: useStore.getState().streamingContent,
+                meta: {
+                  memories_retrieved: data.memories_retrieved || 0,
+                  wm_token_usage: data.wm_token_usage || 0,
+                  turn_input_tokens: data.turn_input_tokens,
+                  turn_output_tokens: data.turn_output_tokens,
+                  trace: data.trace || null,
+                },
               });
-            }
+              if (data.trace) {
+                setCurrentTrace(data.trace);
+              }
+              setStreamingContent("");
+            },
           },
-          onAnswer(_answer) {
-            // answer 事件是对所有 token 的汇总确认，前端已通过 token 事件累积，忽略即可
-            setIsTyping(false);
-          },
-          onDone(data) {
-            // 取消待处理的 rAF，同步刷新缓冲区，确保最后几个 token 不丢失
-            if (rafRef.current !== null) {
-              cancelAnimationFrame(rafRef.current);
-              rafRef.current = null;
-            }
-            if (tokenBufferRef.current) {
-              appendStreamingContent(tokenBufferRef.current);
-              tokenBufferRef.current = "";
-            }
-            setWmTokenUsage(data.wm_token_usage || 0);
-            addMessage({
-              role: "assistant",
-              content: useStore.getState().streamingContent,
-              meta: {
-                memories_retrieved: data.memories_retrieved || 0,
-                wm_token_usage: data.wm_token_usage || 0,
-                turn_input_tokens: data.turn_input_tokens,
-                turn_output_tokens: data.turn_output_tokens,
-                trace: data.trace || null,
-              },
-            });
-            if (data.trace) {
-              setCurrentTrace(data.trace);
-            }
-            setStreamingContent("");
-          },
-        });
+          imagesToSend.map((img) => img.base64),
+          imagesToSend.map((img) => img.mimeType)  // 传递 MIME 类型
+        );
       } catch (err) {
         if (rafRef.current !== null) {
           cancelAnimationFrame(rafRef.current);
@@ -131,16 +186,13 @@ export default function ChatPanel() {
         setStreamingContent("");
         addMessage({
           role: "assistant",
-          content:
-            "⚠️ 连接错误: " +
-            (err instanceof Error ? err.message : String(err)),
+          content: "⚠️ 连接错误: " + (err instanceof Error ? err.message : String(err)),
           meta: null,
         });
       }
 
       setIsStreaming(false);
 
-      // Post-chat refresh
       setTimeout(async () => {
         try { setGraphData(await fetchGraphData()); } catch { /* */ }
         try { setGraphEdges(await fetchGraphEdges()); } catch { /* */ }
@@ -158,27 +210,12 @@ export default function ChatPanel() {
       }, 500);
     },
     [
-      isStreaming,
-      sessionId,
-      addMessage,
-      setIsTyping,
-      setIsStreaming,
-      setStreamingContent,
-      appendStreamingContent,
-      setWmTokenUsage,
-      setWmMaxTokens,
-      setWmTurns,
-      setWmSummaries,
-      setWmBoundaryIndex,
-      setCurrentTrace,
-      setPartialTrace,
-      mergePartialTrace,
-      setCompletedSteps,
-      setGraphData,
-      setGraphEdges,
-      setSkills,
-      setPipelineStatus,
-      setSessions,
+      isStreaming, sessionId, pendingImages,
+      addMessage, setIsTyping, setIsStreaming, setStreamingContent,
+      appendStreamingContent, setWmTokenUsage, setWmMaxTokens, setWmTurns,
+      setWmSummaries, setWmBoundaryIndex, setCurrentTrace, setPartialTrace,
+      mergePartialTrace, setCompletedSteps, setGraphData, setGraphEdges,
+      setSkills, setPipelineStatus, setSessions,
     ]
   );
 
@@ -212,33 +249,23 @@ export default function ChatPanel() {
                 <MarkdownRenderer content={msg.content} />
               )}
             </div>
-            {/* 显示 token 统计（仅 assistant 消息） */}
-            {/* {msg.role === "assistant" && msg.meta && (
-              <div className="msg-meta">
-                {msg.meta.turn_input_tokens !== undefined && msg.meta.turn_output_tokens !== undefined && (
-                  <span className="token-stat">
-                    📊 输入: {msg.meta.turn_input_tokens} | 输出: {msg.meta.turn_output_tokens}
-                  </span>
-                )}
-                {msg.meta.memories_retrieved > 0 && (
-                  <span className="memory-stat">🧠 检索: {msg.meta.memories_retrieved}</span>
-                )}
-                {msg.meta.wm_token_usage > 0 && (
-                  <span className="wm-stat">💾 WM占用: {msg.meta.wm_token_usage}</span>
-                )}
+            {/* 显示用户消息中的图片 */}
+            {msg.role === "user" && msg.images && msg.images.length > 0 && (
+              <div className="msg-images">
+                {msg.images.map((img: string, idx: number) => (
+                  <img key={idx} src={img} alt={`图片 ${idx + 1}`} className="msg-image-thumb" />
+                ))}
               </div>
-            )} */}
+            )}
           </div>
         ))}
 
-        {/* 流式输出中的 assistant 气泡（token by token 实时渲染） */}
         {isStreaming && streamingContent && (
           <div className="msg msg-assistant">
             <MarkdownRenderer content={streamingContent} streaming />
           </div>
         )}
 
-        {/* 等待首个 token 前的打字指示器 */}
         {isTyping && (
           <div className="msg msg-assistant">
             <div className="typing-indicator">
@@ -250,7 +277,39 @@ export default function ChatPanel() {
         )}
       </div>
 
+      {/* 待发送图片预览 */}
+      {pendingImages.length > 0 && (
+        <div className="image-preview-bar">
+          {pendingImages.map((img, idx) => (
+            <div key={idx} className="image-preview-item">
+              <img src={img.preview} alt={`预览 ${idx + 1}`} />
+              <CloseCircleOutlined
+                className="image-preview-remove"
+                onClick={() => removePendingImage(idx)}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+
       <form className="chat-input-area" onSubmit={handleSubmit}>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          style={{ display: "none" }}
+          onChange={handleImageSelect}
+        />
+        <button
+          type="button"
+          className="image-upload-btn"
+          title="上传图片"
+          disabled={isStreaming}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <PictureOutlined />
+        </button>
         <textarea
           id="chat-input"
           ref={inputRef}

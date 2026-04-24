@@ -11,6 +11,7 @@ export interface Message {
   role: "user" | "assistant";
   content: string;
   meta: MessageMeta | null;
+  images?: string[];  // 用户消息中的图片预览 URL 列表
 }
 
 // ── Graph ──

@@ -11,7 +11,7 @@ import type {
     Turn,
 } from "./types";
 
-const API = "";
+const API = "http://127.0.0.1:8001";  // 修改为 8001 端口，因为 8000 被旧进程占用
 
 export async function fetchSessions(): Promise<SessionInfo[]> {
   const r = await fetch(`${API}/sessions?limit=100`);
@@ -128,13 +128,31 @@ export async function streamChatMessage(
     onToken?: (token: string) => void;
     onAnswer?: (answer: string) => void;
     onDone?: (data: StreamDoneEvent) => void;
-  }
+  },
+  images: string[] = [],  // 新增：Base64 图片列表
+  imageMimeTypes: string[] = []  // 新增：图片 MIME 类型列表
 ): Promise<void> {
+  console.log("[streamChatMessage] Calling API with images:", images.length, "mimes:", imageMimeTypes.length);
+  
+  const requestBody = {
+    session_id: sessionId,
+    message,
+    images,
+    image_mime_types: imageMimeTypes,
+  };
+  
+  console.log("[streamChatMessage] Request body:", JSON.stringify({
+    ...requestBody,
+    images: images.map((_, i) => `image_${i} (${images[i].length} chars)`),
+  }, null, 2));
+  
   const r = await fetch(`${API}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId, message }),
+    body: JSON.stringify(requestBody),
   });
+
+  console.log("[streamChatMessage] Response status:", r.status);
 
   if (!r.ok) {
     const data = await r.json().catch(() => ({}));
@@ -403,4 +421,80 @@ export async function clearSkillMemory(): Promise<void> {
     const data = await r.json().catch(() => ({}));
     throw new Error((data as Record<string, string>).detail || `HTTP ${r.status}`);
   }
+}
+
+// ── Visual Memory ──
+
+export interface VisualMemoryItem {
+  record_id: string;
+  session_id: string;
+  timestamp: string;
+  caption: string;
+  image_path: string;
+  image_hash: string;
+  scene_type: string;
+  importance_score: number;
+  retrieval_count: number;
+  expired: boolean;
+  entities: Array<{type: string; name: string; confidence: number}>;
+  structured_data?: Record<string, unknown>;
+}
+
+export interface VisualMemoryStats {
+  total: number;
+  active: number;
+  expired: number;
+  by_scene_type: Record<string, number>;
+}
+
+export async function fetchVisualMemories(
+  sessionId?: string,
+  limit = 50,
+  offset = 0,
+  includeExpired = false
+): Promise<VisualMemoryItem[]> {
+  const params = new URLSearchParams();
+  if (sessionId) params.set("session_id", sessionId);
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
+  params.set("include_expired", String(includeExpired));
+
+  const r = await fetch(`${API}/visual/memories?${params.toString()}`);
+  const data = await r.json();
+  return data.memories || [];
+}
+
+export function fetchVisualMemoryImage(recordId: string): string {
+  return `${API}/visual/memories/${encodeURIComponent(recordId)}/image`;
+}
+
+export async function fetchVisualMemoryStats(): Promise<VisualMemoryStats> {
+  const r = await fetch(`${API}/visual/stats`);
+  const data = await r.json();
+  return {
+    total: data.total || 0,
+    active: data.active || 0,
+    expired: data.expired || 0,
+    by_scene_type: data.by_scene_type || {},
+  };
+}
+
+export async function deleteVisualMemory(recordId: string): Promise<void> {
+  const r = await fetch(`${API}/visual/memories/${encodeURIComponent(recordId)}`, {
+    method: "DELETE",
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error((data as Record<string, string>).detail || `HTTP ${r.status}`);
+  }
+}
+
+export async function searchVisualMemories(query: string, topK = 10): Promise<VisualMemoryItem[]> {
+  const r = await fetch(`${API}/visual/search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, top_k: topK }),
+  });
+  const data = await r.json();
+  return data.results || [];
 }

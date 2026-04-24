@@ -169,8 +169,13 @@ API 服务于 `http://localhost:8000`。交互式文档于 `/docs`。
 ```bash
 cd web-demo
 npm install
-npm run dev      # 服务启动于 http://localhost:5173
+npm run dev      # 服务启动于 http://localhost:5173 (或自动选择其他端口如 5180)
 ```
+
+**前端网址：**
+- 默认：http://localhost:5173
+- 如果端口被占用，Vite 会自动选择下一个可用端口（如 5180）
+- 启动时请查看终端输出的实际网址
 
 > 确保后端运行在端口 8000（或在 `web-demo/vite.config.ts` 中更新代理设置）后再启动前端。
 

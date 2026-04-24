@@ -17,6 +17,16 @@ _token_accumulator: ContextVar[dict[str, int] | None] = ContextVar(
 )
 
 
+# ── 多模态消息类型 ───────────────────────────────────────────────────────────
+# 支持文本和多模态内容（图片等）
+# 格式参考：https://docs.litellm.ai/docs/
+TextContent = dict[str, str]  # {"type": "text", "text": "..."}
+ImageContent = dict[str, dict[str, str]]  # {"type": "image_url", "image_url": {"url": "..."}}
+ContentItem = TextContent | ImageContent
+MessageContent = str | list[ContentItem]
+Message = dict[str, MessageContent]
+
+
 class BaseLLM(ABC):
     """所有 LLM 适配器的统一接口。"""
 
@@ -31,7 +41,7 @@ class BaseLLM(ABC):
     @abstractmethod
     def generate(
         self,
-        messages: list[dict[str, str]],
+        messages: list[Message],
         temperature: float = 0.7,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
@@ -41,12 +51,12 @@ class BaseLLM(ABC):
     @abstractmethod
     async def agenerate(
         self,
-        messages: list[dict[str, str]],
+        messages: list[Message],
         temperature: float = 0.7,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
-        """异步生成。"""
+        """异步生成。支持多模态消息（文本 + 图片）。"""
 
     async def astream_generate(
         self,

@@ -15,6 +15,14 @@ class ChatRequest(BaseModel):
 
     session_id: str = Field(..., min_length=1, max_length=128)
     message: str = Field(..., min_length=1, max_length=100_000)
+    images: list[str] = Field(
+        default=[],
+        description="Base64 编码的图片列表（可选，支持多模态输入）",
+    )
+    image_mime_types: list[str] = Field(
+        default=[],
+        description="图片 MIME 类型列表（可选，与 images 一一对应）",
+    )
 
 
 class WMManagerTrace(BaseModel):

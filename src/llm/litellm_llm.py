@@ -15,9 +15,9 @@ from typing import Any
 
 import litellm
 
-from src.llm.base import BaseLLM
+from src.llm.base import BaseLLM, Message
 
-# ── LiteLLM 全局性能优化（模块首次导入时执行一次）──────────────────────────
+# ── LiteLLM 全局性能优化（模块首次导入时执行一次）──────────────────────────────
 # 1. telemetry=False：禁用 LiteLLM 在每次 API 调用后向其服务器发送遥测 HTTP 请求。
 #    这是迁移到 LiteLLM 后延迟显著上升的主要原因。
 litellm.telemetry = False
@@ -33,7 +33,10 @@ litellm._async_failure_callback = []
 
 
 class LiteLLMLLM(BaseLLM):
-    """通过 LiteLLM 统一调用任意 provider 的 LLM。"""
+    """通过 LiteLLM 统一调用任意 provider 的 LLM。
+    
+    支持多模态消息（文本 + 图片），用于 VLM（视觉语言模型）调用。
+    """
 
     def __init__(
         self,
@@ -68,14 +71,15 @@ class LiteLLMLLM(BaseLLM):
         if response_format is not None:
             kwargs["response_format"] = response_format
         return kwargs
-        
+
     def generate(
         self,
-        messages: list[dict[str, str]],
+        messages: list[Message],
         temperature: float = 0.7,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
+        """同步生成文本。支持多模态消息。"""
         resp = litellm.completion(
             model=self.model,
             messages=messages,
@@ -92,14 +96,15 @@ class LiteLLMLLM(BaseLLM):
                 getattr(usage, "completion_tokens", 0) or 0,
             )
         return resp.choices[0].message.content or ""
-    
+
     async def agenerate(
         self,
-        messages: list[dict[str, str]],
+        messages: list[Message],
         temperature: float = 0.7,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
+        """异步生成文本。支持多模态消息。"""
         resp = await litellm.acompletion(
             model=self.model,
             messages=messages,
@@ -119,7 +124,7 @@ class LiteLLMLLM(BaseLLM):
 
     async def astream_generate(
         self,
-        messages: list[dict[str, str]],
+        messages: list[Message],
         temperature: float = 0.7,
         max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
