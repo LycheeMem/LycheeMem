@@ -53,12 +53,27 @@ class SQLiteSemanticStore:
     def __init__(self, db_path: str = "lychee_compact_memory.db"):
         self._db_path = db_path
         self._lock = threading.Lock()
+        self._local = threading.local()
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA foreign_keys=ON")
+        # init_schema() 通过 self._conn property 在当前线程建立首条连接
         self.init_schema()
+
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        """返回当前线程专属的 SQLite 连接（按需创建）。
+
+        每个线程持有独立连接，彻底消除跨线程共享连接导致的
+        sqlite3.InterfaceError: bad parameter or other API misuse。
+        WAL 模式下多读一写不互相阻塞；写操作仍由 self._lock 序列化。
+        """
+        conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(self._db_path, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            self._local.conn = conn
+        return conn
 
     def init_schema(self) -> None:
         """创建表 + FTS5 索引（幂等）。"""
@@ -72,11 +87,7 @@ class SQLiteSemanticStore:
                     normalized_text  TEXT NOT NULL,
                     entities         TEXT NOT NULL DEFAULT '[]',
                     temporal         TEXT NOT NULL DEFAULT '{}',
-                    task_tags        TEXT NOT NULL DEFAULT '[]',
-                    tool_tags        TEXT NOT NULL DEFAULT '[]',
-                    constraint_tags  TEXT NOT NULL DEFAULT '[]',
-                    failure_tags     TEXT NOT NULL DEFAULT '[]',
-                    affordance_tags  TEXT NOT NULL DEFAULT '[]',
+                    tags             TEXT NOT NULL DEFAULT '[]',
                     confidence       REAL NOT NULL DEFAULT 1.0,
                     evidence_turn_range TEXT NOT NULL DEFAULT '[]',
                     source_session   TEXT NOT NULL DEFAULT '',
@@ -100,14 +111,9 @@ class SQLiteSemanticStore:
                     normalized_text  TEXT NOT NULL,
                     source_record_ids TEXT NOT NULL DEFAULT '[]',
                     child_composite_ids TEXT NOT NULL DEFAULT '[]',
-                    synthesis_reason TEXT NOT NULL DEFAULT '',
                     entities         TEXT NOT NULL DEFAULT '[]',
                     temporal         TEXT NOT NULL DEFAULT '{}',
-                    task_tags        TEXT NOT NULL DEFAULT '[]',
-                    tool_tags        TEXT NOT NULL DEFAULT '[]',
-                    constraint_tags  TEXT NOT NULL DEFAULT '[]',
-                    failure_tags     TEXT NOT NULL DEFAULT '[]',
-                    affordance_tags  TEXT NOT NULL DEFAULT '[]',
+                    tags             TEXT NOT NULL DEFAULT '[]',
                     confidence       REAL NOT NULL DEFAULT 1.0,
                     created_at       TEXT NOT NULL DEFAULT '',
                     updated_at       TEXT NOT NULL DEFAULT '',
@@ -138,26 +144,7 @@ class SQLiteSemanticStore:
                 CREATE INDEX IF NOT EXISTS idx_ul_session ON usage_logs(session_id);
             """)
 
-            # 兼容旧库：若 source_role 列不存在则追加（ALTER TABLE 幂等）
-            try:
-                c.execute("ALTER TABLE memory_records ADD COLUMN source_role TEXT NOT NULL DEFAULT ''")
-                c.commit()
-            except sqlite3.OperationalError:
-                pass  # 列已存在
-
-            try:
-                c.execute("ALTER TABLE usage_logs ADD COLUMN action_state TEXT NOT NULL DEFAULT '{}' ")
-                c.commit()
-            except sqlite3.OperationalError:
-                pass  # 列已存在
-
-            try:
-                c.execute("ALTER TABLE composite_records ADD COLUMN child_composite_ids TEXT NOT NULL DEFAULT '[]'")
-                c.commit()
-            except sqlite3.OperationalError:
-                pass  # 列已存在
-
-            # FTS5 虚拟表（分开创建避免 IF NOT EXISTS 不兼容问题）
+            # FTS5 虚拟表
             try:
                 c.execute("""
                     CREATE VIRTUAL TABLE memory_records_fts USING fts5(
@@ -165,11 +152,7 @@ class SQLiteSemanticStore:
                         normalized_text,
                         temporal,
                         entities,
-                        task_tags,
-                        tool_tags,
-                        constraint_tags,
-                        failure_tags,
-                        affordance_tags,
+                        tags,
                         content=memory_records,
                         content_rowid=rowid,
                         tokenize='unicode61'
@@ -178,44 +161,13 @@ class SQLiteSemanticStore:
             except sqlite3.OperationalError:
                 pass  # 已存在
 
-            # 迁移：旧 FTS5 缺少 temporal 列时重建（content table 模式; 数据保留在 memory_records）
-            try:
-                fts_cols = [
-                    row[2]
-                    for row in c.execute("PRAGMA table_info(memory_records_fts)").fetchall()
-                ]
-                if fts_cols and "temporal" not in fts_cols:
-                    c.execute("DROP TABLE IF EXISTS memory_records_fts")
-                    c.execute("""
-                        CREATE VIRTUAL TABLE memory_records_fts USING fts5(
-                            record_id UNINDEXED,
-                            normalized_text,
-                            temporal,
-                            entities,
-                            task_tags,
-                            tool_tags,
-                            constraint_tags,
-                            failure_tags,
-                            affordance_tags,
-                            content=memory_records,
-                            content_rowid=rowid,
-                            tokenize='unicode61'
-                        )
-                    """)
-                    c.execute("INSERT INTO memory_records_fts(memory_records_fts) VALUES('rebuild')")
-                    c.commit()
-            except Exception:
-                pass  # 迁移失败不阻断启动
-
             try:
                 c.execute("""
                     CREATE VIRTUAL TABLE composite_records_fts USING fts5(
                         composite_id UNINDEXED,
                         normalized_text,
                         entities,
-                        task_tags,
-                        tool_tags,
-                        constraint_tags,
+                        tags,
                         content=composite_records,
                         content_rowid=rowid,
                         tokenize='unicode61'
@@ -237,8 +189,7 @@ class SQLiteSemanticStore:
                 """
                 INSERT INTO memory_records (
                     record_id, memory_type, semantic_text, normalized_text,
-                    entities, temporal, task_tags, tool_tags,
-                    constraint_tags, failure_tags, affordance_tags,
+                    entities, temporal, tags,
                     confidence, evidence_turn_range, source_session, source_role,
                     created_at, updated_at,
                     retrieval_count, retrieval_hit_count,
@@ -246,7 +197,6 @@ class SQLiteSemanticStore:
                     last_retrieved_at,
                     expired, expired_at, expired_reason
                 ) VALUES (
-                    ?, ?, ?, ?,
                     ?, ?, ?, ?,
                     ?, ?, ?,
                     ?, ?, ?, ?,
@@ -262,11 +212,7 @@ class SQLiteSemanticStore:
                     normalized_text = excluded.normalized_text,
                     entities = excluded.entities,
                     temporal = excluded.temporal,
-                    task_tags = excluded.task_tags,
-                    tool_tags = excluded.tool_tags,
-                    constraint_tags = excluded.constraint_tags,
-                    failure_tags = excluded.failure_tags,
-                    affordance_tags = excluded.affordance_tags,
+                    tags = excluded.tags,
                     confidence = excluded.confidence,
                     evidence_turn_range = excluded.evidence_turn_range,
                     source_role = excluded.source_role,
@@ -279,9 +225,7 @@ class SQLiteSemanticStore:
                     record.record_id, record.memory_type,
                     record.semantic_text, record.normalized_text,
                     _json_dumps(record.entities), _json_dumps(record.temporal),
-                    _json_dumps(record.task_tags), _json_dumps(record.tool_tags),
-                    _json_dumps(record.constraint_tags), _json_dumps(record.failure_tags),
-                    _json_dumps(record.affordance_tags),
+                    _json_dumps(record.tags),
                     record.confidence, _json_dumps(record.evidence_turn_range),
                     record.source_session, record.source_role,
                     record.created_at, record.updated_at,
@@ -294,10 +238,8 @@ class SQLiteSemanticStore:
             # 同步 FTS5
             self._conn.execute(
                 "INSERT OR REPLACE INTO memory_records_fts(rowid, record_id, "
-                "normalized_text, temporal, entities, task_tags, tool_tags, "
-                "constraint_tags, failure_tags, affordance_tags) "
-                "SELECT rowid, record_id, normalized_text, temporal, entities, task_tags, "
-                "tool_tags, constraint_tags, failure_tags, affordance_tags "
+                "normalized_text, temporal, entities, tags) "
+                "SELECT rowid, record_id, normalized_text, temporal, entities, tags "
                 "FROM memory_records WHERE record_id = ?",
                 (record.record_id,),
             )
@@ -514,16 +456,14 @@ class SQLiteSemanticStore:
     def search_by_tags(
         self,
         *,
-        tool_tags: list[str] | None = None,
-        constraint_tags: list[str] | None = None,
-        task_tags: list[str] | None = None,
-        failure_tags: list[str] | None = None,
-        affordance_tags: list[str] | None = None,
+        tags: list[str] | None = None,
         memory_types: list[str] | None = None,
         limit: int = 30,
         include_expired: bool = False,
     ) -> list[dict[str, Any]]:
-        """按 tag 字段做 LIKE 匹配查询。"""
+        """按统一 tags 字段做 LIKE 匹配查询。"""
+        if not tags:
+            return []
         sql = "SELECT * FROM memory_records WHERE 1=1 "
         params: list[Any] = []
 
@@ -534,19 +474,11 @@ class SQLiteSemanticStore:
             sql += f"AND memory_type IN ({placeholders}) "
             params.extend(memory_types)
 
-        for tags, col in [
-            (tool_tags, "tool_tags"),
-            (constraint_tags, "constraint_tags"),
-            (task_tags, "task_tags"),
-            (failure_tags, "failure_tags"),
-            (affordance_tags, "affordance_tags"),
-        ]:
-            if tags:
-                conditions = []
-                for tag in tags:
-                    conditions.append(f"{col} LIKE ?")
-                    params.append(f"%{tag}%")
-                sql += "AND (" + " OR ".join(conditions) + ") "
+        conditions = []
+        for tag in tags:
+            conditions.append("tags LIKE ?")
+            params.append(f"%{tag}%")
+        sql += "AND (" + " OR ".join(conditions) + ") "
 
         sql += "ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
@@ -583,12 +515,10 @@ class SQLiteSemanticStore:
                 "normalized_text LIKE ?",
                 "semantic_text LIKE ?",
                 "entities LIKE ?",
-                "constraint_tags LIKE ?",
-                "tool_tags LIKE ?",
-                "affordance_tags LIKE ?",
+                "tags LIKE ?",
             ])
             like_term = f"%{term}%"
-            params.extend([like_term] * 6)
+            params.extend([like_term] * 4)
 
         sql += "AND (" + " OR ".join(group_conditions) + ") "
         sql += "ORDER BY created_at DESC LIMIT ?"
@@ -608,27 +538,21 @@ class SQLiteSemanticStore:
                 """
                 INSERT INTO composite_records (
                     composite_id, memory_type, semantic_text, normalized_text,
-                    source_record_ids, child_composite_ids, synthesis_reason,
-                    entities, temporal, task_tags, tool_tags,
-                    constraint_tags, failure_tags, affordance_tags,
+                    source_record_ids, child_composite_ids,
+                    entities, temporal, tags,
                     confidence, created_at, updated_at,
                     retrieval_count, retrieval_hit_count,
                     action_success_count, action_fail_count, last_retrieved_at
-                ) VALUES (?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?, ?,  ?, ?, ?,  ?, ?, ?,  ?, ?,  ?, ?, ?)
+                ) VALUES (?, ?, ?, ?,  ?, ?,  ?, ?, ?,  ?, ?, ?,  ?, ?,  ?, ?, ?)
                 ON CONFLICT(composite_id) DO UPDATE SET
                     memory_type = excluded.memory_type,
                     semantic_text = excluded.semantic_text,
                     normalized_text = excluded.normalized_text,
                     source_record_ids = excluded.source_record_ids,
                     child_composite_ids = excluded.child_composite_ids,
-                    synthesis_reason = excluded.synthesis_reason,
                     entities = excluded.entities,
                     temporal = excluded.temporal,
-                    task_tags = excluded.task_tags,
-                    tool_tags = excluded.tool_tags,
-                    constraint_tags = excluded.constraint_tags,
-                    failure_tags = excluded.failure_tags,
-                    affordance_tags = excluded.affordance_tags,
+                    tags = excluded.tags,
                     confidence = excluded.confidence,
                     updated_at = excluded.updated_at
                 """,
@@ -637,11 +561,8 @@ class SQLiteSemanticStore:
                     composite.semantic_text, composite.normalized_text,
                     _json_dumps(composite.source_record_ids),
                     _json_dumps(composite.child_composite_ids),
-                    composite.synthesis_reason,
                     _json_dumps(composite.entities), _json_dumps(composite.temporal),
-                    _json_dumps(composite.task_tags), _json_dumps(composite.tool_tags),
-                    _json_dumps(composite.constraint_tags), _json_dumps(composite.failure_tags),
-                    _json_dumps(composite.affordance_tags),
+                    _json_dumps(composite.tags),
                     composite.confidence, composite.created_at, composite.updated_at,
                     composite.retrieval_count, composite.retrieval_hit_count,
                     composite.action_success_count, composite.action_fail_count,
@@ -651,9 +572,8 @@ class SQLiteSemanticStore:
             # 同步 FTS5
             self._conn.execute(
                 "INSERT OR REPLACE INTO composite_records_fts(rowid, composite_id, "
-                "normalized_text, entities, task_tags, tool_tags, constraint_tags) "
-                "SELECT rowid, composite_id, normalized_text, entities, task_tags, "
-                "tool_tags, constraint_tags "
+                "normalized_text, entities, tags) "
+                "SELECT rowid, composite_id, normalized_text, entities, tags "
                 "FROM composite_records WHERE composite_id = ?",
                 (composite.composite_id,),
             )
@@ -981,8 +901,7 @@ class SQLiteSemanticStore:
     def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         d = dict(row)
         for key in (
-            "entities", "temporal", "task_tags", "tool_tags",
-            "constraint_tags", "failure_tags", "affordance_tags",
+            "entities", "temporal", "tags",
             "evidence_turn_range", "source_record_ids", "child_composite_ids",
             "retrieval_plan", "retrieved_record_ids", "kept_record_ids",
         ):
@@ -1002,21 +921,17 @@ class SQLiteSemanticStore:
             normalized_text=d["normalized_text"],
             entities=_json_loads(d["entities"]),
             temporal=_json_loads_dict(d["temporal"]),
-            task_tags=_json_loads(d["task_tags"]),
-            tool_tags=_json_loads(d["tool_tags"]),
-            constraint_tags=_json_loads(d["constraint_tags"]),
-            failure_tags=_json_loads(d["failure_tags"]),
-            affordance_tags=_json_loads(d["affordance_tags"]),
-            confidence=float(d["confidence"]),
+            tags=_json_loads(d["tags"]),
+            confidence=float(d["confidence"] or 0.0),
             evidence_turn_range=_json_loads(d["evidence_turn_range"]),
             source_session=d["source_session"],
             source_role=d.get("source_role", ""),
             created_at=d["created_at"],
             updated_at=d["updated_at"],
-            retrieval_count=int(d["retrieval_count"]),
-            retrieval_hit_count=int(d["retrieval_hit_count"]),
-            action_success_count=int(d["action_success_count"]),
-            action_fail_count=int(d["action_fail_count"]),
+            retrieval_count=int(d["retrieval_count"] or 0),
+            retrieval_hit_count=int(d["retrieval_hit_count"] or 0),
+            action_success_count=int(d["action_success_count"] or 0),
+            action_fail_count=int(d["action_fail_count"] or 0),
             last_retrieved_at=d["last_retrieved_at"],
             expired=bool(d["expired"]),
             expired_at=d["expired_at"],
@@ -1032,20 +947,15 @@ class SQLiteSemanticStore:
             normalized_text=row["normalized_text"],
             source_record_ids=_json_loads(row["source_record_ids"]),
             child_composite_ids=_json_loads(row["child_composite_ids"]),
-            synthesis_reason=row["synthesis_reason"],
             entities=_json_loads(row["entities"]),
             temporal=_json_loads_dict(row["temporal"]),
-            task_tags=_json_loads(row["task_tags"]),
-            tool_tags=_json_loads(row["tool_tags"]),
-            constraint_tags=_json_loads(row["constraint_tags"]),
-            failure_tags=_json_loads(row["failure_tags"]),
-            affordance_tags=_json_loads(row["affordance_tags"]),
-            confidence=float(row["confidence"]),
+            tags=_json_loads(row["tags"]),
+            confidence=float(row["confidence"] or 0.0),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
-            retrieval_count=int(row["retrieval_count"]),
-            retrieval_hit_count=int(row["retrieval_hit_count"]),
-            action_success_count=int(row["action_success_count"]),
-            action_fail_count=int(row["action_fail_count"]),
+            retrieval_count=int(row["retrieval_count"] or 0),
+            retrieval_hit_count=int(row["retrieval_hit_count"] or 0),
+            action_success_count=int(row["action_success_count"] or 0),
+            action_fail_count=int(row["action_fail_count"] or 0),
             last_retrieved_at=row["last_retrieved_at"],
         )

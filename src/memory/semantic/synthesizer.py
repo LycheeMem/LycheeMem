@@ -1,55 +1,51 @@
-"""Record Fusion Engine。
+"""Record Fusion Engine — Embedding Similarity Based.
 
-在 ingest 完成后，对同一用户的记忆执行在线聚合：
-1. 检测新写入 records 与已有 records 之间是否可融合
-2. LLM 判断融合可行性 + 分组（同一轮输出互不重叠 group）
-3. LLM 执行融合，生成 CompositeRecord
-4. 对新 record / 新 composite 与已有 root composite 再做多轮层级融合
-5. 持久化直接 child composite 关系，形成层级树
+记忆融合流程（纯 embedding 数学，无 LLM 调用）：
+1. 去重：new record vs existing records，距离 < dedup 阈值 → 过期旧记录
+2. 聚类：距离 < synthesis 阈值 → Union-Find 连通分量 → cluster
+3. CompositeRecord：代表记录文本 + 合并 metadata
+4. 层级聚合（可选）：composite 之间再做一轮相似度聚类
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
-from src.llm.base import BaseLLM
 from src.memory.semantic.models import (
     MemoryRecord,
     CompositeRecord,
-    VALID_MEMORY_TYPES,
     VALID_SYNTH_TYPES,
-)
-from src.memory.semantic.prompts import (
-    SYNTHESIS_JUDGE_SYSTEM,
-    SYNTHESIS_EXECUTE_SYSTEM,
 )
 from src.memory.semantic.sqlite_store import SQLiteSemanticStore
 from src.memory.semantic.vector_index import LanceVectorIndex
 
 
 class RecordFusionEngine:
-    """记录融合引擎：在写入新 records 后自动检测并执行聚合。"""
+    """记录融合引擎：embedding 余弦相似度聚类 + 去重，不使用 LLM。"""
 
     def __init__(
         self,
-        llm: BaseLLM,
         sqlite_store: SQLiteSemanticStore,
         vector_index: LanceVectorIndex,
         *,
-        similarity_threshold: float = 0.75,
+        synthesis_similarity: float = 0.75,
+        dedup_threshold: float = 0.85,
         min_records_for_synthesis: int = 2,
         max_records_per_group: int = 8,
         max_hierarchy_rounds: int = 2,
     ):
-        self._llm = llm
         self._sqlite = sqlite_store
         self._vector = vector_index
-        self._similarity_threshold = similarity_threshold
+
+        # 将余弦相似度阈值转换为 L2 距离阈值
+        # 对归一化向量: L2_distance = 2 * (1 - cosine_similarity)
+        self._synthesis_max_dist = 2.0 * (1.0 - synthesis_similarity)
+        self._dedup_max_dist = 2.0 * (1.0 - dedup_threshold)
         self._min_records = min_records_for_synthesis
-        self._max_records_per_group = max_records_per_group
+        self._max_per_group = max_records_per_group
         self._max_hierarchy_rounds = max(0, int(max_hierarchy_rounds))
         self._last_run_stats = self._empty_run_stats()
 
@@ -68,17 +64,20 @@ class RecordFusionEngine:
             "invalidated_composite_ids": list(self._last_run_stats.get("invalidated_composite_ids", [])),
         }
 
+    # ──────────────────────────────────────
+    # 主入口
+    # ──────────────────────────────────────
+
     def synthesize_on_ingest(
         self,
         new_records: list[MemoryRecord],
     ) -> list[CompositeRecord]:
         """在新 records 写入后触发融合流程。
 
-        1. 对每个新 record，通过 FTS + 向量检索找到相关的已有 records
-        2. 将新 record + 相关 records 组合为候选集
-        3. LLM 判断是否可融合 + 分组
-        4. 对每组执行融合
-        5. 写入存储
+        1. 去重：检测近似重复，过期旧记录
+        2. 聚类：embedding 距离 < synthesis 阈值 → cluster
+        3. 每个 cluster → CompositeRecord（代表记录文本，合并 metadata）
+        4. 层级聚合（可选）：composite 之间再做一轮
 
         Returns:
             生成的 CompositeRecord 列表
@@ -87,524 +86,477 @@ class RecordFusionEngine:
         if not new_records:
             return []
 
-        existing_composites = self._sqlite.list_synthesized()
-        covered_record_ids, _ = self._build_existing_hierarchy_maps(existing_composites)
+        # Step 1: 去重
+        surviving_records, expired_ids, invalidated_cids = self._dedup_on_ingest(new_records)
+        self._last_run_stats["expired_record_ids"] = sorted(expired_ids)
+        self._last_run_stats["invalidated_composite_ids"] = sorted(invalidated_cids)
 
-        active_new_records, updated_existing_records = self._resolve_conflicts_on_ingest(
-            new_records,
-        )
-        frontier_records_map = {
-            record.record_id: record
-            for record in [*active_new_records, *updated_existing_records]
-            if str(record.record_id or "").strip() and not record.expired
-        }
-        if not frontier_records_map:
+        if not surviving_records:
             return []
 
-        if self._last_run_stats.get("invalidated_composite_ids"):
-            existing_composites = self._sqlite.list_synthesized()
-            covered_record_ids, _ = self._build_existing_hierarchy_maps(existing_composites)
+        # Step 2: 找到已有 composite 覆盖的 record_ids
+        existing_composites = self._sqlite.list_synthesized()
+        covered_record_ids: set[str] = set()
+        for comp in existing_composites:
+            for rid in comp.source_record_ids:
+                rid_s = str(rid or "").strip()
+                if rid_s:
+                    covered_record_ids.add(rid_s)
 
-        frontier_records = list(frontier_records_map.values())
-
-        synthesized = self._synthesize_records_on_ingest(
-            frontier_records,
+        # Step 3: 聚类 + 构建 CompositeRecord
+        composites = self._cluster_and_build(
+            surviving_records,
             covered_record_ids=covered_record_ids,
         )
-        if self._max_hierarchy_rounds <= 0:
-            return synthesized
 
-        all_synthesized = list(synthesized)
-        covered_by_first_layer = {
-            source_id
-            for composite in synthesized
-            for source_id in composite.source_record_ids
-        }
-        frontier: list[MemoryRecord | CompositeRecord] = list(synthesized)
+        if self._max_hierarchy_rounds <= 0 or not composites:
+            return composites
+
+        # Step 4: 层级聚合
+        all_composites = list(composites)
+        covered_by_first: set[str] = set()
+        for c in composites:
+            covered_by_first.update(c.source_record_ids)
+
+        frontier: list[MemoryRecord | CompositeRecord] = list(composites)
         frontier.extend(
-            record
-            for record in frontier_records
-            if record.record_id not in covered_by_first_layer
+            r for r in surviving_records
+            if r.record_id not in covered_by_first
         )
-        seen_ids = {item.composite_id for item in synthesized}
+        seen_ids = {c.composite_id for c in composites}
 
         for _ in range(self._max_hierarchy_rounds):
-            next_level = self._synthesize_hierarchy_on_ingest(frontier)
-            next_level = [item for item in next_level if item.composite_id not in seen_ids]
+            next_level = self._hierarchy_round(frontier, seen_ids)
             if not next_level:
                 break
-
-            all_synthesized.extend(next_level)
+            all_composites.extend(next_level)
             frontier = list(next_level)
-            seen_ids.update(item.composite_id for item in next_level)
+            seen_ids.update(c.composite_id for c in next_level)
 
-        return all_synthesized
+        return all_composites
 
-    def _synthesize_records_on_ingest(
+    # ──────────────────────────────────────
+    # Step 1: 去重
+    # ──────────────────────────────────────
+
+    def _dedup_on_ingest(
+        self,
+        new_records: list[MemoryRecord],
+    ) -> tuple[list[MemoryRecord], set[str], set[str]]:
+        """对每个新 record，检测与已有记录的近似重复。
+
+        判定条件：embedding 距离 < dedup 阈值 AND 同一 memory_type。
+        处理：过期旧记录（保留新记录，因为新记录包含最新信息）。
+
+        Returns:
+            (surviving_new_records, expired_record_ids, invalidated_composite_ids)
+        """
+        expired_ids: set[str] = set()
+        invalidated_cids: set[str] = set()
+        new_ids = {
+            str(r.record_id or "").strip()
+            for r in new_records
+            if str(r.record_id or "").strip()
+        }
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        for record in new_records:
+            if record.expired or not record.record_id:
+                continue
+
+            # ANN 搜索相似的已有记录
+            results = self._vector.search(
+                record.semantic_text,
+                column="vector",
+                limit=10,
+                include_expired=False,
+            )
+
+            for hit in results:
+                hit_id = str(hit.get("record_id", "")).strip()
+                dist = float(hit.get("_distance", 999.0))
+
+                if not hit_id or hit_id == record.record_id or hit_id in new_ids:
+                    continue
+                if hit_id in expired_ids:
+                    continue
+                if dist > self._dedup_max_dist:
+                    continue
+                if hit.get("memory_type", "") != record.memory_type:
+                    continue
+
+                # 近似重复：过期旧记录
+                self._sqlite.expire_record(
+                    hit_id,
+                    expired_at=now_iso,
+                    expired_reason=f"dedup:{record.record_id}",
+                )
+                self._vector.mark_expired(hit_id)
+                expired_ids.add(hit_id)
+
+                # 使包含该旧记录的 composite 失效
+                stale = self._sqlite.get_synthesized_by_source([hit_id])
+                for comp in stale:
+                    cid = str(comp.composite_id or "").strip()
+                    if cid and cid not in invalidated_cids:
+                        self._sqlite.delete_synthesized(cid)
+                        self._vector.delete_synthesized(cid)
+                        invalidated_cids.add(cid)
+
+        surviving = [
+            r for r in new_records
+            if not r.expired and r.record_id not in expired_ids
+        ]
+        return surviving, expired_ids, invalidated_cids
+
+    # ──────────────────────────────────────
+    # Step 2-3: 聚类 + 构建 CompositeRecord
+    # ──────────────────────────────────────
+
+    def _cluster_and_build(
         self,
         new_records: list[MemoryRecord],
         *,
         covered_record_ids: set[str] | None = None,
     ) -> list[CompositeRecord]:
-        """第一层融合：new/existing records -> composite。"""
-        new_records = [record for record in new_records if not record.expired]
-        if not new_records:
+        """对新记录做 embedding 聚类，构建 CompositeRecord。"""
+        covered = covered_record_ids or set()
+
+        if len(new_records) < self._min_records:
             return []
 
-        covered_record_ids = {
-            str(record_id or "").strip()
-            for record_id in (covered_record_ids or set())
-            if str(record_id or "").strip()
+        # 收集候选：新记录 + 与其相似的已有记录
+        candidate_map: dict[str, MemoryRecord] = {
+            r.record_id: r for r in new_records
+            if str(r.record_id or "").strip()
         }
+        new_ids = set(candidate_map.keys())
 
-        # 收集所有候选 records（新写入的 + 与其相关的旧 records）
-        candidate_ids: set[str] = {r.record_id for r in new_records}
-        candidate_map: dict[str, MemoryRecord] = {r.record_id: r for r in new_records}
-
+        # 用每个新记录做 ANN 搜索，建立相似度边
+        edges: list[tuple[str, str]] = []
         for record in new_records:
-            # FTS 检索相关旧条目
-            fts_results = self._sqlite.find_similar_by_normalized_text(
-                record.normalized_text,
-                limit=5,
+            results = self._vector.search(
+                record.semantic_text,
+                column="vector",
+                limit=15,
+                include_expired=False,
             )
-            for r in fts_results:
-                if r.record_id in covered_record_ids:
+            for hit in results:
+                hit_id = str(hit.get("record_id", "")).strip()
+                dist = float(hit.get("_distance", 999.0))
+
+                if not hit_id or hit_id == record.record_id:
                     continue
-                if r.record_id not in candidate_ids:
-                    candidate_ids.add(r.record_id)
-                    candidate_map[r.record_id] = r
+                if dist > self._synthesis_max_dist:
+                    continue
+                if hit_id in covered:
+                    continue
 
-        candidates = list(candidate_map.values())
+                # 添加边
+                edges.append((record.record_id, hit_id))
 
-        if len(candidates) < self._min_records:
+                # 如果是已有记录，加入候选
+                if hit_id not in candidate_map:
+                    fetched = self._sqlite.get_record(hit_id)
+                    if fetched and not fetched.expired:
+                        candidate_map[hit_id] = fetched
+
+        if not edges:
             return []
 
-        # LLM 判断合成可行性
-        decision = self._judge_synthesis(
-            candidates,
-            new_record_ids={record.record_id for record in new_records},
-        )
-        groups = self._normalize_disjoint_groups(
-            decision.get("groups", []),
-            allowed_ids=candidate_map.keys(),
-        )
-        if not groups:
+        # Union-Find 构建连通分量
+        clusters = self._union_find_clusters(edges, candidate_map.keys())
+
+        # 过滤：每个 cluster 至少 min_records 个 record，且至少含一个新记录
+        valid_clusters: list[list[str]] = []
+        for cluster_ids in clusters:
+            if len(cluster_ids) < self._min_records:
+                continue
+            if not any(rid in new_ids for rid in cluster_ids):
+                continue
+            valid_clusters.append(cluster_ids)
+
+        if not valid_clusters:
             return []
 
-        # 执行合成
+        # 构建 CompositeRecord
         now_iso = datetime.now(timezone.utc).isoformat()
-        synthesized: list[CompositeRecord] = []
+        composites: list[CompositeRecord] = []
 
-        for group in groups:
-            source_ids = group.get("source_record_ids", [])
-            source_records = [candidate_map[uid] for uid in source_ids if uid in candidate_map]
-
-            if len(source_records) < self._min_records:
-                continue
-            if len(source_records) > self._max_records_per_group:
-                source_records = source_records[: self._max_records_per_group]
-
-            reason = group.get("synthesis_reason", "")
-            suggested_type = group.get("suggested_type", "composite_pattern")
-            if suggested_type not in VALID_SYNTH_TYPES:
-                suggested_type = "composite_pattern"
-
-            flattened_source_ids = self._flatten_source_record_ids(source_records)
-            if self._is_source_group_already_covered(flattened_source_ids):
+        for cluster_ids in valid_clusters:
+            cluster_ids = cluster_ids[: self._max_per_group]
+            cluster_records = [
+                candidate_map[rid] for rid in cluster_ids
+                if rid in candidate_map
+            ]
+            if len(cluster_records) < self._min_records:
                 continue
 
-            synth_result = self._execute_synthesis(source_records, reason, suggested_type)
-            if not synth_result:
+            flat_ids = sorted({r.record_id for r in cluster_records if r.record_id})
+            if self._is_source_group_already_covered(flat_ids):
                 continue
 
-            composite_id = self._make_composite_id(
-                flattened_source_ids,
-                synth_result.get("semantic_text", ""),
-            )
-
-            composite = CompositeRecord(
-                composite_id=composite_id,
-                memory_type=suggested_type,
-                semantic_text=synth_result.get("semantic_text", ""),
-                normalized_text=synth_result.get("normalized_text", ""),
-                source_record_ids=flattened_source_ids,
+            composite = self._build_composite(
+                cluster_records,
+                flat_ids=flat_ids,
                 child_composite_ids=[],
-                synthesis_reason=reason,
-                entities=synth_result.get("entities", []),
-                temporal=synth_result.get("temporal", {}),
-                task_tags=synth_result.get("task_tags", []),
-                tool_tags=synth_result.get("tool_tags", []),
-                constraint_tags=synth_result.get("constraint_tags", []),
-                failure_tags=synth_result.get("failure_tags", []),
-                affordance_tags=synth_result.get("affordance_tags", []),
-                confidence=synth_result.get("confidence", 0.9),
-                created_at=now_iso,
-                updated_at=now_iso,
+                now_iso=now_iso,
             )
+            if composite:
+                self._persist_composite(composite)
+                composites.append(composite)
 
-            self._persist_composite(composite)
-            synthesized.append(composite)
+        return composites
 
-        return synthesized
+    # ──────────────────────────────────────
+    # Step 4: 层级聚合
+    # ──────────────────────────────────────
 
-    def _synthesize_hierarchy_on_ingest(
+    def _hierarchy_round(
         self,
-        new_items: list[MemoryRecord | CompositeRecord],
+        items: list[MemoryRecord | CompositeRecord],
+        seen_ids: set[str],
     ) -> list[CompositeRecord]:
-        """层级融合：new record/composite + related root composites -> parent composite。"""
-        if not new_items:
+        """一轮层级聚合：items + 相关 root composites → parent composites。"""
+        if not items:
             return []
 
         existing_composites = self._sqlite.list_synthesized()
-        _, child_to_parent = self._build_existing_hierarchy_maps(existing_composites)
+        child_to_parent = self._build_child_to_parent(existing_composites)
 
         candidate_map: dict[str, MemoryRecord | CompositeRecord] = {}
-        for item in new_items:
+        for item in items:
             item_id = self._item_id(item)
-            if not item_id:
-                continue
-            if isinstance(item, CompositeRecord) and item_id in child_to_parent:
+            if not item_id or item_id in child_to_parent:
                 continue
             candidate_map[item_id] = item
 
-        if len(candidate_map) < self._min_records:
-            return []
-
+        # 搜索相关的 root composites
+        edges: list[tuple[str, str]] = []
         for item in list(candidate_map.values()):
-            for related in self._find_related_root_composites(
-                item,
-                child_to_parent=child_to_parent,
-            ):
-                item_id = self._item_id(item)
-                if related.composite_id == item_id:
-                    continue
-                if self._has_coverage_relation(
-                    self._flatten_source_record_ids([item]),
-                    related.source_record_ids,
-                ):
-                    continue
-                candidate_map.setdefault(related.composite_id, related)
+            item_id = self._item_id(item)
+            results = self._vector.search_synthesized(
+                item.semantic_text,
+                column="vector",
+                limit=10,
+            )
+            for hit in results:
+                cid = str(hit.get("composite_id", "")).strip()
+                dist = float(hit.get("_distance", 999.0))
 
-        candidates = list(candidate_map.values())
-        if len(candidates) < self._min_records:
+                if not cid or cid == item_id or cid in seen_ids:
+                    continue
+                if cid in child_to_parent:
+                    continue
+                if dist > self._synthesis_max_dist:
+                    continue
+
+                # 检查是否有包含关系
+                if cid not in candidate_map:
+                    fetched = self._sqlite.get_synthesized(cid)
+                    if fetched:
+                        if self._has_coverage_relation(
+                            self._flatten_source_ids([item]),
+                            fetched.source_record_ids,
+                        ):
+                            continue
+                        candidate_map[cid] = fetched
+
+                edges.append((item_id, cid))
+
+        if not edges or len(candidate_map) < self._min_records:
             return []
 
-        decision = self._judge_synthesis(candidates)
-        groups = self._normalize_disjoint_groups(
-            decision.get("groups", []),
-            allowed_ids=candidate_map.keys(),
-        )
-        if not groups:
-            return []
+        clusters = self._union_find_clusters(edges, candidate_map.keys())
 
         now_iso = datetime.now(timezone.utc).isoformat()
-        synthesized: list[CompositeRecord] = []
+        composites: list[CompositeRecord] = []
 
-        for group in groups:
-            source_ids = [
-                str(uid or "").strip()
-                for uid in group.get("source_record_ids", [])
-                if str(uid or "").strip()
+        for cluster_ids in clusters:
+            if len(cluster_ids) < self._min_records:
+                continue
+
+            cluster_ids = cluster_ids[: self._max_per_group]
+            cluster_items = [
+                candidate_map[uid] for uid in cluster_ids
+                if uid in candidate_map
             ]
-            source_items = [candidate_map[uid] for uid in source_ids if uid in candidate_map]
-
-            if len(source_items) < self._min_records:
-                continue
-            if len(source_items) > self._max_records_per_group:
-                source_items = source_items[: self._max_records_per_group]
-
-            flattened_source_ids = self._flatten_source_record_ids(source_items)
-            if len(flattened_source_ids) < self._min_records:
+            if len(cluster_items) < self._min_records:
                 continue
 
-            reason = group.get("synthesis_reason", "")
-            suggested_type = group.get("suggested_type", "composite_pattern")
-            if suggested_type not in VALID_SYNTH_TYPES:
-                suggested_type = "composite_pattern"
-
-            if self._is_source_group_already_covered(flattened_source_ids):
+            flat_ids = self._flatten_source_ids(cluster_items)
+            if len(flat_ids) < self._min_records:
+                continue
+            if self._is_source_group_already_covered(flat_ids):
                 continue
 
-            synth_result = self._execute_synthesis(source_items, reason, suggested_type)
-            if not synth_result:
-                continue
-
-            composite_id = self._make_composite_id(
-                flattened_source_ids,
-                synth_result.get("semantic_text", ""),
-            )
-            if composite_id in candidate_map:
-                continue
-
-            child_composite_ids = sorted(
+            child_cids = sorted(
                 self._item_id(item)
-                for item in source_items
+                for item in cluster_items
                 if isinstance(item, CompositeRecord)
             )
 
-            composite = CompositeRecord(
-                composite_id=composite_id,
-                memory_type=suggested_type,
-                semantic_text=synth_result.get("semantic_text", ""),
-                normalized_text=synth_result.get("normalized_text", ""),
-                source_record_ids=flattened_source_ids,
-                child_composite_ids=child_composite_ids,
-                synthesis_reason=reason,
-                entities=synth_result.get("entities", []),
-                temporal=synth_result.get("temporal", {}),
-                task_tags=synth_result.get("task_tags", []),
-                tool_tags=synth_result.get("tool_tags", []),
-                constraint_tags=synth_result.get("constraint_tags", []),
-                failure_tags=synth_result.get("failure_tags", []),
-                affordance_tags=synth_result.get("affordance_tags", []),
-                confidence=synth_result.get("confidence", 0.9),
-                created_at=now_iso,
-                updated_at=now_iso,
+            composite_id = self._make_composite_id(
+                flat_ids,
+                max(cluster_items, key=lambda x: (x.confidence, x.updated_at)).semantic_text,
             )
-
-            self._persist_composite(composite)
-            synthesized.append(composite)
-
-        return synthesized
-
-    def _resolve_conflicts_on_ingest(
-        self,
-        new_records: list[MemoryRecord],
-    ) -> tuple[list[MemoryRecord], list[MemoryRecord]]:
-        active_new_records = [record for record in new_records if not record.expired]
-        if not active_new_records:
-            return [], []
-
-        new_record_ids = {
-            str(record.record_id or "").strip()
-            for record in active_new_records
-            if str(record.record_id or "").strip()
-        }
-        candidate_map: dict[str, MemoryRecord] = {
-            record.record_id: record
-            for record in active_new_records
-            if str(record.record_id or "").strip()
-        }
-        existing_record_ids: set[str] = set()
-
-        for record in active_new_records:
-            for related in self._find_related_existing_records(
-                record,
-                exclude_ids=new_record_ids,
-            ):
-                if related.expired:
-                    continue
-                candidate_map.setdefault(related.record_id, related)
-                existing_record_ids.add(related.record_id)
-
-        if not existing_record_ids:
-            return active_new_records, []
-
-        decision = self._judge_synthesis(
-            list(candidate_map.values()),
-            new_record_ids=new_record_ids,
-        )
-        conflicts = self._normalize_conflicts(
-            decision.get("conflicts", []),
-            allowed_ids=candidate_map.keys(),
-            new_ids=new_record_ids,
-            existing_ids=existing_record_ids,
-        )
-        if not conflicts:
-            return active_new_records, []
-
-        now_iso = datetime.now(timezone.utc).isoformat()
-        updated_records: list[MemoryRecord] = []
-        expired_record_ids: set[str] = set()
-        invalidated_composite_ids: set[str] = set()
-
-        for conflict in conflicts:
-            anchor_id = conflict["anchor_record_id"]
-            incoming_ids = conflict["incoming_record_ids"]
-            anchor_record = candidate_map.get(anchor_id)
-            incoming_records = [candidate_map[record_id] for record_id in incoming_ids if record_id in candidate_map]
-            if anchor_record is None or not incoming_records:
+            if composite_id in seen_ids:
                 continue
 
-            resolved = self._execute_synthesis(
-                [anchor_record, *incoming_records],
-                conflict.get("conflict_reason", ""),
-                anchor_record.memory_type,
-                resolution_mode="conflict_update",
-                target_record_id=anchor_id,
-                new_record_ids=new_record_ids,
+            composite = self._build_composite(
+                cluster_items,
+                flat_ids=flat_ids,
+                child_composite_ids=child_cids,
+                now_iso=now_iso,
             )
-            if not resolved:
-                continue
+            if composite:
+                self._persist_composite(composite)
+                composites.append(composite)
 
-            resolved_memory_type = str(resolved.get("resolved_memory_type") or anchor_record.memory_type).strip()
-            if resolved_memory_type not in VALID_MEMORY_TYPES:
-                resolved_memory_type = anchor_record.memory_type
+        return composites
 
-            merged_source_role = self._merge_source_roles(
-                [anchor_record, *incoming_records],
-                preferred=getattr(incoming_records[-1], "source_role", "") if incoming_records else anchor_record.source_role,
-            )
-            merged_session = next(
-                (
-                    record.source_session
-                    for record in reversed(incoming_records)
-                    if str(record.source_session or "").strip()
-                ),
-                anchor_record.source_session,
-            )
-            merged_evidence_turns = sorted({
-                *[int(turn) for turn in (anchor_record.evidence_turn_range or []) if isinstance(turn, int)],
-                *[
-                    int(turn)
-                    for record in incoming_records
-                    for turn in (record.evidence_turn_range or [])
-                    if isinstance(turn, int)
-                ],
-            })
+    # ──────────────────────────────────────
+    # CompositeRecord 构建
+    # ──────────────────────────────────────
 
-            # 合并所有来源的 temporal，再以 LLM 解析结果覆盖非空字段
-            # 避免 LLM 输出全空时将已有时间信息丢失
-            merged_temporal: dict[str, str] = {"t_ref": "", "t_valid_from": "", "t_valid_to": ""}
-            for src_rec in [anchor_record, *incoming_records]:
-                for k in merged_temporal:
-                    v = str((src_rec.temporal or {}).get(k) or "").strip()
-                    if v and not merged_temporal[k]:
-                        merged_temporal[k] = v
-            for k in merged_temporal:
-                rv = str((resolved.get("temporal") or {}).get(k) or "").strip()
-                if rv:
-                    merged_temporal[k] = rv
-
-            updated_record = MemoryRecord(
-                record_id=anchor_record.record_id,
-                memory_type=resolved_memory_type,
-                semantic_text=str(resolved.get("semantic_text") or anchor_record.semantic_text).strip(),
-                normalized_text=str(resolved.get("normalized_text") or anchor_record.normalized_text).strip(),
-                entities=[str(v) for v in (resolved.get("entities") or anchor_record.entities or []) if str(v or "").strip()],
-                temporal=merged_temporal,
-                task_tags=[str(v) for v in (resolved.get("task_tags") or anchor_record.task_tags or []) if str(v or "").strip()],
-                tool_tags=[str(v) for v in (resolved.get("tool_tags") or anchor_record.tool_tags or []) if str(v or "").strip()],
-                constraint_tags=[str(v) for v in (resolved.get("constraint_tags") or anchor_record.constraint_tags or []) if str(v or "").strip()],
-                failure_tags=[str(v) for v in (resolved.get("failure_tags") or anchor_record.failure_tags or []) if str(v or "").strip()],
-                affordance_tags=[str(v) for v in (resolved.get("affordance_tags") or anchor_record.affordance_tags or []) if str(v or "").strip()],
-                confidence=float(resolved.get("confidence") or anchor_record.confidence or 1.0),
-                evidence_turn_range=merged_evidence_turns,
-                source_session=merged_session,
-                source_role=merged_source_role,
-                created_at=anchor_record.created_at,
-                updated_at=now_iso,
-                retrieval_count=anchor_record.retrieval_count,
-                retrieval_hit_count=anchor_record.retrieval_hit_count,
-                action_success_count=anchor_record.action_success_count,
-                action_fail_count=anchor_record.action_fail_count,
-                last_retrieved_at=anchor_record.last_retrieved_at,
-                expired=False,
-                expired_at="",
-                expired_reason="",
-            )
-
-            self._sqlite.upsert_record(updated_record)
-            self._vector.upsert(
-                record_id=updated_record.record_id,
-                memory_type=updated_record.memory_type,
-                semantic_text=updated_record.semantic_text,
-                normalized_text=updated_record.normalized_text,
-            )
-            updated_records.append(updated_record)
-
-            for incoming_record in incoming_records:
-                self._sqlite.expire_record(
-                    incoming_record.record_id,
-                    expired_at=now_iso,
-                    expired_reason=f"conflict_update:{anchor_record.record_id}",
-                )
-                self._vector.mark_expired(incoming_record.record_id)
-                expired_record_ids.add(incoming_record.record_id)
-
-            affected_source_ids = [anchor_record.record_id, *incoming_ids]
-            stale_composites = self._sqlite.get_synthesized_by_source(affected_source_ids)
-            stale_composite_ids = sorted({
-                composite.composite_id
-                for composite in stale_composites
-                if str(composite.composite_id or "").strip()
-            })
-            if stale_composite_ids:
-                self._sqlite.delete_synthesized_many(stale_composite_ids)
-                for composite_id in stale_composite_ids:
-                    self._vector.delete_synthesized(composite_id)
-                invalidated_composite_ids.update(stale_composite_ids)
-
-        surviving_new_records = [
-            record
-            for record in active_new_records
-            if record.record_id not in expired_record_ids
-        ]
-
-        self._last_run_stats = {
-            "expired_record_ids": sorted(expired_record_ids),
-            "updated_record_ids": sorted({record.record_id for record in updated_records}),
-            "invalidated_composite_ids": sorted(invalidated_composite_ids),
-        }
-
-        return surviving_new_records, updated_records
-
-    def _find_related_existing_records(
+    def _build_composite(
         self,
-        record: MemoryRecord,
+        items: list[MemoryRecord | CompositeRecord],
         *,
-        exclude_ids: set[str] | None = None,
-    ) -> list[MemoryRecord]:
-        exclude_ids = {
-            str(record_id or "").strip()
-            for record_id in (exclude_ids or set())
-            if str(record_id or "").strip()
+        flat_ids: list[str],
+        child_composite_ids: list[str],
+        now_iso: str,
+    ) -> CompositeRecord | None:
+        """从一组 items 构建 CompositeRecord。
+
+        - semantic_text: 选择 confidence 最高 / updated_at 最新的代表记录
+        - metadata: 合并所有 items 的 entities、tags、temporal
+        """
+        if len(items) < self._min_records:
+            return None
+
+        # 选择代表记录
+        representative = max(items, key=lambda x: (x.confidence, x.updated_at))
+
+        # 合并 metadata
+        all_entities = self._merge_unique(
+            [e for item in items for e in (item.entities or [])]
+        )
+        all_tags = self._merge_unique(
+            [t for item in items for t in (item.tags or [])]
+        )
+        merged_temporal = self._merge_temporal(
+            [item.temporal for item in items if item.temporal]
+        )
+        avg_confidence = sum(item.confidence for item in items) / len(items)
+
+        # 推断 composite memory_type
+        type_counts: dict[str, int] = {}
+        for item in items:
+            type_counts[item.memory_type] = type_counts.get(item.memory_type, 0) + 1
+        dominant_type = max(type_counts, key=lambda k: type_counts[k])
+        synth_type = self._infer_synth_type(dominant_type)
+
+        composite_id = self._make_composite_id(flat_ids, representative.semantic_text)
+
+        return CompositeRecord(
+            composite_id=composite_id,
+            memory_type=synth_type,
+            semantic_text=representative.semantic_text,
+            normalized_text=f"{synth_type}: {representative.semantic_text}",
+            source_record_ids=flat_ids,
+            child_composite_ids=child_composite_ids,
+            entities=all_entities,
+            temporal=merged_temporal,
+            tags=all_tags,
+            confidence=round(avg_confidence, 4),
+            created_at=now_iso,
+            updated_at=now_iso,
+        )
+
+    # ──────────────────────────────────────
+    # 工具方法
+    # ──────────────────────────────────────
+
+    @staticmethod
+    def _union_find_clusters(
+        edges: list[tuple[str, str]],
+        all_ids: Any,
+    ) -> list[list[str]]:
+        """Union-Find 算法，根据边集构建连通分量。"""
+        parent: dict[str, str] = {}
+
+        def find(x: str) -> str:
+            while parent.get(x, x) != x:
+                parent[x] = parent.get(parent[x], parent[x])
+                x = parent[x]
+            return x
+
+        def union(a: str, b: str) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        for uid in all_ids:
+            parent.setdefault(str(uid), str(uid))
+
+        for a, b in edges:
+            a_s, b_s = str(a).strip(), str(b).strip()
+            if a_s and b_s:
+                parent.setdefault(a_s, a_s)
+                parent.setdefault(b_s, b_s)
+                union(a_s, b_s)
+
+        groups: dict[str, list[str]] = defaultdict(list)
+        for uid in parent:
+            groups[find(uid)].append(uid)
+
+        return [sorted(ids) for ids in groups.values() if len(ids) >= 2]
+
+    @staticmethod
+    def _merge_unique(items: list[str]) -> list[str]:
+        """去重合并字符串列表（大小写不敏感去重）。"""
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in items:
+            s = str(item or "").strip()
+            if s and s.lower() not in seen:
+                seen.add(s.lower())
+                result.append(s)
+        return result
+
+    @staticmethod
+    def _merge_temporal(temporals: list[dict[str, Any]]) -> dict[str, str]:
+        """合并多个 temporal 字典：t_valid_from 取最早，t_valid_to 取最晚。"""
+        merged: dict[str, str] = {"t_ref": "", "t_valid_from": "", "t_valid_to": ""}
+        for t in temporals:
+            if not isinstance(t, dict):
+                continue
+            for k in ("t_ref", "t_valid_from", "t_valid_to"):
+                v = str(t.get(k, "") or "").strip()
+                if v:
+                    if not merged[k]:
+                        merged[k] = v
+                    elif k == "t_valid_from":
+                        merged[k] = min(merged[k], v)
+                    elif k == "t_valid_to":
+                        merged[k] = max(merged[k], v)
+                    # t_ref: keep first non-empty
+        return merged
+
+    @staticmethod
+    def _infer_synth_type(dominant_memory_type: str) -> str:
+        """根据主导 memory_type 推断合适的 composite 类型。"""
+        mapping = {
+            "preference": "composite_preference",
+            "constraint": "composite_constraint",
+            "failure_pattern": "composite_pattern",
+            "procedure": "composite_pattern",
         }
-        related: dict[str, MemoryRecord] = {}
-        queries: list[str] = []
-
-        for text in [
-            record.normalized_text,
-            record.semantic_text,
-            " ".join(record.entities),
-            " ".join([
-                *record.task_tags,
-                *record.tool_tags,
-                *record.constraint_tags,
-                *record.failure_tags,
-                *record.affordance_tags,
-            ]),
-        ]:
-            cleaned = str(text or "").strip()
-            if cleaned and cleaned not in queries:
-                queries.append(cleaned)
-
-        for query_text in queries[:4]:
-            for result in self._sqlite.fulltext_search(
-                query_text,
-                limit=6,
-            ):
-                record_id = str(result.get("record_id") or "").strip()
-                if not record_id or record_id == record.record_id or record_id in exclude_ids:
-                    continue
-                fetched = self._sqlite.get_record(record_id)
-                if fetched is not None and not fetched.expired:
-                    related[record_id] = fetched
-
-            for column in ("vector", "normalized_vector"):
-                for result in self._vector.search(
-                    query_text,
-                    column=column,
-                    limit=6,
-                ):
-                    record_id = str(result.get("record_id") or "").strip()
-                    if not record_id or record_id == record.record_id or record_id in exclude_ids:
-                        continue
-                    fetched = self._sqlite.get_record(record_id)
-                    if fetched is not None and not fetched.expired:
-                        related[record_id] = fetched
-
-        return list(related.values())
+        result = mapping.get(dominant_memory_type, "usage_pattern")
+        if result not in VALID_SYNTH_TYPES:
+            result = "usage_pattern"
+        return result
 
     def _persist_composite(self, composite: CompositeRecord) -> None:
         self._sqlite.upsert_synthesized(composite)
@@ -616,352 +568,26 @@ class RecordFusionEngine:
         )
 
     def _is_source_group_already_covered(self, source_record_ids: list[str]) -> bool:
-        source_ids_set = {
-            str(uid or "").strip()
-            for uid in source_record_ids
-            if str(uid or "").strip()
-        }
-        if len(source_ids_set) < self._min_records:
+        source_set = {s for s in source_record_ids if s}
+        if len(source_set) < self._min_records:
             return True
 
-        existing_composites = self._sqlite.get_synthesized_by_source(list(source_ids_set))
-        for existing in existing_composites:
+        existing = self._sqlite.get_synthesized_by_source(list(source_set))
+        for comp in existing:
             existing_set = {
                 str(uid or "").strip()
-                for uid in existing.source_record_ids
+                for uid in comp.source_record_ids
                 if str(uid or "").strip()
             }
             if not existing_set:
                 continue
-            if source_ids_set.issubset(existing_set):
+            if source_set.issubset(existing_set):
                 return True
-
-            overlap = len(source_ids_set & existing_set)
-            union = len(source_ids_set | existing_set)
-            jaccard = overlap / union if union > 0 else 0.0
-            if jaccard >= 0.7:
+            overlap = len(source_set & existing_set)
+            union_size = len(source_set | existing_set)
+            if union_size > 0 and overlap / union_size >= 0.7:
                 return True
-
         return False
-
-    def _find_related_root_composites(
-        self,
-        item: MemoryRecord | CompositeRecord,
-        *,
-        child_to_parent: dict[str, str] | None = None,
-    ) -> list[CompositeRecord]:
-        related: dict[str, CompositeRecord] = {}
-        child_to_parent = child_to_parent or {}
-
-        queries: list[str] = []
-        for text in [
-            item.normalized_text,
-            item.semantic_text,
-            " ".join(item.entities),
-            " ".join([*item.task_tags, *item.tool_tags, *item.constraint_tags]),
-        ]:
-            cleaned = str(text or "").strip()
-            if cleaned and cleaned not in queries:
-                queries.append(cleaned)
-
-        for query_text in queries[:4]:
-            fts_results = self._sqlite.fulltext_search_synthesized(
-                query_text,
-                limit=6,
-            )
-            for result in fts_results:
-                composite_id = str(result.get("composite_id", "")).strip()
-                if not composite_id or composite_id == self._item_id(item):
-                    continue
-                if composite_id in child_to_parent:
-                    continue
-                fetched = self._sqlite.get_synthesized(composite_id)
-                if fetched is not None:
-                    related[composite_id] = fetched
-
-            for column in ("vector", "normalized_vector"):
-                vector_results = self._vector.search_synthesized(
-                    query_text,
-                    column=column,
-                    limit=6,
-                )
-                for result in vector_results:
-                    composite_id = str(result.get("composite_id", "")).strip()
-                    if not composite_id or composite_id == self._item_id(item):
-                        continue
-                    if composite_id in child_to_parent:
-                        continue
-                    fetched = self._sqlite.get_synthesized(composite_id)
-                    if fetched is not None:
-                        related[composite_id] = fetched
-
-        return list(related.values())
-
-    def _build_existing_hierarchy_maps(
-        self,
-        composites: list[CompositeRecord],
-    ) -> tuple[set[str], dict[str, str]]:
-        covered_record_ids: set[str] = set()
-        source_sets: dict[str, set[str]] = {}
-        explicit_candidates: dict[str, set[str]] = {}
-
-        for composite in composites:
-            composite_id = self._item_id(composite)
-            if not composite_id:
-                continue
-            source_set = {
-                str(source_id or "").strip()
-                for source_id in composite.source_record_ids
-                if str(source_id or "").strip()
-            }
-            source_sets[composite_id] = source_set
-            covered_record_ids.update(source_set)
-
-        for composite in composites:
-            parent_id = self._item_id(composite)
-            parent_sources = source_sets.get(parent_id, set())
-            for child_id in composite.child_composite_ids:
-                normalized_child = str(child_id or "").strip()
-                child_sources = source_sets.get(normalized_child, set())
-                if (
-                    normalized_child
-                    and normalized_child != parent_id
-                    and child_sources
-                    and child_sources.issubset(parent_sources)
-                    and len(parent_sources) > len(child_sources)
-                ):
-                    explicit_candidates.setdefault(normalized_child, set()).add(parent_id)
-
-        inferred_candidates: dict[str, set[str]] = {}
-        composite_ids = list(source_sets.keys())
-        for parent_id in composite_ids:
-            if any(parent_id in parents for parents in explicit_candidates.values()):
-                continue
-            parent_sources = source_sets[parent_id]
-            if len(parent_sources) < self._min_records:
-                continue
-
-            eligible_children = [
-                child_id
-                for child_id in composite_ids
-                if child_id != parent_id
-                and source_sets[child_id]
-                and source_sets[child_id].issubset(parent_sources)
-                and len(parent_sources) > len(source_sets[child_id])
-            ]
-
-            for child_id in eligible_children:
-                child_sources = source_sets[child_id]
-                has_intermediate = any(
-                    mid_id not in {child_id, parent_id}
-                    and source_sets[mid_id]
-                    and child_sources.issubset(source_sets[mid_id])
-                    and source_sets[mid_id].issubset(parent_sources)
-                    and len(parent_sources) > len(source_sets[mid_id]) > len(child_sources)
-                    for mid_id in eligible_children
-                )
-                if not has_intermediate:
-                    inferred_candidates.setdefault(child_id, set()).add(parent_id)
-
-        parent_candidates = explicit_candidates or inferred_candidates
-        if explicit_candidates:
-            for child_id, parents in inferred_candidates.items():
-                if child_id not in parent_candidates:
-                    parent_candidates[child_id] = set(parents)
-
-        child_to_parent: dict[str, str] = {}
-        for child_id, parents in parent_candidates.items():
-            valid_parents = [parent_id for parent_id in parents if parent_id in source_sets]
-            if not valid_parents:
-                continue
-            best_parent = min(
-                valid_parents,
-                key=lambda parent_id: (len(source_sets.get(parent_id, set())) or 10**9, parent_id),
-            )
-            child_to_parent[child_id] = best_parent
-
-        return covered_record_ids, child_to_parent
-
-    def _normalize_disjoint_groups(
-        self,
-        groups: list[dict[str, Any]],
-        *,
-        allowed_ids: Any,
-        blocked_ids: set[str] | None = None,
-    ) -> list[dict[str, Any]]:
-        allowed = {
-            str(item_id or "").strip()
-            for item_id in allowed_ids
-            if str(item_id or "").strip()
-        }
-        blocked_ids = {
-            str(item_id or "").strip()
-            for item_id in (blocked_ids or set())
-            if str(item_id or "").strip()
-        }
-        normalized_groups: list[dict[str, Any]] = []
-        for group in groups or []:
-            raw_ids = group.get("source_record_ids", []) or []
-            source_ids: list[str] = []
-            seen: set[str] = set()
-            for raw_id in raw_ids:
-                normalized = str(raw_id or "").strip()
-                if (
-                    not normalized
-                    or normalized not in allowed
-                    or normalized in seen
-                    or normalized in blocked_ids
-                ):
-                    continue
-                seen.add(normalized)
-                source_ids.append(normalized)
-
-            if len(source_ids) < self._min_records:
-                continue
-
-            normalized_groups.append({
-                "source_record_ids": source_ids,
-                "synthesis_reason": str(group.get("synthesis_reason", "") or "").strip(),
-                "suggested_type": str(group.get("suggested_type", "composite_pattern") or "composite_pattern").strip(),
-            })
-
-        normalized_groups.sort(
-            key=lambda group: (
-                -len(group["source_record_ids"]),
-                group.get("suggested_type", ""),
-                group.get("source_record_ids", []),
-            )
-        )
-
-        used_ids: set[str] = set()
-        disjoint_groups: list[dict[str, Any]] = []
-        for group in normalized_groups:
-            source_ids = group.get("source_record_ids", [])
-            if any(source_id in used_ids for source_id in source_ids):
-                continue
-            disjoint_groups.append(group)
-            used_ids.update(source_ids)
-
-        return disjoint_groups
-
-    def _normalize_conflicts(
-        self,
-        conflicts: list[dict[str, Any]],
-        *,
-        allowed_ids: Any,
-        new_ids: set[str],
-        existing_ids: set[str],
-    ) -> list[dict[str, Any]]:
-        allowed = {
-            str(item_id or "").strip()
-            for item_id in allowed_ids
-            if str(item_id or "").strip()
-        }
-        new_ids = {
-            str(item_id or "").strip()
-            for item_id in new_ids
-            if str(item_id or "").strip()
-        }
-        existing_ids = {
-            str(item_id or "").strip()
-            for item_id in existing_ids
-            if str(item_id or "").strip()
-        }
-
-        merged_by_anchor: dict[str, dict[str, Any]] = {}
-        for conflict in conflicts or []:
-            anchor_id = str(conflict.get("anchor_record_id") or "").strip()
-            if not anchor_id or anchor_id not in allowed or anchor_id not in existing_ids:
-                continue
-
-            incoming_ids: list[str] = []
-            seen_incoming: set[str] = set()
-            for raw_id in conflict.get("incoming_record_ids", []) or []:
-                incoming_id = str(raw_id or "").strip()
-                if (
-                    not incoming_id
-                    or incoming_id not in allowed
-                    or incoming_id not in new_ids
-                    or incoming_id == anchor_id
-                    or incoming_id in seen_incoming
-                ):
-                    continue
-                seen_incoming.add(incoming_id)
-                incoming_ids.append(incoming_id)
-
-            if not incoming_ids:
-                continue
-
-            entry = merged_by_anchor.setdefault(
-                anchor_id,
-                {
-                    "anchor_record_id": anchor_id,
-                    "incoming_record_ids": [],
-                    "conflict_reason": "",
-                    "resolution_mode": "update_existing",
-                },
-            )
-            entry["incoming_record_ids"] = self._merge_unique_str(
-                entry["incoming_record_ids"],
-                incoming_ids,
-            )
-            if not entry["conflict_reason"]:
-                entry["conflict_reason"] = str(conflict.get("conflict_reason") or "").strip()
-
-        normalized = sorted(
-            merged_by_anchor.values(),
-            key=lambda item: (-len(item["incoming_record_ids"]), item["anchor_record_id"]),
-        )
-
-        disjoint_conflicts: list[dict[str, Any]] = []
-        used_anchors: set[str] = set()
-        used_incoming: set[str] = set()
-        for conflict in normalized:
-            anchor_id = conflict["anchor_record_id"]
-            incoming_ids = conflict["incoming_record_ids"]
-            if anchor_id in used_anchors or any(record_id in used_incoming for record_id in incoming_ids):
-                continue
-            disjoint_conflicts.append(conflict)
-            used_anchors.add(anchor_id)
-            used_incoming.update(incoming_ids)
-
-        return disjoint_conflicts
-
-    @staticmethod
-    def _merge_unique_str(primary: list[str], secondary: list[str]) -> list[str]:
-        seen: set[str] = set()
-        merged: list[str] = []
-        for value in list(primary or []) + list(secondary or []):
-            item = str(value or "").strip()
-            if not item:
-                continue
-            key = item.casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            merged.append(item)
-        return merged
-
-    @staticmethod
-    def _merge_source_roles(
-        records: list[MemoryRecord],
-        *,
-        preferred: str = "",
-    ) -> str:
-        preferred = str(preferred or "").strip()
-        if preferred:
-            return preferred
-
-        roles = {
-            str(record.source_role or "").strip()
-            for record in records
-            if str(record.source_role or "").strip()
-        }
-        if not roles:
-            return ""
-        if len(roles) == 1:
-            return next(iter(roles))
-        return "both"
 
     @staticmethod
     def _item_id(item: MemoryRecord | CompositeRecord) -> str:
@@ -970,188 +596,63 @@ class RecordFusionEngine:
         return str(item.record_id or "").strip()
 
     @staticmethod
-    def _flatten_source_record_ids(
-        source_items: list[MemoryRecord | CompositeRecord],
+    def _flatten_source_ids(
+        items: list[MemoryRecord | CompositeRecord],
     ) -> list[str]:
-        source_ids: set[str] = set()
-        for item in source_items:
+        ids: set[str] = set()
+        for item in items:
             if isinstance(item, CompositeRecord):
-                raw_ids = item.source_record_ids
+                for rid in item.source_record_ids:
+                    s = str(rid or "").strip()
+                    if s:
+                        ids.add(s)
             else:
-                raw_ids = [item.record_id]
-
-            for raw_id in raw_ids:
-                normalized = str(raw_id or "").strip()
-                if normalized:
-                    source_ids.add(normalized)
-
-        return sorted(source_ids)
+                s = str(item.record_id or "").strip()
+                if s:
+                    ids.add(s)
+        return sorted(ids)
 
     @staticmethod
-    def _has_coverage_relation(left_ids: list[str], right_ids: list[str]) -> bool:
-        left_set = {str(uid or "").strip() for uid in left_ids if str(uid or "").strip()}
-        right_set = {str(uid or "").strip() for uid in right_ids if str(uid or "").strip()}
-        if not left_set or not right_set:
+    def _has_coverage_relation(left: list[str], right: list[str]) -> bool:
+        ls = {s for s in left if s}
+        rs = {s for s in right if s}
+        if not ls or not rs:
             return False
-        return left_set.issubset(right_set) or right_set.issubset(left_set)
+        return ls.issubset(rs) or rs.issubset(ls)
 
-    def _judge_synthesis(
-        self,
-        candidates: list[MemoryRecord | CompositeRecord],
-        *,
-        new_record_ids: set[str] | None = None,
-    ) -> dict[str, list[dict[str, Any]]]:
-        """LLM 判断候选集是否可融合或做冲突更新。"""
-        records_json = json.dumps(
-            [
-                self._serialize_candidate_for_judge(item, new_record_ids=new_record_ids)
-                for item in candidates
-            ],
-            ensure_ascii=False,
-            indent=2,
-        )
+    def _build_child_to_parent(
+        self, composites: list[CompositeRecord],
+    ) -> dict[str, str]:
+        """构建 child composite → parent composite 映射。"""
+        source_sets: dict[str, set[str]] = {}
+        for comp in composites:
+            cid = str(comp.composite_id or "").strip()
+            if cid:
+                source_sets[cid] = {
+                    str(s or "").strip()
+                    for s in comp.source_record_ids
+                    if str(s or "").strip()
+                }
 
-        user_content = f"<RECORDS>\n{records_json}\n</RECORDS>"
+        child_to_parent: dict[str, str] = {}
+        for comp in composites:
+            parent_id = str(comp.composite_id or "").strip()
+            parent_sources = source_sets.get(parent_id, set())
+            for child_cid in comp.child_composite_ids:
+                child_cid_s = str(child_cid or "").strip()
+                child_sources = source_sets.get(child_cid_s, set())
+                if (
+                    child_cid_s
+                    and child_cid_s != parent_id
+                    and child_sources
+                    and child_sources.issubset(parent_sources)
+                    and len(parent_sources) > len(child_sources)
+                ):
+                    child_to_parent[child_cid_s] = parent_id
 
-        response = self._llm.generate([
-            {"role": "system", "content": SYNTHESIS_JUDGE_SYSTEM},
-            {"role": "user", "content": user_content},
-        ])
-
-        try:
-            parsed = self._parse_json(response)
-            return {
-                "groups": parsed.get("groups", []) or [],
-                "conflicts": parsed.get("conflicts", []) or [],
-            }
-        except (ValueError, json.JSONDecodeError):
-            return {"groups": [], "conflicts": []}
-
-    def _execute_synthesis(
-        self,
-        source_records: list[MemoryRecord | CompositeRecord],
-        reason: str,
-        suggested_type: str,
-        *,
-        resolution_mode: str = "synthesize",
-        target_record_id: str = "",
-        new_record_ids: set[str] | None = None,
-    ) -> dict[str, Any] | None:
-        """LLM 执行融合，返回聚合结果。"""
-        records_json = json.dumps(
-            [
-                self._serialize_candidate_for_execute(item, new_record_ids=new_record_ids)
-                for item in source_records
-            ],
-            ensure_ascii=False,
-            indent=2,
-        )
-
-        user_content = (
-            f"<SOURCE_RECORDS>\n{records_json}\n</SOURCE_RECORDS>\n\n"
-            f"<SYNTHESIS_REASON>\n{reason}\n</SYNTHESIS_REASON>\n\n"
-            f"<SUGGESTED_TYPE>\n{suggested_type}\n</SUGGESTED_TYPE>\n\n"
-            f"<RESOLUTION_MODE>\n{resolution_mode}\n</RESOLUTION_MODE>\n\n"
-            f"<TARGET_RECORD_ID>\n{target_record_id}\n</TARGET_RECORD_ID>"
-        )
-
-        response = self._llm.generate([
-            {"role": "system", "content": SYNTHESIS_EXECUTE_SYSTEM},
-            {"role": "user", "content": user_content},
-        ])
-
-        try:
-            return self._parse_json(response)
-        except (ValueError, json.JSONDecodeError):
-            return None
+        return child_to_parent
 
     @staticmethod
     def _make_composite_id(source_ids: list[str], semantic_text: str) -> str:
         raw = "|".join(sorted(source_ids)) + "|" + semantic_text
         return "comp_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
-
-    @staticmethod
-    def _serialize_candidate_for_judge(
-        item: MemoryRecord | CompositeRecord,
-        *,
-        new_record_ids: set[str] | None = None,
-    ) -> dict[str, Any]:
-        new_record_ids = {
-            str(record_id or "").strip()
-            for record_id in (new_record_ids or set())
-            if str(record_id or "").strip()
-        }
-        if isinstance(item, CompositeRecord):
-            item_id = item.composite_id
-            source_record_ids = list(item.source_record_ids)
-            item_kind = "composite"
-        else:
-            item_id = item.record_id
-            source_record_ids = [item.record_id]
-            item_kind = "record"
-
-        return {
-            "record_id": item_id,
-            "item_kind": item_kind,
-            "ingest_status": "new" if item_id in new_record_ids else "existing",
-            "memory_type": item.memory_type,
-            "semantic_text": item.semantic_text,
-            "normalized_text": item.normalized_text,
-            "entities": item.entities,
-            "temporal": item.temporal,
-            "task_tags": item.task_tags,
-            "tool_tags": item.tool_tags,
-            "constraint_tags": item.constraint_tags,
-            "failure_tags": item.failure_tags,
-            "affordance_tags": item.affordance_tags,
-            "source_record_ids": source_record_ids,
-            "child_composite_ids": list(item.child_composite_ids) if isinstance(item, CompositeRecord) else [],
-        }
-
-    @staticmethod
-    def _serialize_candidate_for_execute(
-        item: MemoryRecord | CompositeRecord,
-        *,
-        new_record_ids: set[str] | None = None,
-    ) -> dict[str, Any]:
-        new_record_ids = {
-            str(record_id or "").strip()
-            for record_id in (new_record_ids or set())
-            if str(record_id or "").strip()
-        }
-        if isinstance(item, CompositeRecord):
-            item_id = item.composite_id
-            source_record_ids = list(item.source_record_ids)
-            item_kind = "composite"
-        else:
-            item_id = item.record_id
-            source_record_ids = [item.record_id]
-            item_kind = "record"
-
-        return {
-            "record_id": item_id,
-            "item_kind": item_kind,
-            "ingest_status": "new" if item_id in new_record_ids else "existing",
-            "memory_type": item.memory_type,
-            "semantic_text": item.semantic_text,
-            "normalized_text": item.normalized_text,
-            "entities": item.entities,
-            "temporal": item.temporal,
-            "task_tags": item.task_tags,
-            "tool_tags": item.tool_tags,
-            "constraint_tags": item.constraint_tags,
-            "failure_tags": item.failure_tags,
-            "affordance_tags": item.affordance_tags,
-            "confidence": item.confidence,
-            "source_record_ids": source_record_ids,
-            "child_composite_ids": list(item.child_composite_ids) if isinstance(item, CompositeRecord) else [],
-        }
-
-    @staticmethod
-    def _parse_json(text: str) -> dict[str, Any]:
-        text = text.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            lines = [l for l in lines if not l.strip().startswith("```")]
-            text = "\n".join(lines)
-        return json.loads(text)

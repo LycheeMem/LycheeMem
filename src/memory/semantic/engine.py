@@ -1,7 +1,7 @@
 """Compact Semantic Engine（总装引擎）。
 
 实现 BaseSemanticMemoryEngine，串联所有子模块：
-- search(): Planner → 5 通道召回 → Scorer → 格式化输出
+- search(): 三阶段 LLM 驱动检索（Composite 过滤 → 记忆树下钻 → 反思 + FTS/向量补召回）
 - ingest_conversation(): Novelty Check → Encoder → 去重写入 → Fusion
 
 这是整个 Compact Semantic Memory 的核心入口。
@@ -13,6 +13,8 @@ import hashlib
 import json
 import re
 import uuid
+
+from src.llm.base import set_llm_call_source
 from collections import deque
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -40,14 +42,14 @@ from src.memory.semantic.models import (
     SYNTH_TYPE_PATTERN,
     SYNTH_TYPE_USAGE,
 )
-from src.memory.semantic.planner import ActionAwareSearchPlanner
 from src.memory.semantic.prompts import (
     COMPOSITE_FILTER_SYSTEM,
     NOVELTY_CHECK_SYSTEM,
     RETRIEVAL_ADEQUACY_CHECK_SYSTEM,
     RETRIEVAL_ADDITIONAL_QUERIES_SYSTEM,
+    FEEDBACK_CLASSIFICATION_SYSTEM,
 )
-from src.memory.semantic.scorer import MemoryScorer, ScoredCandidate, ScoringWeights
+from src.memory.semantic.scorer import ScoredCandidate, ScoringWeights
 from src.memory.semantic.sqlite_store import SQLiteSemanticStore
 from src.memory.semantic.synthesizer import RecordFusionEngine
 from src.memory.semantic.vector_index import LanceVectorIndex
@@ -113,13 +115,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
         # 子模块
         self._encoder = CompactSemanticEncoder(llm=llm)
-        self._planner = ActionAwareSearchPlanner(llm=llm)
-        self._scorer = MemoryScorer(weights=scorer_weights)
         self._synthesizer = RecordFusionEngine(
-            llm=llm,
             sqlite_store=self._sqlite,
             vector_index=self._vector,
-            similarity_threshold=synthesis_similarity,
+            synthesis_similarity=synthesis_similarity,
+            dedup_threshold=dedup_threshold,
             min_records_for_synthesis=synthesis_min_records,
         )
 
@@ -180,33 +180,44 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         selected_candidates: list[ScoredCandidate] = []
         seen_ids: set[str] = set()
 
-        # ─── Phase 1: LLM 过滤 CompositeRecord ───────────────────
-        all_composites = self._sqlite.list_synthesized()
+        # ─── Phase 1: ANN 预过滤 + LLM 过滤 CompositeRecord ─────
+        # 先用向量 ANN 检索 top-20 相关 composites，再做一次 LLM 过滤
+        ann_composite_results = self._vector.search_synthesized(
+            query, column="vector", limit=20,
+        )
+        ann_composite_ids = [
+            str(r.get("composite_id", "")).strip()
+            for r in ann_composite_results
+            if str(r.get("composite_id", "")).strip()
+        ]
+        ann_composites: list[CompositeRecord] = []
+        for cid in ann_composite_ids:
+            comp = self._sqlite.get_synthesized(cid)
+            if comp:
+                ann_composites.append(comp)
+
         needs_detail_ids: set[str] = set()
 
-        if all_composites:
-            _CHUNK = 20
-            for i in range(0, len(all_composites), _CHUNK):
-                chunk = all_composites[i : i + _CHUNK]
-                sel_ids, det_ids = self._llm_filter_composites(
-                    query=query,
-                    recent_context=recent_context,
-                    composites=chunk,
-                )
-                for composite in chunk:
-                    cid = composite.composite_id
-                    if cid in sel_ids and cid not in seen_ids:
-                        seen_ids.add(cid)
-                        data = self._synth_to_candidate(composite)
-                        selected_candidates.append(ScoredCandidate(
-                            id=cid,
-                            source="composite",
-                            final_score=1.0,
-                            score_breakdown={"llm_selected": 1.0},
-                            data=data,
-                        ))
-                    if cid in det_ids:
-                        needs_detail_ids.add(cid)
+        if ann_composites:
+            sel_ids, det_ids = self._llm_filter_composites(
+                query=query,
+                recent_context=recent_context,
+                composites=ann_composites,
+            )
+            for composite in ann_composites:
+                cid = composite.composite_id
+                if cid in sel_ids and cid not in seen_ids:
+                    seen_ids.add(cid)
+                    data = self._synth_to_candidate(composite)
+                    selected_candidates.append(ScoredCandidate(
+                        id=cid,
+                        source="composite",
+                        final_score=1.0,
+                        score_breakdown={"llm_selected": 1.0},
+                        data=data,
+                    ))
+                if cid in det_ids:
+                    needs_detail_ids.add(cid)
 
         # ─── Phase 2: 下钻叶子 MemoryRecord ──────────────────────
         for composite_id in list(needs_detail_ids):
@@ -284,8 +295,12 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             if not new_added:
                 break
 
-        # 情节上下文增强
+        # 情节上下文增强：强制开启，且保证至少 window=1
+        # 这样即使 answer 模式下 _normalize_tree_retrieval_plan 将 window 设为 0，
+        # 此处也会回溯每条已召回记录的原始对话 turns（含相邻 1 条 turn），
+        # 从而补偿 encoder 在抽取时丢失的细节。
         plan.include_episodic_context = True
+        plan.episodic_turn_window = max(plan.episodic_turn_window, 1)
         self._enrich_candidates_with_episodic_context(
             selected_candidates,
             plan=plan,
@@ -364,6 +379,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             user_content += f"<RECENT_CONTEXT>\n{recent_context}\n</RECENT_CONTEXT>\n\n"
         user_content += f"<MEMORY_SUMMARIES>\n{composites_text}\n</MEMORY_SUMMARIES>"
 
+        set_llm_call_source("composite_filter")
         response = self._llm.generate([
             {"role": "system", "content": COMPOSITE_FILTER_SYSTEM},
             {"role": "user", "content": user_content},
@@ -474,990 +490,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
         return candidates
 
-
-    def _multi_channel_recall(
-        self,
-        *,
-        plan: SearchPlan,
-        query: str,
-        query_embedding: list[float] | None,
-        top_k: int,
-        record_type_bias: list[str] | None = None,
-        synth_type_bias: list[str] | None = None,
-        focus_terms: list[str] | None = None,
-    ) -> list[dict[str, Any]]:
-        """5 通道并行召回 + 去重合并。"""
-        seen_ids: set[str] = set()
-        candidates: list[dict[str, Any]] = []
-        recall_limit = max(top_k * 3, 30)  # 召回量 > 最终需求量
-
-        semantic_queries = plan.semantic_queries or [query]
-        pragmatic_queries = plan.pragmatic_queries or []
-        record_type_bias = [t for t in (record_type_bias or []) if str(t or "").strip()]
-        synth_type_bias = [t for t in (synth_type_bias or []) if str(t or "").strip()]
-        focus_terms = [t for t in (focus_terms or []) if str(t or "").strip()]
-
-        # ── 通道 1: FTS 全文检索 ──
-        for sq in semantic_queries:
-            fts_results = self._sqlite.fulltext_search(
-                sq, limit=recall_limit,
-            )
-            for r in fts_results:
-                uid = r.get("record_id", "")
-                if uid and uid not in seen_ids:
-                    seen_ids.add(uid)
-                    r["id"] = uid
-                    r["source"] = "record"
-                    r["semantic_distance"] = 1.0 - min(1.0, abs(r.get("fts_score", 0)) / 20.0)
-                    candidates.append(r)
-
-            # FTS on synthesized
-            synth_fts = self._sqlite.fulltext_search_synthesized(
-                sq, limit=recall_limit,
-            )
-            for r in synth_fts:
-                sid = r.get("composite_id", "")
-                if sid and sid not in seen_ids:
-                    seen_ids.add(sid)
-                    r["id"] = sid
-                    r["source"] = "composite"
-                    r["semantic_distance"] = 1.0 - min(1.0, abs(r.get("fts_score", 0)) / 20.0)
-                    candidates.append(r)
-
-        # ── 通道 2: 语义向量检索 ──
-        for sq in semantic_queries:
-            vec_results = self._vector.search(
-                sq,
-                column="vector",
-                limit=recall_limit,
-            )
-            for r in vec_results:
-                uid = r.get("record_id", "")
-                if uid and uid not in seen_ids:
-                    seen_ids.add(uid)
-                    # 从 sqlite 获取完整数据
-                    full = self._sqlite.get_record(uid)
-                    if full:
-                        c = self._record_to_candidate(full)
-                        c["semantic_distance"] = r.get("_distance", 1.0)
-                        candidates.append(c)
-
-            # 向量 on synthesized
-            synth_vec = self._vector.search_synthesized(
-                sq, column="vector", limit=recall_limit,
-            )
-            for r in synth_vec:
-                sid = r.get("composite_id", "")
-                if sid and sid not in seen_ids:
-                    seen_ids.add(sid)
-                    # 直接按 composite_id 从 sqlite 获取完整数据
-                    su = self._sqlite.get_synthesized(sid)
-                    if su:
-                        s = {
-                            "id": sid,
-                            "source": "composite",
-                            "semantic_distance": r.get("_distance", 1.0),
-                            "memory_type": su.memory_type,
-                            "semantic_text": su.semantic_text,
-                            "normalized_text": su.normalized_text,
-                            "tool_tags": su.tool_tags,
-                            "constraint_tags": su.constraint_tags,
-                            "task_tags": su.task_tags,
-                            "failure_tags": su.failure_tags,
-                            "affordance_tags": su.affordance_tags,
-                            "created_at": su.created_at,
-                            "retrieval_count": su.retrieval_count,
-                            "retrieval_hit_count": su.retrieval_hit_count,
-                            "action_success_count": su.action_success_count,
-                            "action_fail_count": su.action_fail_count,
-                            "evidence_turn_range": [],
-                            "temporal": su.temporal,
-                            "entities": su.entities,
-                            "source_record_ids": su.source_record_ids,
-                        }
-                        candidates.append(s)
-
-        # ── 通道 3: 实用向量检索（normalized_vector） ──
-        for pq in pragmatic_queries:
-            prag_results = self._vector.search(
-                pq,
-                column="normalized_vector",
-                limit=recall_limit,
-            )
-            for r in prag_results:
-                uid = r.get("record_id", "")
-                if uid and uid not in seen_ids:
-                    seen_ids.add(uid)
-                    full = self._sqlite.get_record(uid)
-                    if full:
-                        c = self._record_to_candidate(full)
-                        c["semantic_distance"] = r.get("_distance", 1.0)
-                        candidates.append(c)
-
-        # ── 通道 4: Tag 过滤（tool / constraint / affordance）──
-        if plan.tool_hints or plan.required_constraints or plan.required_affordances:
-            tag_results = self._sqlite.search_by_tags(
-                tool_tags=plan.tool_hints or None,
-                constraint_tags=plan.required_constraints or None,
-                affordance_tags=plan.required_affordances or None,
-                limit=recall_limit,
-            )
-            for r in tag_results:
-                uid = r.get("record_id", "")
-                if uid and uid not in seen_ids:
-                    seen_ids.add(uid)
-                    r["id"] = uid
-                    r["source"] = "record"
-                    r["semantic_distance"] = 0.5  # tag 匹配给中等距离
-                    candidates.append(r)
-
-        # ── 通道 4.5: Slot 补全召回 ──
-        if plan.missing_slots:
-            slot_results = self._sqlite.search_by_slot_hints(
-                slot_terms=plan.missing_slots,
-                limit=recall_limit,
-            )
-            for r in slot_results:
-                uid = r.get("record_id", "")
-                if uid and uid not in seen_ids:
-                    seen_ids.add(uid)
-                    r["id"] = uid
-                    r["source"] = "record"
-                    r["semantic_distance"] = 0.45
-                    candidates.append(r)
-
-            slot_query = " ".join(plan.missing_slots)
-            if slot_query.strip():
-                synth_slot_results = self._sqlite.fulltext_search_synthesized(
-                    slot_query,
-                    limit=recall_limit,
-                )
-                for r in synth_slot_results:
-                    sid = r.get("composite_id", "")
-                    if sid and sid not in seen_ids:
-                        seen_ids.add(sid)
-                        r["id"] = sid
-                        r["source"] = "composite"
-                        r["semantic_distance"] = 0.45
-                        candidates.append(r)
-
-        # ── 通道 4.6: query focus hints（分工/负责/截止等答案导向槽位）──
-        if focus_terms:
-            focus_results = self._sqlite.search_by_slot_hints(
-                slot_terms=focus_terms,
-                limit=max(top_k * 2, 12),
-            )
-            for r in focus_results:
-                uid = r.get("record_id", "")
-                if uid and uid not in seen_ids:
-                    seen_ids.add(uid)
-                    r["id"] = uid
-                    r["source"] = "record"
-                    r["semantic_distance"] = 0.4
-                    candidates.append(r)
-
-            focus_query = " ".join(focus_terms)
-            if focus_query.strip():
-                synth_focus_results = self._sqlite.fulltext_search_synthesized(
-                    focus_query,
-                    limit=max(6, top_k),
-                )
-                for r in synth_focus_results:
-                    sid = r.get("composite_id", "")
-                    if sid and sid not in seen_ids:
-                        seen_ids.add(sid)
-                        r["id"] = sid
-                        r["source"] = "composite"
-                        r["semantic_distance"] = 0.4
-                        candidates.append(r)
-
-        # ── 通道 4.8: 按类型偏置召回（failure / affordance / procedure / constraint）──
-        if record_type_bias or synth_type_bias:
-            focused_limit = max(top_k * 2, 12)
-            focused_queries = self._merge_unique(
-                self._merge_unique(semantic_queries, pragmatic_queries),
-                plan.missing_slots,
-            )
-
-            for fq in focused_queries:
-                if record_type_bias:
-                    focused_records = self._sqlite.fulltext_search(
-                        fq,
-                        limit=focused_limit,
-                        memory_types=record_type_bias,
-                    )
-                    for r in focused_records:
-                        uid = r.get("record_id", "")
-                        if uid and uid not in seen_ids:
-                            seen_ids.add(uid)
-                            r["id"] = uid
-                            r["source"] = "record"
-                            r["semantic_distance"] = 0.35
-                            candidates.append(r)
-
-                if synth_type_bias:
-                    focused_synth = self._sqlite.fulltext_search_synthesized(
-                        fq,
-                        limit=max(6, top_k),
-                        memory_types=synth_type_bias,
-                    )
-                    for r in focused_synth:
-                        sid = r.get("composite_id", "")
-                        if sid and sid not in seen_ids:
-                            seen_ids.add(sid)
-                            r["id"] = sid
-                            r["source"] = "composite"
-                            r["semantic_distance"] = 0.35
-                            candidates.append(r)
-
-            if record_type_bias and (plan.tool_hints or plan.required_constraints or plan.required_affordances):
-                focused_tags = self._sqlite.search_by_tags(
-                    tool_tags=plan.tool_hints or None,
-                    constraint_tags=plan.required_constraints or None,
-                    affordance_tags=plan.required_affordances or None,
-                    memory_types=record_type_bias,
-                    limit=focused_limit,
-                )
-                for r in focused_tags:
-                    uid = r.get("record_id", "")
-                    if uid and uid not in seen_ids:
-                        seen_ids.add(uid)
-                        r["id"] = uid
-                        r["source"] = "record"
-                        r["semantic_distance"] = 0.35
-                        candidates.append(r)
-
-            if record_type_bias and plan.missing_slots:
-                focused_slots = self._sqlite.search_by_slot_hints(
-                    slot_terms=plan.missing_slots,
-                    memory_types=record_type_bias,
-                    limit=focused_limit,
-                )
-                for r in focused_slots:
-                    uid = r.get("record_id", "")
-                    if uid and uid not in seen_ids:
-                        seen_ids.add(uid)
-                        r["id"] = uid
-                        r["source"] = "record"
-                        r["semantic_distance"] = 0.35
-                        candidates.append(r)
-
-        # ── 通道 5: 时间范围 ──
-        if plan.temporal_filter:
-            time_results = self._sqlite.search_by_time(
-                since=plan.temporal_filter.get("since"),
-                until=plan.temporal_filter.get("until"),
-                limit=recall_limit,
-            )
-            for r in time_results:
-                uid = r.get("record_id", "")
-                if uid and uid not in seen_ids:
-                    seen_ids.add(uid)
-                    r["id"] = uid
-                    r["source"] = "record"
-                    r["semantic_distance"] = 0.6  # 时间匹配给中等偏高距离
-                    candidates.append(r)
-
-        # ── 补召回：如果已经召回到 child record，则把其 covering composite 一并拉回 ──
-        child_best_distance: dict[str, float] = {}
-        for candidate in candidates:
-            if candidate.get("source") != "record":
-                continue
-            cid = str(candidate.get("id") or "")
-            if not cid:
-                continue
-            distance = float(candidate.get("semantic_distance", 1.0) or 1.0)
-            child_best_distance[cid] = min(child_best_distance.get(cid, distance), distance)
-
-        if child_best_distance:
-            parent_composites = self._sqlite.get_synthesized_by_source(list(child_best_distance))
-            for composite in parent_composites:
-                sid = composite.composite_id
-                if sid in seen_ids:
-                    continue
-                candidate = self._synth_to_candidate(composite)
-                child_distances = [
-                    child_best_distance[src_id]
-                    for src_id in composite.source_record_ids
-                    if src_id in child_best_distance
-                ]
-                candidate["semantic_distance"] = (
-                    max(0.0, min(child_distances) - 0.05)
-                    if child_distances
-                    else 0.4
-                )
-                seen_ids.add(sid)
-                candidates.append(candidate)
-
-        tree_expanded = self._expand_tree_candidates(
-            plan=plan,
-            base_candidates=candidates,
-            top_k=top_k,
-            focus_terms=focus_terms,
-        )
-        for candidate in tree_expanded:
-            cid = str(candidate.get("id") or "")
-            if cid and cid not in seen_ids:
-                seen_ids.add(cid)
-                candidates.append(candidate)
-
-        return candidates
-
-    @staticmethod
-    def _derive_query_focus_terms(
-        *,
-        query: str,
-        plan: SearchPlan,
-        action_state: ActionState,
-    ) -> list[str]:
-        """Focus terms 全部来自 planner LLM 输出的 missing_slots。
-
-        planner prompt 已明确要求：
-        - answer 模式下填充人名、实体词、属性关键词（个人记忆 QA 场景）
-        - action/mixed 模式下填充可执行性缺失参数
-
-        不在这里做硬编码关键词匹配，避免通用词干扰检索妚声。
-        """
-        focus_terms = CompactSemanticEngine._merge_unique(
-            list(plan.missing_slots),
-            list(action_state.missing_slots),
-        )
-        return focus_terms
-
-    def _select_final_candidates(
-        self,
-        scored: list[ScoredCandidate],
-        *,
-        top_k: int,
-        focus_terms: list[str] | None = None,
-        tree_retrieval_mode: str = "balanced",
-        include_leaf_records: bool = False,
-    ) -> list[ScoredCandidate]:
-        """最终候选选择：优先 composite，并折叠被覆盖或近重复的 record/composite。"""
-        if not scored:
-            return []
-
-        focus_terms = [str(term or "").strip() for term in (focus_terms or []) if str(term or "").strip()]
-        detail_preferred = tree_retrieval_mode == "descend" or include_leaf_records
-        composite_index = {
-            candidate.id: candidate
-            for candidate in scored
-            if candidate.source == "composite"
-        }
-        composite_source_sets = {
-            candidate_id: self._candidate_source_record_set(candidate.data)
-            for candidate_id, candidate in composite_index.items()
-        }
-        covering_composites: dict[str, list[ScoredCandidate]] = {}
-        for candidate in composite_index.values():
-            for source_id in candidate.data.get("source_record_ids", []) or []:
-                source_key = str(source_id or "").strip()
-                if not source_key:
-                    continue
-                covering_composites.setdefault(source_key, []).append(candidate)
-        for items in covering_composites.values():
-            items.sort(key=lambda item: item.final_score, reverse=True)
-
-        covering_parent_composites: dict[str, list[ScoredCandidate]] = {}
-        for child_id, child_sources in composite_source_sets.items():
-            if not child_sources:
-                continue
-            parents = [
-                candidate
-                for candidate_id, candidate in composite_index.items()
-                if candidate_id != child_id
-                and child_sources.issubset(composite_source_sets.get(candidate_id, set()))
-                and len(composite_source_sets.get(candidate_id, set())) > len(child_sources)
-            ]
-            if parents:
-                parents.sort(key=lambda item: item.final_score, reverse=True)
-                covering_parent_composites[child_id] = parents
-
-        ordered = sorted(
-            scored,
-            key=lambda item: item.final_score + (0.02 if item.source == "composite" else 0.0),
-            reverse=True,
-        )
-
-        selected: list[ScoredCandidate] = []
-        selected_ids: set[str] = set()
-        covered_record_ids: set[str] = set()
-
-        for candidate in ordered:
-            if candidate.id in selected_ids:
-                continue
-
-            preserve_tree_detail = (
-                detail_preferred
-                and bool(candidate.data.get("tree_expanded"))
-                and bool(candidate.data.get("tree_hint_match") or candidate.data.get("tree_leaf"))
-            )
-
-            if candidate.source == "composite":
-                candidate_sources = composite_source_sets.get(candidate.id, set())
-                selected_covering_parents = [
-                    item for item in selected
-                    if item.source == "composite"
-                    and candidate_sources
-                    and candidate_sources.issubset(composite_source_sets.get(item.id, set()))
-                    and len(composite_source_sets.get(item.id, set())) > len(candidate_sources)
-                ]
-                if selected_covering_parents and not preserve_tree_detail and not self._record_adds_unique_value(
-                    candidate,
-                    selected_covering_parents,
-                    focus_terms=focus_terms,
-                ):
-                    continue
-
-                best_parent = next(iter(covering_parent_composites.get(candidate.id, [])), None)
-                if (
-                    best_parent is not None
-                    and best_parent.id not in selected_ids
-                    and best_parent.final_score >= candidate.final_score - 0.05
-                    and not preserve_tree_detail
-                    and not self._record_adds_unique_value(
-                        candidate,
-                        [best_parent],
-                        focus_terms=focus_terms,
-                    )
-                ):
-                    if not self._is_duplicate_candidate(
-                        best_parent,
-                        selected,
-                        focus_terms=focus_terms,
-                        detail_preferred=detail_preferred,
-                    ):
-                        selected.append(best_parent)
-                        selected_ids.add(best_parent.id)
-                        covered_record_ids.update(
-                            str(source_id or "").strip()
-                            for source_id in (best_parent.data.get("source_record_ids", []) or [])
-                            if str(source_id or "").strip()
-                        )
-                    continue
-
-            if candidate.source == "record":
-                selected_covering = [
-                    item for item in selected
-                    if item.source == "composite"
-                    and candidate.id in set(item.data.get("source_record_ids", []) or [])
-                ]
-                if selected_covering and not preserve_tree_detail and not self._record_adds_unique_value(
-                    candidate,
-                    selected_covering,
-                    focus_terms=focus_terms,
-                ):
-                    continue
-
-                best_cover = next(iter(covering_composites.get(candidate.id, [])), None)
-                if (
-                    best_cover is not None
-                    and best_cover.id not in selected_ids
-                    and best_cover.final_score >= candidate.final_score - 0.05
-                    and not preserve_tree_detail
-                    and not self._record_adds_unique_value(
-                        candidate,
-                        [best_cover],
-                        focus_terms=focus_terms,
-                    )
-                ):
-                    if not self._is_duplicate_candidate(
-                        best_cover,
-                        selected,
-                        focus_terms=focus_terms,
-                        detail_preferred=detail_preferred,
-                    ):
-                        selected.append(best_cover)
-                        selected_ids.add(best_cover.id)
-                        covered_record_ids.update(
-                            str(source_id or "").strip()
-                            for source_id in (best_cover.data.get("source_record_ids", []) or [])
-                            if str(source_id or "").strip()
-                        )
-                    continue
-
-                if candidate.id in covered_record_ids:
-                    continue
-
-            if self._is_duplicate_candidate(
-                candidate,
-                selected,
-                focus_terms=focus_terms,
-                detail_preferred=detail_preferred,
-            ):
-                continue
-
-            selected.append(candidate)
-            selected_ids.add(candidate.id)
-            if candidate.source == "composite":
-                covered_record_ids.update(
-                    str(source_id or "").strip()
-                    for source_id in (candidate.data.get("source_record_ids", []) or [])
-                    if str(source_id or "").strip()
-                )
-
-            if len(selected) >= top_k:
-                break
-
-        if len(selected) < top_k:
-            for candidate in ordered:
-                if candidate.id in selected_ids:
-                    continue
-                if self._is_duplicate_candidate(
-                    candidate,
-                    selected,
-                    focus_terms=focus_terms,
-                    detail_preferred=detail_preferred,
-                ):
-                    continue
-                selected.append(candidate)
-                selected_ids.add(candidate.id)
-                if len(selected) >= top_k:
-                    break
-
-        return selected[:top_k]
-
-    def _record_adds_unique_value(
-        self,
-        record: ScoredCandidate,
-        covering_composites: list[ScoredCandidate],
-        *,
-        focus_terms: list[str] | None = None,
-    ) -> bool:
-        if not covering_composites:
-            return True
-
-        focus_terms = [str(term or "").strip() for term in (focus_terms or []) if str(term or "").strip()]
-        record_data = record.data
-        record_entities = {str(v or "").strip() for v in (record_data.get("entities") or []) if str(v or "").strip()}
-
-        composite_entities: set[str] = set()
-        composite_tags: dict[str, set[str]] = {
-            "task_tags": set(),
-            "tool_tags": set(),
-            "constraint_tags": set(),
-            "failure_tags": set(),
-            "affordance_tags": set(),
-        }
-        composite_temporal_values: set[str] = set()
-        composite_texts: list[str] = []
-        composite_structured_tokens: set[str] = set()
-
-        for composite in covering_composites:
-            data = composite.data
-            composite_entities.update(
-                str(v or "").strip() for v in (data.get("entities") or []) if str(v or "").strip()
-            )
-            for tag_field in composite_tags:
-                composite_tags[tag_field].update(
-                    str(v or "").strip() for v in (data.get(tag_field) or []) if str(v or "").strip()
-                )
-            temporal = data.get("temporal") or {}
-            if isinstance(temporal, dict):
-                composite_temporal_values.update(
-                    str(v or "").strip() for v in temporal.values() if str(v or "").strip()
-                )
-            text_blob = self._candidate_text_blob(data)
-            if text_blob:
-                composite_texts.append(text_blob)
-                composite_structured_tokens.update(self._extract_structured_tokens(text_blob))
-
-        if record_entities - composite_entities:
-            return True
-
-        for tag_field, covered_values in composite_tags.items():
-            record_values = {
-                str(v or "").strip()
-                for v in (record_data.get(tag_field) or [])
-                if str(v or "").strip()
-            }
-            if record_values - covered_values:
-                return True
-
-        temporal = record_data.get("temporal") or {}
-        if isinstance(temporal, dict):
-            record_temporal_values = {
-                str(v or "").strip()
-                for v in temporal.values()
-                if str(v or "").strip()
-            }
-            if record_temporal_values - composite_temporal_values:
-                return True
-
-        record_text = self._candidate_text_blob(record_data)
-        combined_composite_text = "\n".join(composite_texts)
-        if focus_terms:
-            record_focus_terms = [term for term in focus_terms if term in record_text]
-            if record_focus_terms and any(term not in combined_composite_text for term in record_focus_terms):
-                return True
-
-        record_structured_tokens = self._extract_structured_tokens(record_text)
-        if record_structured_tokens - composite_structured_tokens:
-            return True
-
-        return False
-
-    def _is_duplicate_candidate(
-        self,
-        candidate: ScoredCandidate,
-        selected: list[ScoredCandidate],
-        *,
-        focus_terms: list[str] | None = None,
-        detail_preferred: bool = False,
-    ) -> bool:
-        for existing in selected:
-            if candidate.id == existing.id:
-                return True
-
-            preserve_tree_detail = (
-                detail_preferred
-                and bool(candidate.data.get("tree_expanded"))
-                and bool(candidate.data.get("tree_hint_match") or candidate.data.get("tree_leaf"))
-            )
-
-            if candidate.source == "record" and existing.source == "composite":
-                if candidate.id in self._candidate_source_record_set(existing.data):
-                    if preserve_tree_detail:
-                        continue
-                    if not self._record_adds_unique_value(candidate, [existing], focus_terms=focus_terms):
-                        return True
-
-            if candidate.source == "composite" and existing.source == "record":
-                if existing.id in self._candidate_source_record_set(candidate.data):
-                    if not self._record_adds_unique_value(existing, [candidate], focus_terms=focus_terms):
-                        return True
-
-            if candidate.source == "composite" and existing.source == "composite":
-                candidate_sources = self._candidate_source_record_set(candidate.data)
-                existing_sources = self._candidate_source_record_set(existing.data)
-                if candidate_sources and existing_sources:
-                    if (
-                        candidate_sources.issubset(existing_sources)
-                        and len(existing_sources) > len(candidate_sources)
-                        and not preserve_tree_detail
-                        and not self._record_adds_unique_value(candidate, [existing], focus_terms=focus_terms)
-                    ):
-                        return True
-                    if (
-                        existing_sources.issubset(candidate_sources)
-                        and len(candidate_sources) > len(existing_sources)
-                        and not self._record_adds_unique_value(existing, [candidate], focus_terms=focus_terms)
-                    ):
-                        return True
-
-            if self._looks_like_near_duplicate(candidate.data, existing.data):
-                return True
-
-        return False
-
-    def _looks_like_near_duplicate(
-        self,
-        left: dict[str, Any],
-        right: dict[str, Any],
-    ) -> bool:
-        left_text = self._candidate_text_blob(left)
-        right_text = self._candidate_text_blob(right)
-        if not left_text or not right_text:
-            return False
-
-        left_norm = str(left.get("semantic_text") or "").strip()
-        right_norm = str(right.get("semantic_text") or "").strip()
-        semantic_ratio = SequenceMatcher(None, left_text, right_text).ratio()
-        norm_ratio = SequenceMatcher(None, left_norm, right_norm).ratio() if left_norm and right_norm else 0.0
-        max_ratio = max(semantic_ratio, norm_ratio)
-
-        left_entities = {str(v or "").strip() for v in (left.get("entities") or []) if str(v or "").strip()}
-        right_entities = {str(v or "").strip() for v in (right.get("entities") or []) if str(v or "").strip()}
-        entity_overlap = 0.0
-        if left_entities and right_entities:
-            entity_overlap = len(left_entities & right_entities) / max(1, len(left_entities | right_entities))
-
-        left_type = str(left.get("memory_type") or "")
-        right_type = str(right.get("memory_type") or "")
-        if max_ratio >= 0.94:
-            return True
-        if max_ratio >= 0.88 and entity_overlap >= 0.5:
-            return True
-        if left_type == right_type and max_ratio >= 0.84 and entity_overlap >= 0.7:
-            return True
-
-        return False
-
-    @staticmethod
-    def _extract_structured_tokens(text: str) -> set[str]:
-        if not text:
-            return set()
-        return {
-            token
-            for token in re.findall(r"\b(?:\d{2,}|[A-Za-z_][A-Za-z0-9_.:-]{1,})\b", text)
-            if token
-        }
-
-    @staticmethod
-    def _candidate_text_blob(data: dict[str, Any]) -> str:
-        return " ".join(
-            part
-            for part in [
-                str(data.get("normalized_text") or "").strip(),
-                str(data.get("semantic_text") or "").strip(),
-                " ".join(str(v) for v in (data.get("entities") or []) if str(v or "").strip()),
-                " ".join(str(v) for v in (data.get("task_tags") or []) if str(v or "").strip()),
-                " ".join(str(v) for v in (data.get("tool_tags") or []) if str(v or "").strip()),
-                " ".join(str(v) for v in (data.get("constraint_tags") or []) if str(v or "").strip()),
-                " ".join(str(v) for v in (data.get("failure_tags") or []) if str(v or "").strip()),
-                " ".join(str(v) for v in (data.get("affordance_tags") or []) if str(v or "").strip()),
-            ]
-            if part
-        )
-
-    @staticmethod
-    def _candidate_source_record_set(data: dict[str, Any]) -> set[str]:
-        return {
-            str(value or "").strip()
-            for value in (data.get("source_record_ids") or [])
-            if str(value or "").strip()
-        }
-
-    def _expand_tree_candidates(
-        self,
-        *,
-        plan: SearchPlan,
-        base_candidates: list[dict[str, Any]],
-        top_k: int,
-        focus_terms: list[str] | None = None,
-    ) -> list[dict[str, Any]]:
-        if plan.tree_retrieval_mode == "root_only" or int(plan.tree_expansion_depth or 0) <= 0:
-            return []
-
-        composite_map, source_sets, parent_to_children = self._build_composite_tree_index()
-        if not composite_map:
-            return []
-
-        seed_distances: dict[str, float] = {}
-        for candidate in base_candidates:
-            if candidate.get("source") != "composite":
-                continue
-            composite_id = str(candidate.get("id") or "").strip()
-            if not composite_id or composite_id not in composite_map:
-                continue
-            distance = float(candidate.get("semantic_distance", 0.5) or 0.5)
-            current = seed_distances.get(composite_id)
-            seed_distances[composite_id] = distance if current is None else min(current, distance)
-
-        if not seed_distances:
-            return []
-
-        max_depth = max(0, int(plan.tree_expansion_depth or 0))
-        detail_mode = plan.tree_retrieval_mode == "descend"
-        tree_hints = self._collect_tree_retrieval_hints(plan=plan, focus_terms=focus_terms)
-        expanded: list[dict[str, Any]] = []
-        visited_composites: set[tuple[str, int]] = set()
-        seen_record_ids: set[str] = set()
-        queue: deque[tuple[str, float, int]] = deque(
-            (composite_id, distance, 0)
-            for composite_id, distance in seed_distances.items()
-        )
-        max_expanded_candidates = max(top_k * 4, 16)
-
-        while queue and len(expanded) < max_expanded_candidates:
-            composite_id, base_distance, depth = queue.popleft()
-            if depth >= max_depth:
-                continue
-            if (composite_id, depth) in visited_composites:
-                continue
-            visited_composites.add((composite_id, depth))
-
-            child_composites = parent_to_children.get(composite_id, [])
-            for child_id in child_composites:
-                child = composite_map.get(child_id)
-                if child is None:
-                    continue
-                child_candidate = self._synth_to_candidate(child)
-                hint_match = self._candidate_matches_tree_hints(child_candidate, tree_hints)
-                if plan.tree_retrieval_mode == "balanced" and tree_hints and not hint_match:
-                    continue
-                child_candidate["semantic_distance"] = min(1.0, base_distance + 0.04 * (depth + 1))
-                child_candidate["tree_expanded"] = True
-                child_candidate["tree_parent_id"] = composite_id
-                child_candidate["tree_depth"] = depth + 1
-                child_candidate["tree_hint_match"] = hint_match
-                expanded.append(child_candidate)
-                if len(expanded) >= max_expanded_candidates:
-                    break
-                if depth + 1 < max_depth and (detail_mode or hint_match):
-                    queue.append((child_id, base_distance + 0.04 * (depth + 1), depth + 1))
-
-            if len(expanded) >= max_expanded_candidates or not plan.include_leaf_records:
-                continue
-
-            direct_record_ids = self._direct_record_ids_for_composite(
-                composite_id=composite_id,
-                source_sets=source_sets,
-                parent_to_children=parent_to_children,
-            )
-            per_parent_leaf_limit = max(2, min(top_k, 6 if detail_mode else 4))
-            leaf_count = 0
-            for record_id in sorted(direct_record_ids):
-                if record_id in seen_record_ids:
-                    continue
-                record = self._sqlite.get_record(record_id)
-                if record is None:
-                    continue
-                leaf_candidate = self._record_to_candidate(record)
-                hint_match = self._candidate_matches_tree_hints(leaf_candidate, tree_hints)
-                if plan.tree_retrieval_mode == "balanced" and tree_hints and not hint_match:
-                    continue
-                leaf_candidate["semantic_distance"] = min(1.0, base_distance + 0.06 * (depth + 1))
-                leaf_candidate["tree_expanded"] = True
-                leaf_candidate["tree_parent_id"] = composite_id
-                leaf_candidate["tree_depth"] = depth + 1
-                leaf_candidate["tree_hint_match"] = hint_match
-                leaf_candidate["tree_leaf"] = True
-                expanded.append(leaf_candidate)
-                seen_record_ids.add(record_id)
-                leaf_count += 1
-                if len(expanded) >= max_expanded_candidates or leaf_count >= per_parent_leaf_limit:
-                    break
-
-        return expanded
-
-    def _build_composite_tree_index(
-        self,
-    ) -> tuple[dict[str, CompositeRecord], dict[str, set[str]], dict[str, list[str]]]:
-        composites = self._sqlite.list_synthesized()
-        composite_map = {
-            composite.composite_id: composite
-            for composite in composites
-            if str(composite.composite_id or "").strip()
-        }
-        if not composite_map:
-            return {}, {}, {}
-
-        source_sets = {
-            composite_id: {
-                str(source_id or "").strip()
-                for source_id in (composite.source_record_ids or [])
-                if str(source_id or "").strip()
-            }
-            for composite_id, composite in composite_map.items()
-        }
-
-        child_to_parent_candidates: dict[str, set[str]] = {}
-        parents_with_explicit_children: set[str] = set()
-        for parent_id, composite in composite_map.items():
-            explicit_children: set[str] = set()
-            for raw_child_id in composite.child_composite_ids or []:
-                child_id = str(raw_child_id or "").strip()
-                if not child_id or child_id == parent_id or child_id not in composite_map:
-                    continue
-                explicit_children.add(child_id)
-                child_to_parent_candidates.setdefault(child_id, set()).add(parent_id)
-            if explicit_children:
-                parents_with_explicit_children.add(parent_id)
-
-        composite_ids = list(composite_map)
-        for parent_id in composite_ids:
-            if parent_id in parents_with_explicit_children:
-                continue
-            parent_sources = source_sets.get(parent_id, set())
-            if len(parent_sources) < 2:
-                continue
-
-            eligible_children: list[str] = []
-            for child_id in composite_ids:
-                if child_id == parent_id:
-                    continue
-                child_sources = source_sets.get(child_id, set())
-                if not child_sources or child_sources == parent_sources:
-                    continue
-                if child_sources.issubset(parent_sources):
-                    eligible_children.append(child_id)
-
-            for child_id in eligible_children:
-                child_sources = source_sets.get(child_id, set())
-                has_intermediate = False
-                for sibling_id in eligible_children:
-                    if sibling_id in {child_id, parent_id}:
-                        continue
-                    sibling_sources = source_sets.get(sibling_id, set())
-                    if not sibling_sources or sibling_sources == child_sources:
-                        continue
-                    if child_sources.issubset(sibling_sources) and sibling_sources.issubset(parent_sources):
-                        has_intermediate = True
-                        break
-                if not has_intermediate:
-                    child_to_parent_candidates.setdefault(child_id, set()).add(parent_id)
-
-        child_to_parent: dict[str, str] = {}
-        for child_id, parent_candidates in child_to_parent_candidates.items():
-            chosen_parent = min(
-                parent_candidates,
-                key=lambda parent_id: (
-                    len(source_sets.get(parent_id, set())),
-                    parent_id,
-                ),
-            )
-            child_to_parent[child_id] = chosen_parent
-
-        parent_to_children: dict[str, list[str]] = {}
-        for child_id, parent_id in child_to_parent.items():
-            parent_to_children.setdefault(parent_id, []).append(child_id)
-        for child_ids in parent_to_children.values():
-            child_ids.sort(key=lambda composite_id: (len(source_sets.get(composite_id, set())), composite_id))
-
-        return composite_map, source_sets, parent_to_children
-
-    def _direct_record_ids_for_composite(
-        self,
-        *,
-        composite_id: str,
-        source_sets: dict[str, set[str]],
-        parent_to_children: dict[str, list[str]],
-    ) -> set[str]:
-        direct_ids = set(source_sets.get(composite_id, set()))
-        for child_id in parent_to_children.get(composite_id, []):
-            direct_ids.difference_update(source_sets.get(child_id, set()))
-        return direct_ids
-
-    @staticmethod
-    def _collect_tree_retrieval_hints(
-        *,
-        plan: SearchPlan,
-        focus_terms: list[str] | None = None,
-    ) -> list[str]:
-        hints: list[str] = []
-        for values in (
-            focus_terms or [],
-            plan.missing_slots,
-            plan.tool_hints,
-            plan.required_constraints,
-            plan.required_affordances,
-            plan.semantic_queries,
-            plan.pragmatic_queries,
-        ):
-            hints = CompactSemanticEngine._merge_unique(hints, list(values or []))
-        return hints
-
-    def _candidate_matches_tree_hints(
-        self,
-        candidate: dict[str, Any],
-        hints: list[str],
-    ) -> bool:
-        if not hints:
-            return False
-
-        searchable_text = self._candidate_text_blob(candidate).lower()
-        for hint in hints:
-            normalized = str(hint or "").strip().lower()
-            if not normalized:
-                continue
-            if normalized in searchable_text:
-                return True
-            tokens = [token for token in re.split(r"[\s/,_:：\-]+", normalized) if token]
-            if tokens and any(token in searchable_text for token in tokens):
-                return True
-        return False
-
     # ════════════════════════════════════════════════════════════════
     # ingest_conversation() — 固化管线
     # ════════════════════════════════════════════════════════════════
@@ -1474,7 +506,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         """完整固化流程：新颖性检查 → 编码 → 去重写入 → 合成。"""
         if not turns:
             return ConsolidationResult(
-                records_added=0, records_merged=0, records_expired=0, steps=[]
+                records_added=0,
+                records_merged=0,
+                records_expired=0,
+                has_novelty=False,
+                steps=[],
             )
 
         steps: list[dict[str, Any]] = []
@@ -1496,7 +532,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         })
         if not has_novelty:
             return ConsolidationResult(
-                records_added=0, records_merged=0, records_expired=0, steps=steps
+                records_added=0,
+                records_merged=0,
+                records_expired=0,
+                has_novelty=False,
+                steps=steps,
             )
 
         # Step 2: Compact Encoding
@@ -1505,6 +545,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             previous_turns=previous,
             session_id=session_id,
             turn_index_offset=turn_index_offset + max(0, len(turns) - len(current)),
+            session_date=reference_timestamp,
         )
 
         steps.append({
@@ -1515,7 +556,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
         if not new_records:
             return ConsolidationResult(
-                records_added=0, records_merged=0, records_expired=0, steps=steps
+                records_added=0,
+                records_merged=0,
+                records_expired=0,
+                has_novelty=True,
+                steps=steps,
             )
 
         # Step 3: 去重 + 写入
@@ -1634,6 +679,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             records_added=actually_added,
             records_merged=len(composite_records),
             records_expired=expired_count,
+            has_novelty=True,
             steps=steps,
         )
 
@@ -1740,6 +786,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             f"<ACTION_STATE>\n{json.dumps(self._action_state_to_dict(action_state), ensure_ascii=False)}\n</ACTION_STATE>\n\n"
             f"<RETRIEVED_MEMORY>\n{context_text}\n</RETRIEVED_MEMORY>"
         )
+        set_llm_call_source("adequacy_check")
         response = self._llm.generate([
             {"role": "system", "content": RETRIEVAL_ADEQUACY_CHECK_SYSTEM},
             {"role": "user", "content": user_content},
@@ -1802,6 +849,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             f"<NEEDS_FAILURE_AVOIDANCE>\n{json.dumps(bool(adequacy.get('needs_failure_avoidance', False)), ensure_ascii=False)}\n</NEEDS_FAILURE_AVOIDANCE>\n\n"
             f"<NEEDS_TOOL_SELECTION_BASIS>\n{json.dumps(bool(adequacy.get('needs_tool_selection_basis', False)), ensure_ascii=False)}\n</NEEDS_TOOL_SELECTION_BASIS>"
         )
+        set_llm_call_source("additional_queries")
         response = self._llm.generate([
             {"role": "system", "content": RETRIEVAL_ADDITIONAL_QUERIES_SYSTEM},
             {"role": "user", "content": user_content},
@@ -1858,6 +906,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             f"<EXISTING_MEMORY>\n{retrieved_context or '(no existing memory)'}\n</EXISTING_MEMORY>\n\n"
             f"<CONVERSATION>\n{conversation_text}\n</CONVERSATION>"
         )
+        set_llm_call_source("novelty_check")
         response = self._llm.generate([
             {"role": "system", "content": NOVELTY_CHECK_SYSTEM},
             {"role": "user", "content": user_content},
@@ -2139,11 +1188,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             "memory_type": record.memory_type,
             "semantic_text": record.semantic_text,
             "normalized_text": record.normalized_text,
-            "tool_tags": record.tool_tags,
-            "constraint_tags": record.constraint_tags,
-            "task_tags": record.task_tags,
-            "failure_tags": record.failure_tags,
-            "affordance_tags": record.affordance_tags,
+            "tags": record.tags,
             "created_at": record.created_at,
             "retrieval_count": record.retrieval_count,
             "retrieval_hit_count": record.retrieval_hit_count,
@@ -2166,11 +1211,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             "memory_type": record.memory_type,
             "semantic_text": record.semantic_text,
             "normalized_text": record.normalized_text,
-            "tool_tags": record.tool_tags,
-            "constraint_tags": record.constraint_tags,
-            "task_tags": record.task_tags,
-            "failure_tags": record.failure_tags,
-            "affordance_tags": record.affordance_tags,
+            "tags": record.tags,
             "created_at": record.created_at,
             "retrieval_count": record.retrieval_count,
             "retrieval_hit_count": record.retrieval_hit_count,
@@ -2320,11 +1361,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 "evidence_turn_range": [idx],
                 "entities": [],
                 "tags": [],
-                "tool_tags": [],
-                "constraint_tags": [],
-                "task_tags": [],
-                "failure_tags": [],
-                "affordance_tags": [],
                 "temporal": {},
                 "created_at": str(hit.get("created_at", "")),
                 "retrieval_count": 0,
@@ -2453,7 +1489,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             reverse=True,
         )
 
-        max_records = 3 if plan.mode in {"action", "mixed"} else 1
+        # 对所有模式统一取 3 条叶子 record 的原始对话：
+        # answer 模式之所以之前限制为 1，是担心 token 过多，但这导致 composite 只展示
+        # 代表记录的 turn，而具体细节（书名、物品描述、精确数字等）往往在其他叶子
+        # record 的原始对话里，造成细节特异性丢失。改为统一 3 条。
+        max_records = 3
         episode_refs: list[dict[str, Any]] = []
         seen_turn_keys: set[tuple[str, int]] = set()
         for _, record_data in ranked_records[:max_records]:
@@ -2527,7 +1567,14 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
     ) -> int:
         if not focus_terms:
             return 0
-        blob = self._candidate_text_blob(record_data).lower()
+        blob = " ".join(
+            part
+            for part in [
+                str(record_data.get("normalized_text") or "").strip(),
+                str(record_data.get("semantic_text") or "").strip(),
+            ]
+            if part
+        ).lower()
         score = 0
         for term in focus_terms:
             normalized = str(term or "").strip().lower()
@@ -2696,27 +1743,32 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         self._sqlite.insert_usage_log(log)
         return log_id
 
-    @staticmethod
-    def _classify_feedback_from_user_turn(user_turn: str) -> dict[str, str]:
-        text = str(user_turn or "").strip().lower()
+    def _classify_feedback_from_user_turn(self, user_turn: str) -> dict[str, str]:
+        text = str(user_turn or "").strip()
         if not text:
             return {"feedback": "", "outcome": "unknown"}
 
-        positive_markers = (
-            "好了", "可以了", "搞定", "成功", "解决了", "生效了", "没问题了",
-            "可以用了", "worked", "that works", "resolved", "fixed",
-        )
-        negative_markers = (
-            "还是不行", "不行", "失败", "报错", "错误", "异常", "没生效",
-            "不对", "有问题", "超时", "冲突", "无法", "崩溃", "failed",
-            "error", "wrong", "not work", "doesn't work",
-        )
-        correction_markers = ("不是", "不对", "更正", "应该是", "改成", "其实")
-
-        if any(marker in text for marker in correction_markers):
-            return {"feedback": "correction", "outcome": "fail"}
-        if any(marker in text for marker in negative_markers):
-            return {"feedback": "negative", "outcome": "fail"}
-        if any(marker in text for marker in positive_markers):
-            return {"feedback": "positive", "outcome": "success"}
-        return {"feedback": "", "outcome": "unknown"}
+        user_content = f"<USER_TURN>\n{text}\n</USER_TURN>"
+        
+        set_llm_call_source("feedback_classification")
+        response = self._llm.generate([
+            {"role": "system", "content": FEEDBACK_CLASSIFICATION_SYSTEM},
+            {"role": "user", "content": user_content},
+        ])
+        
+        try:
+            import json
+            raw = response.strip()
+            if raw.startswith("```"):
+                parts = raw.split("```")
+                raw = parts[1].lstrip("json").strip() if len(parts) >= 3 else parts[-1].strip()
+            parsed = json.loads(raw)
+            feedback = str(parsed.get("feedback") or "").strip()
+            outcome = str(parsed.get("outcome") or "unknown").strip()
+            if feedback not in {"positive", "negative", "correction"}:
+                feedback = ""
+            if outcome not in {"success", "fail", "unknown"}:
+                outcome = "unknown"
+            return {"feedback": feedback, "outcome": outcome}
+        except Exception:
+            return {"feedback": "", "outcome": "unknown"}

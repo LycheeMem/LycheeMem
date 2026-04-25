@@ -94,14 +94,26 @@ class SQLiteSkillStore(BaseMemoryStore):
         self._embedder = embedder
         self._embedding_dim = embedding_dim
         self._lock = threading.Lock()
+        self._local = threading.local()
 
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
         os.makedirs(vector_db_path, exist_ok=True)
 
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
         self._init_schema()
+
+        self._ldb = lancedb.connect(vector_db_path)
+        self._ensure_vector_table()
+
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        """返回当前线程专属的 SQLite 连接（按需创建）。"""
+        conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(self._db_path, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            self._local.conn = conn
+        return conn
 
         self._ldb = lancedb.connect(vector_db_path)
         self._ensure_vector_table()
