@@ -109,6 +109,7 @@ class LiteLLMLLM(BaseLLM):
         response_format: dict[str, Any] | None = None,
     ) -> str:
         """异步生成文本。支持多模态消息。"""
+        t0 = time.perf_counter()
         resp = await litellm.acompletion(
             model=self.model,
             messages=messages,

@@ -11,16 +11,15 @@ import type {
     Turn,
 } from "./types";
 
-const API = "http://127.0.0.1:8001";  // 修改为 8001 端口，因为 8000 被旧进程占用
 
 export async function fetchSessions(): Promise<SessionInfo[]> {
-  const r = await fetch(`${API}/sessions?limit=100`);
+  const r = await fetch(`/sessions?limit=100`);
   const data = await r.json();
   return data.sessions || [];
 }
 
 export async function updateSessionMeta(sessionId: string, topic: string): Promise<void> {
-  await fetch(`${API}/memory/session/${encodeURIComponent(sessionId)}/meta`, {
+  await fetch(`/memory/session/${encodeURIComponent(sessionId)}/meta`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ topic }),
@@ -37,7 +36,7 @@ export async function fetchSessionTurns(
   wm_max_tokens: number;
 }> {
   const r = await fetch(
-    `${API}/memory/session/${encodeURIComponent(sessionId)}`
+    `/memory/session/${encodeURIComponent(sessionId)}`
   );
   const data = await r.json();
   const turns: Turn[] = data.turns || [];
@@ -72,7 +71,7 @@ export async function sendChatMessage(
   turn_output_tokens?: number;
   trace?: PipelineTrace | null;
 }> {
-  const r = await fetch(`${API}/chat/complete`, {
+  const r = await fetch(`/chat/complete`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sessionId, message }),
@@ -146,7 +145,7 @@ export async function streamChatMessage(
     images: images.map((_, i) => `image_${i} (${images[i].length} chars)`),
   }, null, 2));
   
-  const r = await fetch(`${API}/chat`, {
+  const r = await fetch(`/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(requestBody),
@@ -232,7 +231,7 @@ function toGraphTreeNode(n: Record<string, unknown>): GraphTreeNode {
 }
 
 export async function fetchGraphData(): Promise<GraphData> {
-  const r = await fetch(`${API}/memory/graph`);
+  const r = await fetch(`/memory/graph`);
   const data = await r.json();
   const nodes: GraphNode[] = ((data.nodes || []) as Record<string, unknown>[]).map(
     (n) => ({
@@ -262,7 +261,7 @@ export async function fetchGraphData(): Promise<GraphData> {
 }
 
 export async function fetchGraphEdges(): Promise<GraphEdge[]> {
-  const r = await fetch(`${API}/memory/graph`);
+  const r = await fetch(`/memory/graph`);
   const data = await r.json();
   const edges: GraphEdge[] = ((data.edges || []) as Record<string, unknown>[]).map(
     (e) => ({
@@ -283,13 +282,13 @@ export async function fetchGraphEdges(): Promise<GraphEdge[]> {
 }
 
 export async function fetchSkills(): Promise<SkillItem[]> {
-  const r = await fetch(`${API}/memory/skills`);
+  const r = await fetch(`/memory/skills`);
   const data = await r.json();
   return data.skills || [];
 }
 
 export async function fetchPipelineStatus(): Promise<PipelineStatus> {
-  const r = await fetch(`${API}/pipeline/status`);
+  const r = await fetch(`/pipeline/status`);
   const data = await r.json();
   return {
     session_count: data.session_count || 0,
@@ -301,7 +300,7 @@ export async function fetchPipelineStatus(): Promise<PipelineStatus> {
 
 export async function fetchConsolidationResult(sessionId: string): Promise<ConsolidatorTrace> {
   const r = await fetch(
-    `${API}/pipeline/last-consolidation?session_id=${encodeURIComponent(sessionId)}`
+    `/pipeline/last-consolidation?session_id=${encodeURIComponent(sessionId)}`
   );
   const data = await r.json();
   const status =
@@ -323,7 +322,7 @@ export async function fetchConsolidationResult(sessionId: string): Promise<Conso
 // ── Session CRUD ──
 
 export async function deleteSession(sessionId: string): Promise<void> {
-  const r = await fetch(`${API}/memory/session/${encodeURIComponent(sessionId)}`, {
+  const r = await fetch(`/memory/session/${encodeURIComponent(sessionId)}`, {
     method: "DELETE",
   });
   if (!r.ok) {
@@ -339,7 +338,7 @@ export async function searchGraphNodes(
   topK = 10
 ): Promise<GraphData> {
   const r = await fetch(
-    `${API}/memory/graph/search?q=${encodeURIComponent(q)}&top_k=${topK}`
+    `/memory/graph/search?q=${encodeURIComponent(q)}&top_k=${topK}`
   );
   const data = await r.json();
   const nodes: GraphNode[] = ((data.nodes || []) as Record<string, unknown>[]).map(
@@ -370,7 +369,7 @@ export async function addGraphNode(
   label: string,
   properties?: Record<string, unknown>
 ): Promise<void> {
-  const r = await fetch(`${API}/memory/graph/nodes`, {
+  const r = await fetch(`/memory/graph/nodes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id, label, properties: properties || {} }),
@@ -382,7 +381,7 @@ export async function addGraphNode(
 }
 
 export async function deleteGraphNode(nodeId: string): Promise<void> {
-  const r = await fetch(`${API}/memory/graph/nodes/${encodeURIComponent(nodeId)}`, {
+  const r = await fetch(`/memory/graph/nodes/${encodeURIComponent(nodeId)}`, {
     method: "DELETE",
   });
   if (!r.ok) {
@@ -394,7 +393,7 @@ export async function deleteGraphNode(nodeId: string): Promise<void> {
 // ── Skill CRUD ──
 
 export async function deleteSkill(skillId: string): Promise<void> {
-  const r = await fetch(`${API}/memory/skills/${encodeURIComponent(skillId)}`, {
+  const r = await fetch(`/memory/skills/${encodeURIComponent(skillId)}`, {
     method: "DELETE",
   });
   if (!r.ok) {
@@ -404,7 +403,7 @@ export async function deleteSkill(skillId: string): Promise<void> {
 }
 
 export async function clearGraphMemory(): Promise<void> {
-  const r = await fetch(`${API}/memory/graph/clear`, {
+  const r = await fetch(`/memory/graph/clear`, {
     method: "DELETE",
   });
   if (!r.ok) {
@@ -414,7 +413,7 @@ export async function clearGraphMemory(): Promise<void> {
 }
 
 export async function clearSkillMemory(): Promise<void> {
-  const r = await fetch(`${API}/memory/skills/clear`, {
+  const r = await fetch(`/memory/skills/clear`, {
     method: "DELETE",
   });
   if (!r.ok) {
@@ -459,17 +458,17 @@ export async function fetchVisualMemories(
   params.set("offset", String(offset));
   params.set("include_expired", String(includeExpired));
 
-  const r = await fetch(`${API}/visual/memories?${params.toString()}`);
+  const r = await fetch(`/visual/memories?${params.toString()}`);
   const data = await r.json();
   return data.memories || [];
 }
 
 export function fetchVisualMemoryImage(recordId: string): string {
-  return `${API}/visual/memories/${encodeURIComponent(recordId)}/image`;
+  return `/visual/memories/${encodeURIComponent(recordId)}/image`;
 }
 
 export async function fetchVisualMemoryStats(): Promise<VisualMemoryStats> {
-  const r = await fetch(`${API}/visual/stats`);
+  const r = await fetch(`/visual/stats`);
   const data = await r.json();
   return {
     total: data.total || 0,
@@ -480,7 +479,7 @@ export async function fetchVisualMemoryStats(): Promise<VisualMemoryStats> {
 }
 
 export async function deleteVisualMemory(recordId: string): Promise<void> {
-  const r = await fetch(`${API}/visual/memories/${encodeURIComponent(recordId)}`, {
+  const r = await fetch(`/visual/memories/${encodeURIComponent(recordId)}`, {
     method: "DELETE",
   });
   if (!r.ok) {
@@ -490,7 +489,7 @@ export async function deleteVisualMemory(recordId: string): Promise<void> {
 }
 
 export async function searchVisualMemories(query: string, topK = 10): Promise<VisualMemoryItem[]> {
-  const r = await fetch(`${API}/visual/search`, {
+  const r = await fetch(`/visual/search`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, top_k: topK }),
