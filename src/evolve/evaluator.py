@@ -42,29 +42,28 @@ class PromptHealthReport:
 # ── 每个 prompt 的关键指标定义 ──
 
 _PROMPT_KEY_METRICS: dict[str, list[str]] = {
-    "compact_encoding": ["records_added", "user_feedback_positive"],
-    "novelty_check": ["user_feedback_positive"],
-    "retrieval_planning": ["required_supplementary", "user_feedback_positive"],
+    "compact_encoding": ["records_added"],
+    "novelty_check": [],
+    "retrieval_planning": ["required_supplementary"],
     "retrieval_adequacy_check": ["adequacy_pass"],
-    "retrieval_additional_queries": ["user_feedback_positive"],
-    "composite_filter": ["user_feedback_positive"],
-    "search_coordinator": ["user_feedback_positive"],
-    "synthesis": ["kept_ratio", "user_feedback_positive"],
-    "reasoning": ["user_feedback_positive"],
+    "retrieval_additional_queries": [],
+    "composite_filter": [],
+    "search_coordinator": [],
+    "synthesis": ["kept_ratio"],
+    "reasoning": [],
     "consolidation": ["skills_added"],
-    "wm_compression": ["user_feedback_positive"],
+    "wm_compression": [],
     "synthesis_execute": [],
     "feedback_classification": [],
 }
 
 # 每个指标的理想方向和基准
 _METRIC_BENCHMARKS: dict[str, dict[str, Any]] = {
-    "user_feedback_positive": {"direction": "higher", "baseline": 0.7, "weight": 3.0},
     "kept_ratio": {"direction": "higher", "baseline": 0.5, "weight": 1.5},
     "adequacy_pass": {"direction": "higher", "baseline": 0.6, "weight": 2.0},
     "required_supplementary": {"direction": "lower", "baseline": 0.4, "weight": 1.5},
     "records_added": {"direction": "higher", "baseline": 1.0, "weight": 1.0},
-    "skills_added": {"direction": "higher", "baseline": 0.0, "weight": 0.5},
+    "skills_added": {"direction": "higher", "baseline": 0.5, "weight": 0.5},
 }
 
 
@@ -81,7 +80,7 @@ class PromptEvaluator:
             active = self._store.get_active_version(prompt_name)
             version = active.version if active else 0
 
-        key_metrics = _PROMPT_KEY_METRICS.get(prompt_name, ["user_feedback_positive"])
+        key_metrics = _PROMPT_KEY_METRICS.get(prompt_name, [])
         metrics_summary: dict[str, float] = {}
         total_samples = 0
         scores: list[float] = []
@@ -186,10 +185,6 @@ class PromptEvaluator:
             parts.append("Health: MODERATE")
         else:
             parts.append("Health: POOR")
-
-        fb_positive = metrics.get("user_feedback_positive")
-        if fb_positive is not None and fb_positive < 0.6:
-            parts.append(f"User satisfaction low ({fb_positive:.0%})")
 
         kept_ratio = metrics.get("kept_ratio")
         if kept_ratio is not None and kept_ratio < 0.3:

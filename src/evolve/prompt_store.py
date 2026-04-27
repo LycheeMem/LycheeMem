@@ -94,6 +94,28 @@ class EvolveEvent:
             self.created_at = datetime.now(timezone.utc).isoformat()
 
 
+@dataclass
+class UsageTrace:
+    """一次 LLM 调用的完整输入/输出记录，用于轨迹分析。
+
+    prompt_name 对应 set_llm_call_source 的 call_source 标签。
+    input_text 包含格式化后的 system prompt + user 内容。
+    """
+    prompt_name: str
+    input_text: str
+    output_text: str
+    version: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+    recorded_at: str = ""
+    trace_id: str = ""
+
+    def __post_init__(self):
+        if not self.trace_id:
+            self.trace_id = uuid.uuid4().hex[:12]
+        if not self.recorded_at:
+            self.recorded_at = datetime.now(timezone.utc).isoformat()
+
+
 # ── SQLite 存储 ──────────────────────────────────────────────────
 
 _SCHEMA_SQL = """
@@ -155,6 +177,18 @@ CREATE INDEX IF NOT EXISTS idx_ev_created
     ON evolve_events(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ev_prompt
     ON evolve_events(prompt_name, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS usage_traces (
+    trace_id        TEXT PRIMARY KEY,
+    prompt_name     TEXT NOT NULL,
+    version         INTEGER NOT NULL DEFAULT 0,
+    input_text      TEXT NOT NULL,
+    output_text     TEXT NOT NULL,
+    metadata_json   TEXT DEFAULT '{}',
+    recorded_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ut_prompt_recorded
+    ON usage_traces(prompt_name, recorded_at DESC);
 """
 
 
@@ -357,6 +391,57 @@ class PromptStore:
             row = conn.execute(sql, params).fetchone()
         return int(row["cnt"]) if row else 0
 
+    # ── Usage Traces ──
+
+    def record_trace(self, trace: UsageTrace) -> None:
+        """记录一次 LLM 调用轨迹。"""
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO usage_traces
+                   (trace_id, prompt_name, version, input_text, output_text, metadata_json, recorded_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    trace.trace_id, trace.prompt_name, trace.version,
+                    trace.input_text, trace.output_text,
+                    json.dumps(trace.metadata or {}, ensure_ascii=False),
+                    trace.recorded_at,
+                ),
+            )
+
+    def get_traces(
+        self,
+        prompt_name: str,
+        *,
+        version: int | None = None,
+        limit: int = 20,
+    ) -> list[UsageTrace]:
+        """获取某 prompt 最近的使用轨迹，按时间倒序。"""
+        clauses = ["prompt_name = ?"]
+        params: list[Any] = [prompt_name]
+        if version is not None:
+            clauses.append("version = ?")
+            params.append(version)
+        params.append(limit)
+        sql = (
+            f"SELECT * FROM usage_traces WHERE {' AND '.join(clauses)} "
+            f"ORDER BY recorded_at DESC LIMIT ?"
+        )
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._row_to_trace(r) for r in rows]
+
+    def count_traces(self, prompt_name: str, *, version: int | None = None) -> int:
+        """统计某 prompt 的轨迹总数。"""
+        clauses = ["prompt_name = ?"]
+        params: list[Any] = [prompt_name]
+        if version is not None:
+            clauses.append("version = ?")
+            params.append(version)
+        sql = f"SELECT COUNT(*) AS cnt FROM usage_traces WHERE {' AND '.join(clauses)}"
+        with self._connect() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return int(row["cnt"]) if row else 0
+
     # ── Evolve Events ──
 
     def record_event(self, event: EvolveEvent) -> int:
@@ -492,5 +577,22 @@ class PromptStore:
             expected=row["expected"] or "",
             actual=row["actual"] or "",
             diagnosis=row["diagnosis"] or "",
+            recorded_at=row["recorded_at"],
+        )
+
+    @staticmethod
+    def _row_to_trace(row: sqlite3.Row) -> UsageTrace:
+        metadata: dict[str, Any] = {}
+        try:
+            metadata = json.loads(row["metadata_json"] or "{}")
+        except Exception:
+            pass
+        return UsageTrace(
+            trace_id=row["trace_id"],
+            prompt_name=row["prompt_name"],
+            version=row["version"],
+            input_text=row["input_text"] or "",
+            output_text=row["output_text"] or "",
+            metadata=metadata if isinstance(metadata, dict) else {},
             recorded_at=row["recorded_at"],
         )

@@ -1,13 +1,14 @@
 """信号收集器：从系统各组件聚合反馈信号。
 
 信号源：
-1. UsageLog（用户反馈 + 行动结果）
-2. SynthesizerAgent 输出（kept/dropped 比例）
-3. ConsolidationResult（records_added/merged/expired）
-4. LLM Token 统计（成本维度）
-5. 检索充分性判断（adequacy_check 通过率）
+1. SynthesizerAgent 输出（kept/dropped 比例）
+2. ConsolidationResult（records_added/merged/expired/skills_added）
+3. 检索充分性判断（adequacy_check 通过率 / supplementary 需求率）
 
 信号汇总到 PromptStore 的 prompt_metrics + prompt_failure_cases 中。
+
+注意：不采集用户反馈信号——用户反馈在纯检索/固化场景中不存在，
+在对话场景中也极其稀疏且因果归因模糊，引入只会产生噪声。
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ logger = logging.getLogger("src.evolve.signals")
 class EvolveSignal:
     """一个原子信号事件。"""
     prompt_name: str
-    signal_type: str  # user_feedback / synthesis_stats / consolidation_stats / retrieval_adequacy / ...
+    signal_type: str  # synthesis_stats / consolidation_stats / retrieval_adequacy / ...
     data: dict[str, Any] = field(default_factory=dict)
     timestamp: str = ""
 
@@ -69,49 +70,6 @@ class SignalCollector:
 
     def __init__(self, store: PromptStore):
         self._store = store
-
-    def collect_user_feedback(
-        self,
-        feedback: str,
-        outcome: str,
-        *,
-        prompt_versions: dict[str, int] | None = None,
-    ) -> None:
-        """收集用户反馈信号。
-
-        feedback: positive / negative / correction / ""
-        outcome: success / fail / unknown
-        prompt_versions: 当前各 prompt 的 active 版本号
-        """
-        if outcome == "unknown":
-            return
-
-        versions = prompt_versions or {}
-
-        relevant_prompts = [
-            "reasoning", "synthesis", "search_coordinator",
-            "retrieval_planning", "compact_encoding",
-        ]
-
-        for pname in relevant_prompts:
-            ver = versions.get(pname, 0)
-            self._store.record_metric(PromptMetricSnapshot(
-                prompt_name=pname,
-                version=ver,
-                metric_name="user_feedback_positive",
-                metric_value=1.0 if outcome == "success" else 0.0,
-                sample_count=1,
-            ))
-
-        if outcome == "fail" and feedback in ("negative", "correction"):
-            for pname in ["reasoning", "synthesis"]:
-                ver = versions.get(pname, 0)
-                self._store.record_failure(PromptFailureCase(
-                    prompt_name=pname,
-                    version=ver,
-                    case_type="user_negative_feedback",
-                    diagnosis=f"feedback={feedback}, outcome={outcome}",
-                ))
 
     def collect_synthesis_stats(
         self,
@@ -166,14 +124,14 @@ class SignalCollector:
             }),
         ))
 
-        if skills_added > 0:
-            self._store.record_metric(PromptMetricSnapshot(
-                prompt_name="consolidation",
-                version=consolidation_version,
-                metric_name="skills_added",
-                metric_value=float(skills_added),
-                sample_count=1,
-            ))
+        # 无论是否提取到技能都记录，使评估器能计算真实均值
+        self._store.record_metric(PromptMetricSnapshot(
+            prompt_name="consolidation",
+            version=consolidation_version,
+            metric_name="skills_added",
+            metric_value=float(skills_added),
+            sample_count=1,
+        ))
 
     def collect_retrieval_adequacy(
         self,
@@ -193,14 +151,14 @@ class SignalCollector:
             detail=json.dumps({"reflection_round": reflection_round}),
         ))
 
-        if not is_sufficient:
-            self._store.record_metric(PromptMetricSnapshot(
-                prompt_name="retrieval_planning",
-                version=planning_version,
-                metric_name="required_supplementary",
-                metric_value=1.0,
-                sample_count=1,
-            ))
+        # 每次都写 0/1，使评估器能计算真实失败率（而非只统计失败次数）
+        self._store.record_metric(PromptMetricSnapshot(
+            prompt_name="retrieval_planning",
+            version=planning_version,
+            metric_name="required_supplementary",
+            metric_value=0.0 if is_sufficient else 1.0,
+            sample_count=1,
+        ))
 
     def collect_retrieval_miss(
         self,
@@ -218,33 +176,6 @@ class SignalCollector:
             actual=plan_summary[:500],
             diagnosis="Retrieval plan did not yield sufficient results",
         ))
-
-    def collect_session_continuation(
-        self,
-        *,
-        prompt_versions: dict[str, int] | None = None,
-    ) -> None:
-        """记录一次会话延续信号（隐式正面反馈）。
-
-        当用户在同一 session 中发出后续消息但没有负面反馈时，
-        视为对上一轮回答的隐式认可。权重低于显式反馈。
-        """
-        versions = prompt_versions or {}
-        implicit_positive_score = 0.6
-
-        for pname in ["reasoning", "synthesis", "search_coordinator", "retrieval_planning"]:
-            ver = versions.get(pname, 0)
-            self._store.record_metric(PromptMetricSnapshot(
-                prompt_name=pname,
-                version=ver,
-                metric_name="user_feedback_positive",
-                metric_value=implicit_positive_score,
-                sample_count=1,
-                detail=json.dumps({
-                    "source": "session_continuation",
-                    "score": implicit_positive_score,
-                }),
-            ))
 
     def collect_encoding_loss(
         self,

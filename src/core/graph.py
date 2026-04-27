@@ -39,22 +39,6 @@ _CHAT_API_PROMPTS: frozenset[str] = frozenset({
     "reasoning",
 })
 
-_SESSION_CONTINUATION_NEGATIVE_MARKERS: tuple[str, ...] = (
-    "that's wrong",
-    "that is wrong",
-    "wrong",
-    "incorrect",
-    "not what i meant",
-    "not what i asked",
-    "you misunderstood",
-    "不对",
-    "错了",
-    "有误",
-    "你理解错",
-    "你误解",
-    "不是这个意思",
-)
-
 
 class LycheePipeline:
     """LycheeMem 认知记忆 Pipeline。
@@ -194,22 +178,6 @@ class LycheePipeline:
         )
         retrieved_graph_memories = result["retrieved_graph_memories"]
         feedback_update = result.get("feedback_update") or {}
-
-        if self.evolve_loop is not None and isinstance(feedback_update, dict):
-            outcome = str(feedback_update.get("outcome") or "").strip().lower() or "unknown"
-            feedback = str(feedback_update.get("feedback") or "").strip().lower()
-            if outcome in {"success", "fail"}:
-                try:
-                    versions = feedback_update.get("prompt_versions_used") or result.get("prompt_versions_used") or {}
-                    self.evolve_loop.after_run(
-                        user_feedback=feedback,
-                        user_outcome=outcome,
-                        prompt_versions_used=dict(versions) if isinstance(versions, dict) else None,
-                    )
-                except Exception:
-                    logger.warning("Evolve delayed feedback ingestion failed", exc_info=True)
-            # session_continuation 不在此处记录；
-            # 移到 _record_request_completion() 以确保回复已生成后再写信号
 
         if self.evolve_loop is not None:
             diagnostics = result.get("retrieval_diagnostics") or {}
@@ -458,7 +426,6 @@ class LycheePipeline:
                 prompt_versions_snapshot=result.get("prompt_versions_used"),
             )
 
-        self._maybe_record_session_continuation(result)
         self._record_request_completion(result)
         return result
 
@@ -485,7 +452,6 @@ class LycheePipeline:
                 )
             )
 
-        self._maybe_record_session_continuation(result)
         self._record_request_completion(result)
         return result
 
@@ -580,7 +546,6 @@ class LycheePipeline:
                     )
                 )
 
-            self._maybe_record_session_continuation(state)
             self._record_request_completion(state)
             yield {"type": "done", "result": dict(state)}
         finally:
@@ -807,52 +772,6 @@ class LycheePipeline:
             )
         except Exception:
             logger.warning("Evolve API usage recording failed api=%s", api_name, exc_info=True)
-
-    def _maybe_record_session_continuation(self, result: dict[str, Any]) -> None:
-        """回复生成完毕后，若无显式反馈且不是首轮，记录隐式正样本。
-
-        触发条件（必须同时满足）：
-        1. evolve_loop 已启用
-        2. feedback_update 未带有 success/fail 显式 outcome
-        3. raw_recent_turns 中包含至少一条 assistant 消息——
-           说明上一轮对话已经完成，用户继续输入即视为对上轮回答的隐式认可
-        """
-        if self.evolve_loop is None:
-            return
-
-        feedback_update = result.get("feedback_update") or {}
-        outcome = str(feedback_update.get("outcome") or "").strip().lower()
-        if outcome in {"success", "fail"}:
-            return
-
-        raw_turns: list[dict[str, str]] = result.get("raw_recent_turns") or []
-        filtered = [
-            turn for turn in raw_turns
-            if isinstance(turn, dict) and str(turn.get("content") or "").strip()
-        ]
-        if len(filtered) < 2:
-            return
-
-        latest_turn = filtered[-1]
-        previous_turn = filtered[-2]
-        if str(latest_turn.get("role") or "").strip().lower() != "user":
-            return
-        if str(previous_turn.get("role") or "").strip().lower() != "assistant":
-            return
-
-        user_text = str(latest_turn.get("content") or "").strip().lower()
-        if not user_text:
-            return
-        if any(marker in user_text for marker in _SESSION_CONTINUATION_NEGATIVE_MARKERS):
-            return
-
-        try:
-            versions = result.get("prompt_versions_used") or {}
-            self.evolve_loop.signal_collector.collect_session_continuation(
-                prompt_versions=dict(versions) if isinstance(versions, dict) else None,
-            )
-        except Exception:
-            logger.warning("Evolve session continuation signal failed", exc_info=True)
 
     @staticmethod
     def _snapshot_prompt_versions() -> dict[str, int]:

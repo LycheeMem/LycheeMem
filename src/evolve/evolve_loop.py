@@ -92,8 +92,6 @@ class EvolveLoop:
     def after_run(
         self,
         *,
-        user_feedback: str = "",
-        user_outcome: str = "unknown",
         prompt_versions_used: dict[str, int] | None = None,
         synthesis_kept: int = 0,
         synthesis_dropped: int = 0,
@@ -106,13 +104,6 @@ class EvolveLoop:
     ) -> None:
         """写入一次由 Pipeline 产生的信号。"""
         versions = prompt_versions_used or self._signals.get_current_versions()
-
-        if user_feedback or user_outcome != "unknown":
-            self._signals.collect_user_feedback(
-                feedback=user_feedback,
-                outcome=user_outcome,
-                prompt_versions=versions,
-            )
 
         if synthesis_kept + synthesis_dropped > 0:
             self._signals.collect_synthesis_stats(
@@ -246,30 +237,25 @@ class EvolveLoop:
             )
             return None
 
-        report = self._evaluator.evaluate_prompt(prompt_name, version=expected_version)
-        if report.sample_count < self._min_samples:
+        # 以轨迹数量作为准入门槛：积累足够的真实行为样本后，LLM 自行判断是否需要改写。
+        # 不依赖 health_score，避免"没有 key_metrics 的 prompt 永远被排除"的问题。
+        trace_count = self._store.count_traces(prompt_name)
+        if trace_count < self._min_samples:
             logger.debug(
-                "Skipping auto optimize for '%s' v%d: sample_count=%d < min_samples=%d",
+                "Skipping auto optimize for '%s' v%d: trace_count=%d < min_samples=%d",
                 prompt_name,
                 expected_version,
-                report.sample_count,
+                trace_count,
                 self._min_samples,
-            )
-            return None
-        if report.health_score >= 0.8:
-            logger.debug(
-                "Skipping auto optimize for '%s' v%d: health_score=%.2f",
-                prompt_name,
-                expected_version,
-                report.health_score,
             )
             return None
 
         logger.info(
-            "Prompt '%s' v%d usage count reached %d, triggering auto optimization",
+            "Prompt '%s' v%d usage count reached %d (traces=%d), triggering auto optimization",
             prompt_name,
             expected_version,
             usage_count,
+            trace_count,
         )
         result = self._optimizer.optimize(prompt_name)
         if result.success and result.candidate_version:
@@ -323,8 +309,8 @@ class EvolveLoop:
 
         安全护栏：
         1. review_verdict 为 reject → 不提升
-        2. 提升后进入 probation，累积 _min_samples 后自动比较改善性
-        3. 改善不足 improvement_threshold → 自动回滚
+        2. 提升后进入 probation，累积 _min_samples 条新轨迹后由 LLM 对比新旧版本行为
+        3. LLM 判断 rollback → 自动回滚
         """
         if not result.candidate_version:
             return
@@ -342,42 +328,44 @@ class EvolveLoop:
         if registry is None:
             return
 
-        pre_health = self._evaluator.evaluate_prompt(result.prompt_name)
+        original_version = result.original_version
         candidate_version = result.candidate_version.version
+        change_summary = result.candidate_version.reason or ""
 
         registry.promote_candidate(
             result.prompt_name,
             candidate_version,
-            eval_score=pre_health.health_score,
         )
 
-        # 提升后立刻查询新版本的初始样本数（通常为 0）
-        # probation 检查时用"新版本当前样本数 - 此值"来判断积累了多少
-        new_version_initial_samples = self._evaluator.evaluate_prompt(
+        # 记录候选版本上线时已有的轨迹数（通常为 0）
+        # probation 检查时用"当前轨迹数 - 此值"来判断新轨迹是否已累积到门槛
+        candidate_traces_at_promote = self._store.count_traces(
             result.prompt_name, version=candidate_version
-        ).sample_count
+        )
 
         with self._lock:
             self._pending_candidates[result.prompt_name] = {
                 "version": candidate_version,
-                "pre_health": pre_health.health_score,
+                "original_version": original_version,
+                "change_summary": change_summary,
                 "promoted_at_run": self._run_count,
-                "candidate_samples_at_promote": new_version_initial_samples,
+                "candidate_traces_at_promote": candidate_traces_at_promote,
             }
         try:
             self._store.record_event(EvolveEvent(
                 event_type="promote_probation",
                 prompt_name=result.prompt_name,
-                from_version=result.original_version,
+                from_version=original_version,
                 to_version=candidate_version,
                 summary=(
                     f"提升候选进入 probation：v{candidate_version} "
-                    f"(pre_health={pre_health.health_score:.3f}, threshold={self._improvement_threshold}, min_samples={self._min_samples})"
+                    f"(original=v{original_version}, min_samples={self._min_samples})"
                 ),
                 payload={
-                    "pre_health": pre_health.__dict__,
-                    "candidate_initial_samples": new_version_initial_samples,
-                    "improvement_threshold": self._improvement_threshold,
+                    "original_version": original_version,
+                    "candidate_version": candidate_version,
+                    "change_summary": change_summary,
+                    "candidate_traces_at_promote": candidate_traces_at_promote,
                     "min_samples": self._min_samples,
                 },
             ))
@@ -385,17 +373,44 @@ class EvolveLoop:
             pass
 
         logger.info(
-            "Promoted '%s' to v%d (pre-health=%.2f), entering probation. "
-            "Will auto-rollback if improvement < %.2f after %d samples.",
-            result.prompt_name, candidate_version,
-            pre_health.health_score, self._improvement_threshold,
-            self._min_samples,
+            "Promoted '%s' to v%d, entering probation. "
+            "Will LLM-evaluate after %d new traces.",
+            result.prompt_name, candidate_version, self._min_samples,
+        )
+        try:
+            self._store.record_event(EvolveEvent(
+                event_type="promote_probation",
+                prompt_name=result.prompt_name,
+                from_version=original_version,
+                to_version=candidate_version,
+                summary=(
+                    f"提升候选进入 probation：v{candidate_version} "
+                    f"(original=v{original_version}, min_samples={self._min_samples})"
+                ),
+                payload={
+                    "original_version": original_version,
+                    "candidate_version": candidate_version,
+                    "change_summary": change_summary,
+                    "candidate_traces_at_promote": candidate_traces_at_promote,
+                    "min_samples": self._min_samples,
+                },
+            ))
+        except Exception:
+            pass
+
+        logger.info(
+            "Promoted '%s' to v%d, entering probation. "
+            "Will LLM-evaluate after %d new traces.",
+            result.prompt_name, candidate_version, self._min_samples,
         )
 
     def _check_probation(self) -> None:
-        """检查所有处于 probation 的候选版本是否达到改善门槛。
+        """LLM 对比新旧版本轨迹，判断候选版本是否保留。
 
-        条件满足时保留，不满足时自动回滚。
+        走流：
+        1. 候选版本上线后累积足 min_samples 条轨迹
+        2. 调用 optimizer.evaluate_probation() 进行 LLM 轨迹对比
+        3. verdict=keep → 保留；verdict=rollback → 回滚至原始版本
         """
         with self._lock:
             pending = dict(self._pending_candidates)
@@ -404,23 +419,67 @@ class EvolveLoop:
             return
 
         for prompt_name, info in pending.items():
-            version = info["version"]
-            pre_health = info["pre_health"]
-            candidate_samples_at_promote = info["candidate_samples_at_promote"]
+            candidate_version = info["version"]
+            original_version = info["original_version"]
+            change_summary = info.get("change_summary", "")
+            candidate_traces_at_promote = info["candidate_traces_at_promote"]
 
-            current_report = self._evaluator.evaluate_prompt(prompt_name, version=version)
-            new_samples = current_report.sample_count - candidate_samples_at_promote
-            if new_samples < self._min_samples:
+            # 检查候选版本是否已累积足够新轨迹
+            current_trace_count = self._store.count_traces(
+                prompt_name, version=candidate_version
+            )
+            new_traces = current_trace_count - candidate_traces_at_promote
+            if new_traces < self._min_samples:
                 continue
 
-            improvement = current_report.health_score - pre_health
-            if improvement >= self._improvement_threshold:
+            # LLM 对比轨迹
+            try:
+                review = self._optimizer.evaluate_probation(
+                    prompt_name=prompt_name,
+                    original_version=original_version,
+                    candidate_version=candidate_version,
+                    change_summary=change_summary,
+                )
+            except Exception:
+                logger.warning(
+                    "Probation LLM review failed for '%s' v%d, skipping this check.",
+                    prompt_name, candidate_version, exc_info=True,
+                )
+                continue
+
+            verdict = review.get("verdict", "keep")
+            confidence = review.get("confidence", 0.0)
+            reasoning = review.get("reasoning", "")
+
+            if verdict == "rollback":
+                logger.warning(
+                    "Probation ROLLBACK for '%s' v%d (confidence=%.2f): %s",
+                    prompt_name, candidate_version, confidence, reasoning[:200],
+                )
+                try:
+                    self._store.record_event(EvolveEvent(
+                        event_type="probation_fail",
+                        prompt_name=prompt_name,
+                        from_version=candidate_version,
+                        to_version=original_version,
+                        summary=(
+                            f"probation LLM判定回滚：v{candidate_version} → v{original_version} "
+                            f"(confidence={confidence:.2f}, new_traces={new_traces})"
+                        ),
+                        payload={
+                            "review": review,
+                            "new_traces": new_traces,
+                            "original_version": original_version,
+                            "candidate_version": candidate_version,
+                        },
+                    ))
+                except Exception:
+                    pass
+                self.rollback_candidate(prompt_name, candidate_version)
+            else:
                 logger.info(
-                    "Probation PASSED for '%s' v%d: "
-                    "health %.2f → %.2f (improvement=%.3f >= threshold=%.3f)",
-                    prompt_name, version,
-                    pre_health, current_report.health_score,
-                    improvement, self._improvement_threshold,
+                    "Probation PASSED for '%s' v%d (confidence=%.2f): %s",
+                    prompt_name, candidate_version, confidence, reasoning[:200],
                 )
                 with self._lock:
                     self._pending_candidates.pop(prompt_name, None)
@@ -428,49 +487,21 @@ class EvolveLoop:
                     self._store.record_event(EvolveEvent(
                         event_type="probation_pass",
                         prompt_name=prompt_name,
-                        from_version=None,
-                        to_version=version,
+                        from_version=original_version,
+                        to_version=candidate_version,
                         summary=(
-                            f"probation 通过：v{version} health {pre_health:.3f} → {current_report.health_score:.3f} "
-                            f"(+{improvement:.3f}) samples+={new_samples}"
+                            f"probation LLM判定保留：v{candidate_version} "
+                            f"(confidence={confidence:.2f}, new_traces={new_traces})"
                         ),
                         payload={
-                            "pre_health": pre_health,
-                            "current_report": current_report.__dict__,
-                            "new_samples": new_samples,
-                            "improvement_threshold": self._improvement_threshold,
+                            "review": review,
+                            "new_traces": new_traces,
+                            "original_version": original_version,
+                            "candidate_version": candidate_version,
                         },
                     ))
                 except Exception:
                     pass
-            else:
-                logger.warning(
-                    "Probation FAILED for '%s' v%d: "
-                    "health %.2f → %.2f (improvement=%.3f < threshold=%.3f). Rolling back.",
-                    prompt_name, version,
-                    pre_health, current_report.health_score,
-                    improvement, self._improvement_threshold,
-                )
-                try:
-                    self._store.record_event(EvolveEvent(
-                        event_type="probation_fail",
-                        prompt_name=prompt_name,
-                        from_version=None,
-                        to_version=version,
-                        summary=(
-                            f"probation 失败并回滚：v{version} health {pre_health:.3f} → {current_report.health_score:.3f} "
-                            f"(+{improvement:.3f} < {self._improvement_threshold}) samples+={new_samples}"
-                        ),
-                        payload={
-                            "pre_health": pre_health,
-                            "current_report": current_report.__dict__,
-                            "new_samples": new_samples,
-                            "improvement_threshold": self._improvement_threshold,
-                        },
-                    ))
-                except Exception:
-                    pass
-                self.rollback_candidate(prompt_name, version)
 
     # ═════════════════════════════════════════════════════════════
     # 手动版本管理

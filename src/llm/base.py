@@ -29,6 +29,20 @@ def set_llm_call_source(source: str) -> None:
     """设置下一次 LLM 调用的来源标签（用于分来源 token 统计）。"""
     _llm_call_source.set(source)
 
+# ── 使用轨迹捕获（Trace Store hook）───────────────────────────────────────
+# factory.py 创建 EvolveLoop 后注入，此后每次 generate/agenerate 完成
+# 都自动向 PromptStore 写入一条 UsageTrace，供 Optimizer 进行轨迹分析。
+_trace_store: Any | None = None
+
+
+def set_trace_store(store: Any) -> None:
+    """注入 PromptStore 实例以启用使用轨迹自动捕获。
+
+    应在 factory.py 中创建 EvolveLoop 后简即调用。
+    """
+    global _trace_store
+    _trace_store = store
+
 # ── 全局 token 统计（进程级单例）────────────────────────────────────────────────
 # 统计文件路径：<项目根>/data/token_stats.json
 _STATS_FILE = Path(__file__).parent.parent.parent / "data" / "token_stats.json"
@@ -135,6 +149,33 @@ class BaseLLM(ABC):
         # 进程级全局累计（按来源分类统计）
         source = _llm_call_source.get()
         _global_token_stats.add(input_tokens, output_tokens, source, latency_ms)
+
+    def _post_generate_hook(self, messages: list[dict[str, str]], response_text: str) -> None:
+        """在 generate/agenerate 完成后自动记录使用轨迹（若已注入 trace_store）。
+
+        仅记录业务 prompt 调用，跳过 evolve 子系统的元调用（evolve_diagnosis 等）。
+        """
+        if _trace_store is None:
+            return
+        source = _llm_call_source.get()
+        if source.startswith("evolve_") or source == "unknown":
+            return
+        try:
+            from src.evolve.prompt_store import UsageTrace  # 延迟导入，避免循环依赖
+            input_parts: list[str] = []
+            for msg in messages:
+                role = msg.get("role", "")
+                if role == "system":
+                    input_parts.append(f"[SYSTEM]\n{msg.get('content', '')[:800]}")
+                elif role == "user":
+                    input_parts.append(f"[USER]\n{msg.get('content', '')[:1200]}")
+            _trace_store.record_trace(UsageTrace(
+                prompt_name=source,
+                input_text="\n\n".join(input_parts)[:3000],
+                output_text=response_text[:1000],
+            ))
+        except Exception:
+            pass  # 轨迹写入失败不阻断主流程
 
     @abstractmethod
     def generate(

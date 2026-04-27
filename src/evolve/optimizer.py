@@ -20,6 +20,7 @@ from src.evolve.prompt_store import EvolveEvent, PromptFailureCase, PromptStore,
 from src.evolve.prompts import (
     CANDIDATE_REVIEW_SYSTEM,
     FAILURE_DIAGNOSIS_SYSTEM,
+    PROBATION_REVIEW_SYSTEM,
     PROMPT_REWRITE_SYSTEM,
 )
 from src.llm.base import BaseLLM, set_llm_call_source
@@ -95,11 +96,12 @@ class PromptOptimizer:
             original_version=current_version,
         )
 
-        # 1. 诊断
+        # 1. 说诊：获取轨迹样本 + 失败案例
+        traces = self._store.get_traces(prompt_name, limit=15)
         failures = self._store.get_failures(
             prompt_name, version=current_version, limit=self._max_failure_cases
         )
-        diagnosis = self._diagnose(prompt_name, current_text, health, failures)
+        diagnosis = self._diagnose(prompt_name, current_text, health, failures, traces)
         result.diagnosis = diagnosis
         try:
             self._store.record_event(EvolveEvent(
@@ -125,7 +127,7 @@ class PromptOptimizer:
             return result
 
         # 2. 改写
-        rewrite = self._rewrite(prompt_name, current_text, health, failures)
+        rewrite = self._rewrite(prompt_name, current_text, health, failures, traces)
         result.rewrite_analysis = rewrite
 
         revised_prompt = rewrite.get("revised_prompt", "")
@@ -208,14 +210,17 @@ class PromptOptimizer:
         current_text: str,
         health: PromptHealthReport,
         failures: list[PromptFailureCase],
+        traces: list,
     ) -> dict[str, Any]:
-        """调用 LLM 诊断失败根因。"""
+        """调用 LLM 说诊失败根因。"""
         failure_text = self._format_failures(failures)
         metrics_text = json.dumps(health.metrics_summary, indent=2, ensure_ascii=False)
+        trace_text = self._format_traces(traces)
 
         user_content = (
             f"<PROMPT_NAME>\n{prompt_name}\n</PROMPT_NAME>\n\n"
             f"<CURRENT_PROMPT>\n{current_text[:3000]}\n</CURRENT_PROMPT>\n\n"
+            f"<USAGE_SAMPLES>\n{trace_text}\n</USAGE_SAMPLES>\n\n"
             f"<FAILURE_CASES>\n{failure_text}\n</FAILURE_CASES>\n\n"
             f"<METRICS>\n{metrics_text}\n</METRICS>"
         )
@@ -234,9 +239,11 @@ class PromptOptimizer:
         current_text: str,
         health: PromptHealthReport,
         failures: list[PromptFailureCase],
+        traces: list,
     ) -> dict[str, Any]:
         """调用 LLM 生成候选版本。"""
         failure_text = self._format_failures(failures)
+        trace_text = self._format_traces(traces)
         health_text = (
             f"Health Score: {health.health_score:.2f}\n"
             f"Sample Count: {health.sample_count}\n"
@@ -250,6 +257,7 @@ class PromptOptimizer:
             f"<PROMPT_NAME>\n{prompt_name}\n</PROMPT_NAME>\n\n"
             f"<CURRENT_PROMPT>\n{current_text}\n</CURRENT_PROMPT>\n\n"
             f"<HEALTH_REPORT>\n{health_text}\n</HEALTH_REPORT>\n\n"
+            f"<USAGE_SAMPLES>\n{trace_text}\n</USAGE_SAMPLES>\n\n"
             f"<FAILURE_CASES>\n{failure_text}\n</FAILURE_CASES>"
         )
 
@@ -288,6 +296,61 @@ class PromptOptimizer:
         return self._safe_parse(response)
 
     # ── 工具方法 ──
+
+    def evaluate_probation(
+        self,
+        prompt_name: str,
+        original_version: int,
+        candidate_version: int,
+        change_summary: str,
+    ) -> dict[str, Any]:
+        """LLM 对比新旧版本轨迹，返回 verdict=keep|rollback。
+
+        Args:
+            prompt_name:       prompt 名称
+            original_version:  这次升级之前的版本号
+            candidate_version: 目前正在 probation 的版本号
+            change_summary:    这次修改的简要说明
+        """
+        from src.evolve.prompt_registry import get_registry
+
+        registry = get_registry()
+        original_pv = self._store.get_version(prompt_name, original_version)
+        candidate_pv = self._store.get_version(prompt_name, candidate_version)
+        original_text = original_pv.prompt_text if original_pv else (registry.get(prompt_name) if registry else "")
+        candidate_text = candidate_pv.prompt_text if candidate_pv else ""
+
+        original_traces = self._store.get_traces(prompt_name, version=original_version, limit=10)
+        candidate_traces = self._store.get_traces(prompt_name, version=candidate_version, limit=10)
+
+        user_content = (
+            f"<PROMPT_NAME>\n{prompt_name}\n</PROMPT_NAME>\n\n"
+            f"<ORIGINAL_PROMPT>\n{original_text[:2000]}\n</ORIGINAL_PROMPT>\n\n"
+            f"<CANDIDATE_PROMPT>\n{candidate_text[:2000]}\n</CANDIDATE_PROMPT>\n\n"
+            f"<CHANGE_SUMMARY>\n{change_summary}\n</CHANGE_SUMMARY>\n\n"
+            f"<ORIGINAL_TRACES>\n{self._format_traces(original_traces)}\n</ORIGINAL_TRACES>\n\n"
+            f"<CANDIDATE_TRACES>\n{self._format_traces(candidate_traces)}\n</CANDIDATE_TRACES>"
+        )
+
+        set_llm_call_source("evolve_probation")
+        response = self._llm.generate([
+            {"role": "system", "content": PROBATION_REVIEW_SYSTEM},
+            {"role": "user", "content": user_content},
+        ])
+        return self._safe_parse(response)
+
+    @staticmethod
+    def _format_traces(traces: list) -> str:
+        """Format usage trace samples for inclusion in LLM context."""
+        if not traces:
+            return "(no usage traces available yet)"
+        lines: list[str] = []
+        for i, t in enumerate(traces, 1):
+            lines.append(f"--- Sample {i} [{t.recorded_at[:19]}] ---")
+            lines.append(f"INPUT:\n{t.input_text[:800]}")
+            lines.append(f"OUTPUT:\n{t.output_text[:400]}")
+            lines.append("")
+        return "\n".join(lines)
 
     @staticmethod
     def _format_failures(failures: list[PromptFailureCase]) -> str:

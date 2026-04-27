@@ -111,6 +111,7 @@ def create_pipeline(
     if getattr(settings, "evolve_enabled", True):
         from src.evolve.evolve_loop import EvolveLoop
         from src.evolve.prompt_registry import get_registry
+        from src.llm.base import set_trace_store
 
         registry = get_registry()
         if registry is not None:
@@ -122,6 +123,8 @@ def create_pipeline(
                 optimize_interval=getattr(settings, "evolve_optimize_interval", 50),
                 improvement_threshold=getattr(settings, "evolve_improvement_threshold", 0.05),
             )
+            # 注入 trace store：此后每次 LLM 调用都会自动记录使用轨迹
+            set_trace_store(registry.store)
 
     return LycheePipeline(
         wm_manager=wm_manager,

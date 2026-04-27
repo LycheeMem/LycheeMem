@@ -95,7 +95,9 @@ class LiteLLMLLM(BaseLLM):
                 getattr(usage, "completion_tokens", 0) or 0,
                 latency_ms,
             )
-        return resp.choices[0].message.content or ""
+        result = resp.choices[0].message.content or ""
+        self._post_generate_hook(messages, result)  # 记录使用轨迹
+        return result
     
     async def agenerate(
         self,
@@ -122,7 +124,9 @@ class LiteLLMLLM(BaseLLM):
                 getattr(usage, "completion_tokens", 0) or 0,
                 latency_ms,
             )
-        return resp.choices[0].message.content or ""
+        result = resp.choices[0].message.content or ""
+        self._post_generate_hook(messages, result)  # 记录使用轨迹
+        return result
 
     async def astream_generate(
         self,
