@@ -11,7 +11,7 @@
   - 用户消息自动 `append_turn`
   - 助手消息自动 `append_turn`
 - `/new`、`/reset`、`/stop`、`session_end` 自动触发边界 `consolidate`
-- 对明显长期知识信号触发提前 `consolidate`
+- 可选地对明显长期知识信号触发提前 `consolidate`
 
 **正常情况下：**
 - 模型不需要手动调用 `lychee_memory_append_turn`
@@ -26,6 +26,7 @@
 
 - 已安装 OpenClaw，且可执行 `openclaw`
 - 已知道 LycheeMem 仓库在本机上的路径
+- 如果你想用辅助脚本自动写配置，系统里需要有 Python 3.9+
 
 > **当前认证模型：** 合并后的 LycheeMem 后端目前是无认证 / 单租户模式。OpenClaw 插件在本地正常使用时不再需要登录流程或 Bearer token。若你之后恢复带认证的多用户部署，`apiToken` 仍然保留为可选兼容字段。
 
@@ -56,33 +57,57 @@ openclaw skills check
 
 ---
 
-## 2. 打开 agent 工具并确认 skill 已启用
+## 2. 配置 agent tools 和 skill
 
-即使插件已经装好了，如果当前 agent 没有放行 LycheeMem 工具，或者 skill 没有启用，模型仍然看不到它。
+最新版推荐直接交给辅助脚本处理。  
+`setup_openclaw_plugin.py` 现在不只会写 `plugins.entries.lycheemem-tools`，还会顺手更新：
 
-### 方式 A：OpenClaw 页面操作
+- `skills.entries.lycheemem.enabled = true`
+- `agents.list[main].skills`，自动加入 `lycheemem`
+- `agents.list[main].tools.alsoAllow`，自动补上核心 LycheeMem 工具
 
-在左侧栏中：
+也就是说，正常情况下你**不再需要**去前台手动打开 agent 的 Tools 和 Skills。
+
+### 方式 A：辅助脚本
+
+执行：
+```bash
+python "$LYCHEEMEM_REPO/openclaw-plugin/scripts/setup_openclaw_plugin.py"
+```
+
+默认会为 `main` agent 补上这 3 个核心工具：
+- `lychee_memory_smart_search`
+- `lychee_memory_append_turn`
+- `lychee_memory_consolidate`
+
+如果你想作用到别的 agent：
+```bash
+python "$LYCHEEMEM_REPO/openclaw-plugin/scripts/setup_openclaw_plugin.py" \
+  --agent-id your-agent-id
+```
+
+如果你还想额外加入工具：
+```bash
+python "$LYCHEEMEM_REPO/openclaw-plugin/scripts/setup_openclaw_plugin.py" \
+  --tool lychee_memory_search \
+  --tool lychee_memory_synthesize
+```
+
+### 方式 B：OpenClaw 页面人工确认
+
+如果你想确认脚本改完后的结果，可以在左侧栏中：
 
 1. 打开 **代理**
-2. 选择你当前使用的 agent，通常是 `main`
+2. 选择当前 agent，通常是 `main`
 3. 打开 **Tools**
-4. 勾选需要给模型开放的 LycheeMem 工具
-5. 保存
-6. 再打开 **Skills**
-7. 确认 `lycheemem` 已启用
-8. 如有需要再次保存
+4. 确认已经允许：
+   - `lychee_memory_smart_search`
+   - `lychee_memory_append_turn`
+   - `lychee_memory_consolidate`
+5. 打开 **Skills**
+6. 确认 `lycheemem` 已启用
 
-建议至少开启这些工具：
-- `lychee_memory_smart_search`
-- `lychee_memory_consolidate`
-- `lychee_memory_append_turn`
-
-可选但推荐：
-- `lychee_memory_search`
-- `lychee_memory_synthesize`
-
-### 方式 B：直接修改 `~/.openclaw/openclaw.json`
+### 方式 C：直接修改 `~/.openclaw/openclaw.json`
 
 ```json
 {
@@ -90,13 +115,14 @@ openclaw skills check
     "list": [
       {
         "id": "main",
+        "skills": [
+          "lycheemem"
+        ],
         "tools": {
           "alsoAllow": [
             "lychee_memory_smart_search",
             "lychee_memory_consolidate",
-            "lychee_memory_append_turn",
-            "lychee_memory_search",
-            "lychee_memory_synthesize"
+            "lychee_memory_append_turn"
           ]
         }
       }
@@ -116,7 +142,51 @@ openclaw skills check
 
 ## 3. 在“自动化 -> Plugins”中配置插件
 
-### 方式 A：OpenClaw 页面操作
+推荐路径是：先用辅助脚本把插件配置、skill 和 agent tools 一起写进 `openclaw.json`，再去 OpenClaw 页面里确认保存结果。
+
+### 方式 A：辅助脚本
+
+执行：
+```bash
+python "$LYCHEEMEM_REPO/openclaw-plugin/scripts/setup_openclaw_plugin.py"
+```
+
+这个脚本会做什么：
+- 创建或更新 `plugins.entries.lycheemem-tools`
+- 如果插件项还不存在，会顺手把它设为启用
+- 创建或更新 `skills.entries.lycheemem`
+- 确保 `agents.list[main].skills` 含有 `lycheemem`
+- 确保 `agents.list[main].tools.alsoAllow` 含有核心 LycheeMem 工具
+- 默认只补缺失字段，不覆盖你已有的自定义值
+- 如果你显式传了参数，或者加了 `--force`，才会覆盖已有字段
+
+脚本写入的推荐默认值：
+- `baseUrl` = `http://127.0.0.1:8000`
+- `transport` = `mcp`
+- `timeout` = `300`
+- `apiToken` = `""`
+- `enableHostLifecycle` = `true`
+- `enablePromptPresence` = `true`
+- `enableAutoAppendTurns` = `true`
+- `enableBoundaryConsolidation` = `true`
+- `enableProactiveConsolidation` = `false`
+- `proactiveConsolidationCooldownSeconds` = `180`
+
+常用示例：
+```bash
+python "$LYCHEEMEM_REPO/openclaw-plugin/scripts/setup_openclaw_plugin.py" \
+  --base-url http://127.0.0.1:8000 \
+  --transport mcp \
+  --plugin-enabled
+```
+
+```bash
+python "$LYCHEEMEM_REPO/openclaw-plugin/scripts/setup_openclaw_plugin.py" --force
+```
+
+> 这个脚本会同时处理 plugin、skill 和 agent tools，但不会安装 OpenClaw，也不会启动 LycheeMem 服务端。
+
+### 方式 B：OpenClaw 页面操作
 
 在左侧栏中：
 
@@ -126,7 +196,7 @@ openclaw skills check
    `Thin OpenClaw adapter for LycheeMem structured memory tools. (plugin: lycheemem-tools)`
 4. 打开 **LycheeMem Tools Config**
 5. 需要时展开 **advanced**
-6. 填写下面这些连接配置和开关
+6. 确认或调整下面这些连接配置和开关
 7. 保存
 
 至少填写：
@@ -143,12 +213,12 @@ openclaw skills check
 - **Inject Prompt Presence** = `true`
 - **Auto Append Turns** = `true`
 - **Boundary Consolidation** = `true`
-- **Proactive Consolidation** = `true`
+- **Proactive Consolidation** = `false`
 
 推荐默认值：
 - **Proactive Cooldown** = `180`
 
-### 方式 B：直接修改 `~/.openclaw/openclaw.json`
+### 方式 C：直接修改 `~/.openclaw/openclaw.json`
 
 ```json
 {
@@ -166,12 +236,13 @@ openclaw skills check
         "config": {
           "baseUrl": "http://127.0.0.1:8000",
           "transport": "mcp",
+          "timeout": 300,
           "apiToken": "",
           "enableHostLifecycle": true,
           "enablePromptPresence": true,
           "enableAutoAppendTurns": true,
           "enableBoundaryConsolidation": true,
-          "enableProactiveConsolidation": true,
+          "enableProactiveConsolidation": false,
           "proactiveConsolidationCooldownSeconds": 180
         }
       }
@@ -210,6 +281,12 @@ curl http://127.0.0.1:8000/health
 
 ## 快速验证
 
+### 先用辅助脚本检查插件配置
+```bash
+python "$LYCHEEMEM_REPO/openclaw-plugin/scripts/verify_openclaw_plugin.py"
+```
+**预期：** plugin、skill、agent tools 配置检查全部通过，并且后端可达。
+
 ### 验证 skill 已挂载
 ```bash
 openclaw skills info lycheemem
@@ -217,10 +294,12 @@ openclaw skills check
 ```
 **预期：** lycheemem 显示 `Ready`。
 
-同时确认：
-- 当前 agent 在 **代理 -> Skills** 中已启用 `lycheemem`
-- 当前 agent 在 **代理 -> Tools** 中已经启用了 LycheeMem 相关工具
-- `lycheemem-tools` 插件项已在 **自动化 -> Plugins** 中启用
+如果你已经跑过 `verify_openclaw_plugin.py`，那么：
+- `skills.entries.lycheemem.enabled`
+- `agents.list[main].skills`
+- `agents.list[main].tools.alsoAllow`
+
+这几项其实已经自动检查过了。这里的 UI 只需要当作人工复核手段。
 
 ### 验证插件配置页已正确保存
 
@@ -234,6 +313,7 @@ openclaw skills check
 - **Enable LycheeMem Tools** 已开启
 - **Plugin Hook Policy** 已开启
 - Base URL / token / transport 已正确保存
+- `enableProactiveConsolidation` 默认应为 `false`，除非你是有意打开它
 
 ### 验证长期记忆检索
 在会话里提问：
@@ -274,8 +354,8 @@ openclaw skills check
 如果 skill 已 `Ready` 但模型仍像没看到，通常是 gateway 还未重启或当前会话使用旧 prompt。
 
 还要额外确认：
-- 当前 agent 已在 **代理 -> Tools** 中启用 LycheeMem 工具
-- 当前 agent 已在 **代理 -> Skills** 中启用 `lycheemem`
+- `verify_openclaw_plugin.py` 是否已经通过
+- 当前 agent 是否就是你脚本写入的那个 agent
 - `lycheemem-tools` 插件项已在 **自动化 -> Plugins** 中启用
 - **Enable LycheeMem Tools** 已开启
 - **Plugin Hook Policy** 已开启
@@ -284,6 +364,11 @@ openclaw skills check
 **解决办法：** 
 1. 重启 gateway
 2. 新开一个会话再测
+3. 如果你不是用 `main` agent，重新执行：
+```bash
+python "$LYCHEEMEM_REPO/openclaw-plugin/scripts/setup_openclaw_plugin.py" \
+  --agent-id your-agent-id
+```
 
 ### 模型重复手动调用 append_turn
 当前版本宿主已通过 hook 自动镜像 turn，模型无需手动调用。如果仍然重复，通常是 gateway 还未重启或当前会话仍在使用旧提示。

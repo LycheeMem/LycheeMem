@@ -31,6 +31,7 @@ class ConsolidationResult:
     records_added: int
     records_merged: int
     records_expired: int
+    has_novelty: bool | None = None
     steps: list[dict[str, Any]] = field(default_factory=list)
 
 

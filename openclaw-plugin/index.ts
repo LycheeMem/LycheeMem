@@ -239,7 +239,7 @@ function getPluginConfig(api: any): PluginConfig {
     ),
     enableProactiveConsolidation: asBoolean(
       raw.enableProactiveConsolidation,
-      true
+      false
     ),
     proactiveConsolidationCooldownSeconds: Math.max(
       15,
@@ -669,7 +669,7 @@ class OpenClawAdapter {
       "LycheeMem is the default external long-term memory layer for this host.",
       "Treat the LycheeMem skill as active background policy even when the user does not mention it explicitly.",
       "When the request may depend on project history, user preferences, prior decisions, or cross-session background, prefer `lychee_memory_smart_search` first.",
-      "Use `lychee_memory_smart_search` with lean output by default so the model mainly sees synthesized `background_context` instead of token-heavy retrieval JSON.",
+      "Use `lychee_memory_smart_search` with minimal output by default so the model mainly sees the synthesized `background_context` instead of verbose retrieval details.",
       "OpenClaw owns short-range session context. LycheeMem owns structured long-range recall across sessions.",
       "Host lifecycle integration usually mirrors user and assistant turns automatically and triggers boundary consolidation automatically, so manual `lychee_memory_append_turn` and `lychee_memory_consolidate` calls are mainly for debugging or non-standard flows."
     ].join("\n");

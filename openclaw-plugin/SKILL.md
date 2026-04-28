@@ -44,7 +44,7 @@ Default plugin tool exposure:
 ## Trigger Guidance
 
 - Prefer `lychee_memory_smart_search` for recall questions such as "上次怎么处理的", "用户之前提过什么", "这个项目长期背景是什么". Treat it as the default recall path.
-- Let `lychee_memory_smart_search` use full search mode internally but prefer a lean default response so the agent mainly receives synthesized `background_context`.
+- Let `lychee_memory_smart_search` use minimal output by default so the agent mainly receives synthesized `background_context` instead of verbose retrieval details.
 - Use `lychee_memory_search` only during development or debugging when you explicitly want the raw retrieval payload.
 - When this plugin runs inside OpenClaw with host lifecycle integration enabled, assume the host usually mirrors natural-language user and assistant turns into LycheeMem automatically.
 - In that host-integrated mode, do not manually call `lychee_memory_append_turn` from the model during normal operation, because it would duplicate the host-managed transcript mirror.
