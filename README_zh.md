@@ -15,9 +15,6 @@
     <a href="https://pypi.org/project/lycheemem/">
       <img src="https://img.shields.io/pypi/v/lycheemem?style=flat&logo=pypi&logoColor=white&label=PyPI&color=3775A9" alt="PyPI">
     </a>
-    <a href="https://github.com/HITsz-TMG">
-      <img src="https://img.shields.io/badge/HITsz--TMG-24292f?style=flat&logo=github&logoColor=white" alt="HITsz-TMG">
-    </a>
   </p>
     <p>
       中文 | <a href="README.md">English</a>
