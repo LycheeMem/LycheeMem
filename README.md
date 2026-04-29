@@ -54,6 +54,7 @@ LycheeMemory is a compact memory framework for LLM agents. It starts from effici
 <a id="news"></a>
 
 ## 🔥 News
+- **[04/29/2026]** Hermes and Claude Code plugin integrations are now available, bringing LycheeMemory's automatic recall, turn mirroring, and consolidation workflow to more agent runtimes. Setup guides: [Hermes](hermes-plugin/lycheemem/INSTALL_HERMES.md) · [Claude Code](claude-plugin/lycheemem/INSTALL_CLAUDE.md)
 - **[04/26/2026]** Visual (Multimodal) Memory module added! See [Visual Memory](#visual-memory).
 - **[04/13/2026]** LycheeMem is now LycheeMemory.
 - **[04/03/2026]** The project now supports installation via `pip install lycheemem`. You can easily start the service from anywhere using `lycheemem-cli`!

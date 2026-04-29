@@ -74,6 +74,7 @@ class LycheeMemPluginClient:
         include_skills: bool = True,
         synthesize: bool = True,
         mode: str = "compact",
+        response_level: str = "minimal",
     ) -> dict[str, Any]:
         payload = {
             "query": query,
@@ -82,6 +83,7 @@ class LycheeMemPluginClient:
             "include_skills": include_skills,
             "synthesize": synthesize,
             "mode": mode,
+            "response_level": response_level,
         }
         if session_id:
             payload["session_id"] = session_id

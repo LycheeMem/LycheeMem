@@ -11,7 +11,7 @@ Get the LycheeMem plugin connected to OpenClaw in under 5 minutes.
   - User messages are appended automatically
   - Assistant messages are appended automatically
 - `/new`, `/reset`, `/stop`, and `session_end` automatically trigger boundary `consolidate`
-- Proactive `consolidate` on strong long-term knowledge signals
+- Optional proactive `consolidate` on strong long-term knowledge signals
 
 **Under normal operation:**
 - The model does **not** need to call `lychee_memory_append_turn` manually
@@ -26,6 +26,7 @@ Confirm the following before proceeding:
 
 - OpenClaw is installed and the `openclaw` command is available
 - You know the local path of the LycheeMem repository
+- Python 3.9+ is available if you want to use the helper setup and verify scripts
 
 > **Current auth model:** the merged LycheeMem backend is currently running in a no-auth / single-tenant mode. The OpenClaw plugin therefore does not need a login flow or Bearer token for normal local use. If you later restore authenticated multi-user deployments, the optional `apiToken` field remains available for backward compatibility.
 
@@ -62,33 +63,57 @@ openclaw skills check
 
 ---
 
-## 2. Enable agent tools and confirm the skill
+## 2. Configure agent tools and the skill
 
-The plugin can be installed correctly and still remain invisible to the model if the current agent is not allowed to use the tools or the skill is disabled.
+The latest setup script can now handle this automatically.  
+`setup_openclaw_plugin.py` does not just write `plugins.entries.lycheemem-tools`; it also updates:
 
-### Option A: OpenClaw page
+- `skills.entries.lycheemem.enabled = true`
+- `agents.list[main].skills`, adding `lycheemem`
+- `agents.list[main].tools.alsoAllow`, adding the core LycheeMem tools
 
-In the left sidebar:
+In normal use, this means you no longer need to manually enable the agent tools and skill in the UI.
+
+### Option A: helper script
+
+Run:
+```bash
+python "$LYCHEEMEM_REPO/openclaw-plugin/scripts/setup_openclaw_plugin.py"
+```
+
+By default it wires the following core tools into the `main` agent:
+- `lychee_memory_smart_search`
+- `lychee_memory_append_turn`
+- `lychee_memory_consolidate`
+
+To target a different agent:
+```bash
+python "$LYCHEEMEM_REPO/openclaw-plugin/scripts/setup_openclaw_plugin.py" \
+  --agent-id your-agent-id
+```
+
+To also allow extra tools:
+```bash
+python "$LYCHEEMEM_REPO/openclaw-plugin/scripts/setup_openclaw_plugin.py" \
+  --tool lychee_memory_search \
+  --tool lychee_memory_synthesize
+```
+
+### Option B: OpenClaw page
+
+If you want to confirm the result after the script runs:
 
 1. Open **Agents**
-2. Select the agent you are using, usually `main`
+2. Select the current agent, usually `main`
 3. Open **Tools**
-4. Enable the LycheeMem tools you want the model to use
-5. Save
-6. Open **Skills**
-7. Confirm `lycheemem` is enabled for the current agent
-8. Save again if needed
+4. Confirm these are allowed:
+   - `lychee_memory_smart_search`
+   - `lychee_memory_append_turn`
+   - `lychee_memory_consolidate`
+5. Open **Skills**
+6. Confirm `lycheemem` is enabled
 
-Recommended minimum tool set:
-- `lychee_memory_smart_search`
-- `lychee_memory_consolidate`
-- `lychee_memory_append_turn`
-
-Optional but useful:
-- `lychee_memory_search`
-- `lychee_memory_synthesize`
-
-### Option B: `~/.openclaw/openclaw.json`
+### Option C: `~/.openclaw/openclaw.json`
 
 ```json
 {
@@ -96,13 +121,14 @@ Optional but useful:
     "list": [
       {
         "id": "main",
+        "skills": [
+          "lycheemem"
+        ],
         "tools": {
           "alsoAllow": [
             "lychee_memory_smart_search",
             "lychee_memory_consolidate",
-            "lychee_memory_append_turn",
-            "lychee_memory_search",
-            "lychee_memory_synthesize"
+            "lychee_memory_append_turn"
           ]
         }
       }
@@ -122,7 +148,52 @@ Optional but useful:
 
 ## 3. Configure the plugin in Automation -> Plugins
 
-### Option A: OpenClaw page
+The recommended path is: write the plugin config, skill entry, and agent tools
+with the helper script first, then open the OpenClaw page once to confirm it saved correctly.
+
+### Option A: helper script
+
+Run:
+```bash
+python "$LYCHEEMEM_REPO/openclaw-plugin/scripts/setup_openclaw_plugin.py"
+```
+
+What it does:
+- creates or updates `plugins.entries.lycheemem-tools`
+- enables the plugin entry if it does not exist yet
+- creates or updates `skills.entries.lycheemem`
+- ensures `agents.list[main].skills` contains `lycheemem`
+- ensures `agents.list[main].tools.alsoAllow` contains the core LycheeMem tools
+- fills only missing config fields by default
+- preserves your existing custom values unless you pass explicit overrides or `--force`
+
+Recommended defaults written by the script:
+- `baseUrl` = `http://127.0.0.1:8000`
+- `transport` = `mcp`
+- `timeout` = `300`
+- `apiToken` = `""`
+- `enableHostLifecycle` = `true`
+- `enablePromptPresence` = `true`
+- `enableAutoAppendTurns` = `true`
+- `enableBoundaryConsolidation` = `true`
+- `enableProactiveConsolidation` = `false`
+- `proactiveConsolidationCooldownSeconds` = `180`
+
+Useful examples:
+```bash
+python "$LYCHEEMEM_REPO/openclaw-plugin/scripts/setup_openclaw_plugin.py" \
+  --base-url http://127.0.0.1:8000 \
+  --transport mcp \
+  --plugin-enabled
+```
+
+```bash
+python "$LYCHEEMEM_REPO/openclaw-plugin/scripts/setup_openclaw_plugin.py" --force
+```
+
+> This script now manages the plugin entry, the `lycheemem` skill entry, and the target agent tool allowlist. It still does **not** install OpenClaw or start the LycheeMem server.
+
+### Option B: OpenClaw page
 
 In the left sidebar:
 
@@ -132,7 +203,7 @@ In the left sidebar:
    `Thin OpenClaw adapter for LycheeMem structured memory tools. (plugin: lycheemem-tools)`
 4. Open **LycheeMem Tools Config**
 5. Expand **advanced** if needed
-6. Fill in the connection fields and switches below
+6. Confirm or adjust the values below
 7. Save
 
 Fill in at minimum:
@@ -149,12 +220,12 @@ Recommended switches:
 - **Inject Prompt Presence** = `true`
 - **Auto Append Turns** = `true`
 - **Boundary Consolidation** = `true`
-- **Proactive Consolidation** = `true`
+- **Proactive Consolidation** = `false`
 
 Recommended default:
 - **Proactive Cooldown** = `180`
 
-### Option B: `~/.openclaw/openclaw.json`
+### Option C: `~/.openclaw/openclaw.json`
 
 ```json
 {
@@ -172,12 +243,13 @@ Recommended default:
         "config": {
           "baseUrl": "http://127.0.0.1:8000",
           "transport": "mcp",
+          "timeout": 300,
           "apiToken": "",
           "enableHostLifecycle": true,
           "enablePromptPresence": true,
           "enableAutoAppendTurns": true,
           "enableBoundaryConsolidation": true,
-          "enableProactiveConsolidation": true,
+          "enableProactiveConsolidation": false,
           "proactiveConsolidationCooldownSeconds": 180
         }
       }
@@ -216,6 +288,12 @@ If you are on WSL, bind the server to `0.0.0.0:8000` if needed, but access it fr
 
 ## Verification
 
+### Verify plugin config with the helper script
+```bash
+python "$LYCHEEMEM_REPO/openclaw-plugin/scripts/verify_openclaw_plugin.py"
+```
+**Expected:** plugin, skill, and agent tool checks all pass, and the backend is reachable.
+
 ### Verify the skill is mounted
 ```bash
 openclaw skills info lycheemem
@@ -223,10 +301,12 @@ openclaw skills check
 ```
 **Expected:** `lycheemem` shows `Ready`.
 
-Also confirm:
-- the skill is enabled
-- the current agent has LycheeMem tools enabled under **Agents -> Tools**
-- the plugin entry `lycheemem-tools` is enabled under **Automation -> Plugins**
+If you already ran `verify_openclaw_plugin.py`, then:
+- `skills.entries.lycheemem.enabled`
+- `agents.list[main].skills`
+- `agents.list[main].tools.alsoAllow`
+
+have already been checked automatically. The UI is only needed here as a manual cross-check.
 
 ### Verify plugin config is loaded
 
@@ -240,6 +320,7 @@ Confirm:
 - **Enable LycheeMem Tools** is on
 - **Plugin Hook Policy** is on
 - Base URL / token / transport are saved correctly
+- `enableProactiveConsolidation` is intentionally `false` unless you changed it on purpose
 
 ### Verify long-term memory retrieval
 Ask in a session:
@@ -280,8 +361,8 @@ openclaw skills check
 If the skill shows `Ready` but the model still does not use it, the gateway has likely not been restarted or the current session is using a stale prompt. 
 
 Also verify:
-- the current agent has LycheeMem tools enabled under **Agents -> Tools**
-- `lycheemem` is enabled under **Agents -> Skills**
+- `verify_openclaw_plugin.py` already passes
+- the current agent is the same one that the setup script updated
 - the plugin entry `lycheemem-tools` is enabled under **Automation -> Plugins**
 - **Enable LycheeMem Tools** is on
 - **Plugin Hook Policy** is on
@@ -290,6 +371,11 @@ Also verify:
 **Solution:**
 1. Restart the gateway
 2. Open a new session and retry
+3. If you are not using `main`, rerun:
+```bash
+python "$LYCHEEMEM_REPO/openclaw-plugin/scripts/setup_openclaw_plugin.py" \
+  --agent-id your-agent-id
+```
 
 ### Model is calling `append_turn` manually
 Turn mirroring is handled automatically by hooks in this version. If the model continues to call `append_turn` manually, the gateway has likely not been restarted or the session is still using an old prompt.
