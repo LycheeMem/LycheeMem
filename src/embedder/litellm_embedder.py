@@ -14,6 +14,7 @@ model 格式遵循 litellm 约定（参考 https://docs.litellm.ai/docs/embeddin
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import litellm
@@ -78,18 +79,28 @@ class LiteLLMEmbedder(BaseEmbedder):
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """批量生成 embedding（文档侧）。"""
+        t0 = time.perf_counter()
         resp = litellm.embedding(
             model=self.model,
             input=texts,
             **self._build_kwargs(task_type=self._task_type),
         )
+        latency_ms = (time.perf_counter() - t0) * 1000
+        usage = getattr(resp, "usage", None)
+        tokens = int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
+        self._accumulate_usage(len(texts), tokens, latency_ms)
         return [self._extract_embedding(item) for item in resp.data]
 
     def embed_query(self, text: str) -> list[float]:
         """单条查询 embedding（查询侧）。"""
+        t0 = time.perf_counter()
         resp = litellm.embedding(
             model=self.model,
             input=[text],
             **self._build_kwargs(task_type=self._query_task_type),
         )
+        latency_ms = (time.perf_counter() - t0) * 1000
+        usage = getattr(resp, "usage", None)
+        tokens = int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
+        self._accumulate_usage(1, tokens, latency_ms)
         return self._extract_embedding(resp.data[0])

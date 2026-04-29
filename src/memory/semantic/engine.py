@@ -9,12 +9,15 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import json
+import logging
 import re
 import uuid
 
 from src.llm.base import set_llm_call_source
+from src.embedder.base import set_embedding_call_source
 from collections import deque
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -563,81 +566,146 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 steps=steps,
             )
 
-        # Step 3: 去重 + 写入
+        # Step 3: 去重 + 写入（三阶段：A) 并行搜索，B) 批量向量化判重，C) 批量写入）
+        _ingest_log = logging.getLogger("src.memory.semantic.engine")
         actually_added = 0
         sensitive_skipped = 0
         persisted_records: list[MemoryRecord] = []
+
+        # 3a. 敏感信息过滤（纯本地，串行）
+        filtered_records: list[MemoryRecord] = []
         for record in new_records:
-            # 3a. 敏感信息过滤：密码/API key/私钥/信用卡号不写入长期记忆
             check_text = record.semantic_text + " " + record.normalized_text
             if self._is_sensitive_text(check_text):
-                import logging as _logging
-                _logging.getLogger("src.memory.semantic.engine").warning(
+                _ingest_log.warning(
                     "Skipping sensitive content record %s (memory_type=%s)",
                     record.record_id, record.memory_type,
                 )
                 sensitive_skipped += 1
-                continue
+            else:
+                filtered_records.append(record)
 
-            # 3b. FTS 候选 + 向量候选合并去重
-            similar = self._sqlite.find_similar_by_normalized_text(
-                record.semantic_text, limit=3,
+        # 3b. Phase A 预备：一次批量 embed 同时覆盖 semantic_text + normalized_text
+        #     normalized_text = f"{memory_type}: {semantic_text}"（确定性规则生成）
+        #     向量将复用于：① ANN 搜索 query_vector（无需线程内 embed_query）
+        #                  ② Phase B 相似度判重（无需逐条 embed）
+        #                  ③ Phase C upsert_batch 两列直接传入（无需 upsert_batch 内部再 embed）
+        #                  ④ synthesizer 的 _dedup / _cluster 也直接复用（无需再 embed）
+        _record_vec_map: dict[str, list[float]] = {}   # record_id → semantic_vector
+        _record_norm_vec_map: dict[str, list[float]] = {}  # record_id → normalized_vector
+        if filtered_records:
+            set_embedding_call_source("dedup_search")
+            # 前 N 个：semantic_text；后 N 个：normalized_text
+            _N = len(filtered_records)
+            _all_texts = (
+                [r.semantic_text for r in filtered_records]
+                + [r.normalized_text for r in filtered_records]
             )
-            # 向量补充去重：FTS 对中文近重复召回弱，用 vector（semantic_text）兜底
+            _all_vecs = self._embedder.embed(_all_texts)
+            _record_vec_map = {
+                r.record_id: _all_vecs[i] for i, r in enumerate(filtered_records)
+            }
+            _record_norm_vec_map = {
+                r.record_id: _all_vecs[_N + i] for i, r in enumerate(filtered_records)
+            }
+
+        # 3c. Phase A: 并行 FTS + ANN 候选搜索（纯读，线程安全；query_vector 已预算好，无额外 embed）
+        # 返回 (record_id, [(candidate_record, ann_distance)])；FTS-only 候选 distance=999.0，
+        # ANN 候选直接携带距离，后续判重无需再 embed。
+        def _fetch_dedup_candidates(
+            record: MemoryRecord,
+        ) -> tuple[str, list[tuple[MemoryRecord, float]]]:
+            cand_map: dict[str, tuple[MemoryRecord, float]] = {}
+            for s in self._sqlite.find_similar_by_normalized_text(record.semantic_text, limit=3):
+                if s.record_id and s.record_id not in cand_map:
+                    cand_map[s.record_id] = (s, 999.0)  # FTS-only，暂无距离
             try:
                 vec_hits = self._vector.search(
-                    record.semantic_text,
-                    column="vector",
-                    limit=5,
+                    record.semantic_text, column="vector", limit=5,
+                    query_vector=_record_vec_map.get(record.record_id),
                 )
-                seen_dedup_ids = {s.record_id for s in similar}
                 for vh in vec_hits:
                     rid = vh.get("record_id", "")
-                    if rid and rid not in seen_dedup_ids:
+                    dist = float(vh.get("_distance", 999.0))
+                    if not rid:
+                        continue
+                    if rid in cand_map:
+                        # FTS 候选被 ANN 覆盖：更新为精确距离
+                        rec, _ = cand_map[rid]
+                        cand_map[rid] = (rec, dist)
+                    else:
                         full_rec = self._sqlite.get_record(rid)
                         if full_rec and not full_rec.expired:
-                            similar.append(full_rec)
-                            seen_dedup_ids.add(rid)
+                            cand_map[rid] = (full_rec, dist)
             except Exception:
                 pass
+            return record.record_id, list(cand_map.values())
 
+        record_candidates: dict[str, list[tuple[MemoryRecord, float]]] = {}
+        if filtered_records:
+            _workers = min(8, len(filtered_records))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=_workers) as _pool:
+                for _rid, _cands in _pool.map(_fetch_dedup_candidates, filtered_records):
+                    record_candidates[_rid] = _cands
+
+        # 3d. Phase B: 直接使用 ANN 距离判重，无需 embed
+        # L2 距离阈值：对归一化向量 L2_dist = 2*(1-cosine_sim)
+        _dedup_l2_threshold = 2.0 * (1.0 - self._dedup_threshold)
+        survivors: list[MemoryRecord] = []
+        for record in filtered_records:
+            cands_with_dist = record_candidates.get(record.record_id, [])
+            # 精确 ID 匹配 → 直接判重
+            if any(cand.record_id == record.record_id for cand, _ in cands_with_dist):
+                continue
             is_duplicate = False
-            for s in similar:
-                if s.record_id == record.record_id:
+            for cand, dist in cands_with_dist:
+                if cand.record_id == record.record_id:
+                    continue
+                if dist <= _dedup_l2_threshold:
                     is_duplicate = True
+                    cand.updated_at = datetime.now(timezone.utc).isoformat()
+                    cand.confidence = min(1.0, cand.confidence + 0.1)
+                    cand.temporal = self._merge_temporal(cand.temporal, record.temporal)
+                    self._sqlite.upsert_record(cand)
                     break
-                # 用向量相似度判断重复（使用 semantic_text，保留完整语义）
-                try:
-                    vecs = self._embedder.embed([record.semantic_text, s.semantic_text])
-                    sim = self._cosine_similarity(vecs[0], vecs[1])
-                    if sim >= self._dedup_threshold:
-                        is_duplicate = True
-                        # 更新已有条目而非插入新的；合并 temporal，以新记录为准补充缺失字段
-                        s.updated_at = datetime.now(timezone.utc).isoformat()
-                        s.confidence = min(1.0, s.confidence + 0.1)
-                        s.temporal = self._merge_temporal(s.temporal, record.temporal)
-                        self._sqlite.upsert_record(s)
-                        break
-                except Exception:
-                    pass
-
             if not is_duplicate:
-                self._sqlite.upsert_record(record)
-                try:
-                    self._vector.upsert(
-                        record_id=record.record_id,
-                        memory_type=record.memory_type,
-                        semantic_text=record.semantic_text,
-                        normalized_text=record.normalized_text,
-                    )
-                except Exception:
-                    # 向量写入失败不阻断固化；已写 SQLite，FTS 仍可召回
-                    import logging
-                    logging.getLogger("src.memory.semantic.engine").warning(
-                        "vector upsert failed for record %s", record.record_id, exc_info=True
-                    )
-                actually_added += 1
-                persisted_records.append(record)
+                survivors.append(record)
+
+        # 3d. Phase C: 批量写入 SQLite + 向量索引
+        for record in survivors:
+            self._sqlite.upsert_record(record)
+        if survivors:
+            try:
+                set_embedding_call_source("record_ingest")
+                self._vector.upsert_batch([
+                    {
+                        "record_id": r.record_id,
+                        "memory_type": r.memory_type,
+                        "semantic_text": r.semantic_text,
+                        "normalized_text": r.normalized_text,
+                        "semantic_vector": _record_vec_map.get(r.record_id),
+                        "normalized_vector": _record_norm_vec_map.get(r.record_id),
+                    }
+                    for r in survivors
+                ])
+            except Exception:
+                _ingest_log.warning(
+                    "batch vector upsert failed for %d records, falling back to individual upserts",
+                    len(survivors), exc_info=True,
+                )
+                for record in survivors:
+                    try:
+                        self._vector.upsert(
+                            record_id=record.record_id,
+                            memory_type=record.memory_type,
+                            semantic_text=record.semantic_text,
+                            normalized_text=record.normalized_text,
+                        )
+                    except Exception:
+                        pass
+
+        actually_added = len(survivors)
+        persisted_records = survivors
 
         sensitive_note = f"，{sensitive_skipped} 条含敏感信息跳过" if sensitive_skipped else ""
         steps.append({
@@ -652,6 +720,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         if actually_added > 0:
             composite_records = self._synthesizer.synthesize_on_ingest(
                 persisted_records,
+                pre_computed_vectors=_record_vec_map,
             )
             fusion_stats = self._synthesizer.get_last_run_stats()
 
