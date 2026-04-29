@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/lycheemem-lycheemem-badge.png)](https://mseep.ai/app/lycheemem-lycheemem)
+
 <div align="center">
   <img src="assets/logo.png" alt="LycheeMem Logo" width="200">
   <h1>LycheeMemory: Lightweight Long-Term Memory for LLM Agents</h1>
