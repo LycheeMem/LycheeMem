@@ -68,6 +68,23 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
+    # ─── 视觉记忆 / VLM ───
+    vlm_model: str = ""  # 例如 openai/qwen-vl-max，留空则复用主 LLM
+    vlm_api_key: str = ""
+    vlm_api_base: str = ""
+    visual_memory_db_path: str = "data/visual_memory.db"
+    visual_vector_db_path: str = "data/visual_vector"
+    visual_image_path: str = "data/visual_memory"
+
+    # ─── 视觉记忆性能优化 ───
+    visual_fast_mode: bool = True  # 快速模式：更短 Prompt、更低 token 限制
+    visual_max_image_size: int = 1024  # 图片最大边长（像素），超过则缩放
+    visual_skip_embedding: bool = True  # 是否跳过嵌入生成（更快，但无法向量检索）
+
+    # ─── 多模态嵌入（CLIP）───
+    use_multimodal_embedding: bool = False  # 是否启用多模态嵌入 (需要 HuggingFace 网络)
+    multimodal_embedding_model: str = "openai/clip-vit-base-patch32"  # CLIP 模型
+
     model_config = SettingsConfigDict(extra="ignore", env_file=".env", env_file_encoding="utf-8")
 
 

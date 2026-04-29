@@ -10,7 +10,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from src.llm.base import BaseLLM
+from src.llm.base import BaseLLM, set_llm_call_source
 from src.memory.semantic.models import MemoryRecord, VALID_MEMORY_TYPES
 from src.memory.semantic.prompts import COMPACT_ENCODING_SYSTEM
 
@@ -28,19 +28,24 @@ class CompactSemanticEncoder:
         previous_turns: list[dict[str, Any]] | None = None,
         session_id: str = "",
         turn_index_offset: int = 0,
+        session_date: str | None = None,
     ) -> list[MemoryRecord]:
-        """单次 LLM 调用完成抽取 + 指代消解 + action metadata 标注。
+        """单次 LLM 调用完成抽取 + 指代消解 + metadata 标注。
 
         Args:
             current_turns: 需要处理的当前对话轮次
             previous_turns: 最近的上文轮次（供指代消解参考，可选）
             session_id: 会话 ID
             turn_index_offset: current_turns 在完整 session 中的起始 turn 索引
+            session_date: 对话发生的日期（自由文本，如 "May 8, 2023"）。
+                提供后将作为显式时间锚点注入 system prompt，
+                指导 LLM 将相对时间表达（yesterday/last week/next month）
+                转换为绝对日期。
 
         Returns:
             编码完成的 MemoryRecord 列表
         """
-        raw_records = self._encode_records(current_turns, previous_turns or [])
+        raw_records = self._encode_records(current_turns, previous_turns or [], session_date=session_date)
         if not raw_records:
             return []
 
@@ -56,8 +61,8 @@ class CompactSemanticEncoder:
             if memory_type not in VALID_MEMORY_TYPES:
                 memory_type = "fact"
 
-            # normalized_text 由 LLM 直接给出；fallback 到 semantic_text
-            normalized_text = raw.get("normalized_text", "") or semantic_text
+            # normalized_text 由 Python 规则生成，不依赖 LLM 输出
+            normalized_text = f"{memory_type}: {semantic_text}"
 
             raw_src = raw.get("source_role", "")
             source_role = raw_src if raw_src in ("user", "assistant", "both") else ""
@@ -71,11 +76,7 @@ class CompactSemanticEncoder:
                 normalized_text=normalized_text,
                 entities=raw.get("entities", []),
                 temporal=raw.get("temporal", {}),
-                task_tags=raw.get("task_tags", []),
-                tool_tags=raw.get("tool_tags", []),
-                constraint_tags=raw.get("constraint_tags", []),
-                failure_tags=raw.get("failure_tags", []),
-                affordance_tags=raw.get("affordance_tags", []),
+                tags=raw.get("tags", []),
                 confidence=1.0,
                 evidence_turn_range=self._normalize_evidence_turns(
                     raw.get("evidence_turns", []),
@@ -98,16 +99,30 @@ class CompactSemanticEncoder:
         self,
         current_turns: list[dict[str, Any]],
         previous_turns: list[dict[str, Any]],
+        session_date: str | None = None,
     ) -> list[dict[str, Any]]:
         """单次 LLM 调用：输出包含全部字段的 record 列表。"""
         prev_text = self._format_section(previous_turns) if previous_turns else "(no previous turns)"
         curr_text = self._format_section(current_turns)
 
+        # session_date 注入 user message 头部，system prompt 保持不变。
+        # 调用方在 Python 侧可靠地提取日期后传入，encoder 不自行解析格式。
+        if session_date:
+            date_header = (
+                f"<SESSION_DATE>{session_date}</SESSION_DATE>\n"
+                f"Use the SESSION_DATE above as \"today\" to convert all relative time "
+                f"references (yesterday, last week, next month, etc.) to absolute dates.\n\n"
+            )
+        else:
+            date_header = ""
+
         user_content = (
+            f"{date_header}"
             f"<PREVIOUS_TURNS>\n{prev_text}\n</PREVIOUS_TURNS>\n\n"
             f"<CURRENT_TURNS>\n{curr_text}\n</CURRENT_TURNS>"
         )
 
+        set_llm_call_source("compact_encoding")
         response = self._llm.generate([
             {"role": "system", "content": COMPACT_ENCODING_SYSTEM},
             {"role": "user", "content": user_content},

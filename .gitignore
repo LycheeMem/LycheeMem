@@ -24,3 +24,8 @@ scripts
 !openclaw-plugin/scripts/verify_openclaw_plugin.py
 promo
 .vite
+gepa*
+deep_*
+demo-animation
+.claude
+Claude.md

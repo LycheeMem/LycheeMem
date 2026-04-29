@@ -13,35 +13,14 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from src.agents.base_agent import BaseAgent
-from src.llm.base import BaseLLM
-
-REASONING_SYSTEM_PROMPT = """\
-You are an intelligent assistant with access to background knowledge and memory.
-
-{history_section}
-
-{background_section}
-
-{skill_plan_section}
-
-Based on the background knowledge and conversation history above, provide an accurate and helpful answer to the user.
-
-Rules:
-- Prefer factual information from memory when answering
-- If reusable skill documents (Markdown) are available, prioritize their steps, commands, and cautions
-- First try to answer from the retrieved memory before concluding the information is unavailable
-- Use indirect but relevant clues from multiple memory fragments when they jointly support a likely answer
-- For questions asking "likely", "would", "considered", or similar judgment calls, give the best-supported inference from memory instead of refusing
-- For time questions, distinguish the target event from nearby related events and use the provided time basis to resolve relative dates carefully
-- If evidence is partial but points strongly to one answer, state the answer concisely and qualify it as likely only when needed
-- Only say the information is unavailable when the retrieved memory truly lacks relevant evidence after considering all fragments
-- If memory is insufficient, you may answer from general knowledge, but state that clearly
-- Keep the answer concise and focused
-- Do not fabricate facts that are not present"""
+from src.agents.prompts import REASONING_SYSTEM_PROMPT
+from src.llm.base import BaseLLM, set_llm_call_source
 
 
 class ReasoningAgent(BaseAgent):
     """核心推理器：生成最终用户回复。"""
+
+    _MAX_SKILL_DOCS = 2
 
     def __init__(self, llm: BaseLLM):
         super().__init__(llm=llm, prompt_template=REASONING_SYSTEM_PROMPT)
@@ -57,6 +36,7 @@ class ReasoningAgent(BaseAgent):
         **kwargs,
     ) -> dict[str, Any]:
         messages = self._build_messages(user_query, compressed_history, background_context, skill_reuse_plan, retrieved_skills, reference_time=reference_time)
+        set_llm_call_source("reasoning")
         response = self.llm.generate(messages)
         return {"final_response": response}
 
@@ -71,6 +51,7 @@ class ReasoningAgent(BaseAgent):
     ) -> AsyncIterator[str]:
         """流式生成最终回复，逐 token yield。"""
         messages = self._build_messages(user_query, compressed_history, background_context, skill_reuse_plan, retrieved_skills, reference_time=reference_time)
+        set_llm_call_source("reasoning")
         async for token in self.llm.astream_generate(messages):
             yield token
 
@@ -111,11 +92,11 @@ class ReasoningAgent(BaseAgent):
         else:
             background_section = "No relevant background memory was retrieved."
 
-        # 优先使用原始检索技能（保留完整原文），否则退回到经 Synthesizer 过滤的计划
-        if retrieved_skills:
-            skill_plan_section = self._format_retrieved_skills(retrieved_skills)
-        else:
-            skill_plan_section = self._format_skill_plan(skill_reuse_plan)
+        selected_skills = self._select_skill_documents(
+            skill_reuse_plan=skill_reuse_plan,
+            retrieved_skills=retrieved_skills,
+        )
+        skill_plan_section = self._format_skill_plan(selected_skills)
 
         system_prompt = self.prompt_template.format(
             history_section=history_section,
@@ -156,29 +137,64 @@ class ReasoningAgent(BaseAgent):
                 continue
         return None
 
-    @staticmethod
-    def _format_retrieved_skills(skills: list[dict] | None) -> str:
-        """将原始检索技能列表格式化为 system prompt 片段（保留完整 doc_markdown 原文）。"""
-        if not skills:
-            return ""
-        lines = ["Retrieved skill documents (original text), which may be used as operational guidance:"]
-        for i, skill in enumerate(skills, 1):
-            intent = skill.get("intent", "?")
-            skill_id = skill.get("id", "")
-            score = skill.get("score", 0)
-            doc = skill.get("doc_markdown", "")
-            header = f"\n---\nSkill {i}: {intent}"
-            if skill_id:
-                header += f" (id={skill_id})"
-            if score:
-                header += f" | score={score:.2f}" if isinstance(score, (int, float)) else ""
-            lines.append(header)
-            if doc:
-                lines.append(doc)
-        return "\n".join(lines)
+    @classmethod
+    def _select_skill_documents(
+        cls,
+        *,
+        skill_reuse_plan: list[dict] | None,
+        retrieved_skills: list[dict] | None,
+    ) -> list[dict[str, Any]]:
+        """选择真正注入推理提示词的技能文档。
+
+        优先使用 Synthesizer 已筛选过的 skill_reuse_plan；
+        仅在外部直接调用 /memory/reason 且未提供该计划时，
+        才回退到原始 retrieved_skills。
+        """
+        if skill_reuse_plan:
+            normalized = [
+                {
+                    "skill_id": item.get("skill_id", ""),
+                    "intent": item.get("intent", ""),
+                    "doc_markdown": item.get("doc_markdown", ""),
+                    "score": item.get("score", 0),
+                    "conditions": item.get("conditions", ""),
+                }
+                for item in skill_reuse_plan
+                if str(item.get("doc_markdown") or item.get("intent") or "").strip()
+            ]
+            normalized.sort(
+                key=lambda item: float(item.get("score") or 0.0),
+                reverse=True,
+            )
+            return normalized[:cls._MAX_SKILL_DOCS]
+
+        fallback_skills = list(retrieved_skills or [])
+        if not fallback_skills:
+            return []
+
+        reusable_skills = [
+            item for item in fallback_skills
+            if bool(item.get("reusable"))
+        ]
+        selected = reusable_skills or fallback_skills
+        selected.sort(
+            key=lambda item: float(item.get("score") or 0.0),
+            reverse=True,
+        )
+        return [
+            {
+                "skill_id": item.get("id", "") or item.get("skill_id", ""),
+                "intent": item.get("intent", ""),
+                "doc_markdown": item.get("doc_markdown", ""),
+                "score": item.get("score", 0),
+                "conditions": item.get("conditions", ""),
+            }
+            for item in selected[:cls._MAX_SKILL_DOCS]
+            if str(item.get("doc_markdown") or item.get("intent") or "").strip()
+        ]
 
     @staticmethod
-    def _format_skill_plan(plan: list[dict] | None) -> str:
+    def _format_skill_plan(plan: list[dict[str, Any]] | None) -> str:
         """将可复用技能文档列表格式化为 system prompt 片段。"""
         if not plan:
             return ""

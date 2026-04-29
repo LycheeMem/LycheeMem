@@ -11,16 +11,15 @@ import type {
     Turn,
 } from "./types";
 
-const API = "";
 
 export async function fetchSessions(): Promise<SessionInfo[]> {
-  const r = await fetch(`${API}/sessions?limit=100`);
+  const r = await fetch(`/sessions?limit=100`);
   const data = await r.json();
   return data.sessions || [];
 }
 
 export async function updateSessionMeta(sessionId: string, topic: string): Promise<void> {
-  await fetch(`${API}/memory/session/${encodeURIComponent(sessionId)}/meta`, {
+  await fetch(`/memory/session/${encodeURIComponent(sessionId)}/meta`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ topic }),
@@ -37,7 +36,7 @@ export async function fetchSessionTurns(
   wm_max_tokens: number;
 }> {
   const r = await fetch(
-    `${API}/memory/session/${encodeURIComponent(sessionId)}`
+    `/memory/session/${encodeURIComponent(sessionId)}`
   );
   const data = await r.json();
   const turns: Turn[] = data.turns || [];
@@ -72,7 +71,7 @@ export async function sendChatMessage(
   turn_output_tokens?: number;
   trace?: PipelineTrace | null;
 }> {
-  const r = await fetch(`${API}/chat/complete`, {
+  const r = await fetch(`/chat/complete`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sessionId, message }),
@@ -128,13 +127,31 @@ export async function streamChatMessage(
     onToken?: (token: string) => void;
     onAnswer?: (answer: string) => void;
     onDone?: (data: StreamDoneEvent) => void;
-  }
+  },
+  images: string[] = [],  // 新增：Base64 图片列表
+  imageMimeTypes: string[] = []  // 新增：图片 MIME 类型列表
 ): Promise<void> {
-  const r = await fetch(`${API}/chat`, {
+  console.log("[streamChatMessage] Calling API with images:", images.length, "mimes:", imageMimeTypes.length);
+  
+  const requestBody = {
+    session_id: sessionId,
+    message,
+    images,
+    image_mime_types: imageMimeTypes,
+  };
+  
+  console.log("[streamChatMessage] Request body:", JSON.stringify({
+    ...requestBody,
+    images: images.map((_, i) => `image_${i} (${images[i].length} chars)`),
+  }, null, 2));
+  
+  const r = await fetch(`/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId, message }),
+    body: JSON.stringify(requestBody),
   });
+
+  console.log("[streamChatMessage] Response status:", r.status);
 
   if (!r.ok) {
     const data = await r.json().catch(() => ({}));
@@ -214,7 +231,7 @@ function toGraphTreeNode(n: Record<string, unknown>): GraphTreeNode {
 }
 
 export async function fetchGraphData(): Promise<GraphData> {
-  const r = await fetch(`${API}/memory/graph`);
+  const r = await fetch(`/memory/graph`);
   const data = await r.json();
   const nodes: GraphNode[] = ((data.nodes || []) as Record<string, unknown>[]).map(
     (n) => ({
@@ -244,7 +261,7 @@ export async function fetchGraphData(): Promise<GraphData> {
 }
 
 export async function fetchGraphEdges(): Promise<GraphEdge[]> {
-  const r = await fetch(`${API}/memory/graph`);
+  const r = await fetch(`/memory/graph`);
   const data = await r.json();
   const edges: GraphEdge[] = ((data.edges || []) as Record<string, unknown>[]).map(
     (e) => ({
@@ -265,13 +282,13 @@ export async function fetchGraphEdges(): Promise<GraphEdge[]> {
 }
 
 export async function fetchSkills(): Promise<SkillItem[]> {
-  const r = await fetch(`${API}/memory/skills`);
+  const r = await fetch(`/memory/skills`);
   const data = await r.json();
   return data.skills || [];
 }
 
 export async function fetchPipelineStatus(): Promise<PipelineStatus> {
-  const r = await fetch(`${API}/pipeline/status`);
+  const r = await fetch(`/pipeline/status`);
   const data = await r.json();
   return {
     session_count: data.session_count || 0,
@@ -283,7 +300,7 @@ export async function fetchPipelineStatus(): Promise<PipelineStatus> {
 
 export async function fetchConsolidationResult(sessionId: string): Promise<ConsolidatorTrace> {
   const r = await fetch(
-    `${API}/pipeline/last-consolidation?session_id=${encodeURIComponent(sessionId)}`
+    `/pipeline/last-consolidation?session_id=${encodeURIComponent(sessionId)}`
   );
   const data = await r.json();
   const status =
@@ -305,7 +322,7 @@ export async function fetchConsolidationResult(sessionId: string): Promise<Conso
 // ── Session CRUD ──
 
 export async function deleteSession(sessionId: string): Promise<void> {
-  const r = await fetch(`${API}/memory/session/${encodeURIComponent(sessionId)}`, {
+  const r = await fetch(`/memory/session/${encodeURIComponent(sessionId)}`, {
     method: "DELETE",
   });
   if (!r.ok) {
@@ -321,7 +338,7 @@ export async function searchGraphNodes(
   topK = 10
 ): Promise<GraphData> {
   const r = await fetch(
-    `${API}/memory/graph/search?q=${encodeURIComponent(q)}&top_k=${topK}`
+    `/memory/graph/search?q=${encodeURIComponent(q)}&top_k=${topK}`
   );
   const data = await r.json();
   const nodes: GraphNode[] = ((data.nodes || []) as Record<string, unknown>[]).map(
@@ -352,7 +369,7 @@ export async function addGraphNode(
   label: string,
   properties?: Record<string, unknown>
 ): Promise<void> {
-  const r = await fetch(`${API}/memory/graph/nodes`, {
+  const r = await fetch(`/memory/graph/nodes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id, label, properties: properties || {} }),
@@ -364,7 +381,7 @@ export async function addGraphNode(
 }
 
 export async function deleteGraphNode(nodeId: string): Promise<void> {
-  const r = await fetch(`${API}/memory/graph/nodes/${encodeURIComponent(nodeId)}`, {
+  const r = await fetch(`/memory/graph/nodes/${encodeURIComponent(nodeId)}`, {
     method: "DELETE",
   });
   if (!r.ok) {
@@ -376,7 +393,7 @@ export async function deleteGraphNode(nodeId: string): Promise<void> {
 // ── Skill CRUD ──
 
 export async function deleteSkill(skillId: string): Promise<void> {
-  const r = await fetch(`${API}/memory/skills/${encodeURIComponent(skillId)}`, {
+  const r = await fetch(`/memory/skills/${encodeURIComponent(skillId)}`, {
     method: "DELETE",
   });
   if (!r.ok) {
@@ -386,7 +403,7 @@ export async function deleteSkill(skillId: string): Promise<void> {
 }
 
 export async function clearGraphMemory(): Promise<void> {
-  const r = await fetch(`${API}/memory/graph/clear`, {
+  const r = await fetch(`/memory/graph/clear`, {
     method: "DELETE",
   });
   if (!r.ok) {
@@ -396,11 +413,87 @@ export async function clearGraphMemory(): Promise<void> {
 }
 
 export async function clearSkillMemory(): Promise<void> {
-  const r = await fetch(`${API}/memory/skills/clear`, {
+  const r = await fetch(`/memory/skills/clear`, {
     method: "DELETE",
   });
   if (!r.ok) {
     const data = await r.json().catch(() => ({}));
     throw new Error((data as Record<string, string>).detail || `HTTP ${r.status}`);
   }
+}
+
+// ── Visual Memory ──
+
+export interface VisualMemoryItem {
+  record_id: string;
+  session_id: string;
+  timestamp: string;
+  caption: string;
+  image_path: string;
+  image_hash: string;
+  scene_type: string;
+  importance_score: number;
+  retrieval_count: number;
+  expired: boolean;
+  entities: Array<{type: string; name: string; confidence: number}>;
+  structured_data?: Record<string, unknown>;
+}
+
+export interface VisualMemoryStats {
+  total: number;
+  active: number;
+  expired: number;
+  by_scene_type: Record<string, number>;
+}
+
+export async function fetchVisualMemories(
+  sessionId?: string,
+  limit = 50,
+  offset = 0,
+  includeExpired = false
+): Promise<VisualMemoryItem[]> {
+  const params = new URLSearchParams();
+  if (sessionId) params.set("session_id", sessionId);
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
+  params.set("include_expired", String(includeExpired));
+
+  const r = await fetch(`/visual/memories?${params.toString()}`);
+  const data = await r.json();
+  return data.memories || [];
+}
+
+export function fetchVisualMemoryImage(recordId: string): string {
+  return `/visual/memories/${encodeURIComponent(recordId)}/image`;
+}
+
+export async function fetchVisualMemoryStats(): Promise<VisualMemoryStats> {
+  const r = await fetch(`/visual/stats`);
+  const data = await r.json();
+  return {
+    total: data.total || 0,
+    active: data.active || 0,
+    expired: data.expired || 0,
+    by_scene_type: data.by_scene_type || {},
+  };
+}
+
+export async function deleteVisualMemory(recordId: string): Promise<void> {
+  const r = await fetch(`/visual/memories/${encodeURIComponent(recordId)}`, {
+    method: "DELETE",
+  });
+  if (!r.ok) {
+    const data = await r.json().catch(() => ({}));
+    throw new Error((data as Record<string, string>).detail || `HTTP ${r.status}`);
+  }
+}
+
+export async function searchVisualMemories(query: string, topK = 10): Promise<VisualMemoryItem[]> {
+  const r = await fetch(`/visual/search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, top_k: topK }),
+  });
+  const data = await r.json();
+  return data.results || [];
 }

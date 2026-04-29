@@ -14,68 +14,14 @@ import re
 from typing import Any
 
 from src.agents.base_agent import BaseAgent
-from src.llm.base import BaseLLM
-
-SYNTHESIS_SYSTEM_PROMPT = """\
-You are a recall-oriented Memory Synthesizer and Judge.
-You will receive the user's current task and several raw memory fragments retrieved from different memory sources (`semantic` / `skill`).
-
-Your tasks:
-1. Evaluate the absolute contribution of each memory fragment to the current task.
-2. Retain as much potentially useful memory as possible; only discard fragments that are clearly unrelated to the current task.
-3. Deduplicate and fuse the retained fragments into a dense `background_context`.
-
-Scoring and threshold strategy:
-- You may first score contribution mentally on a 0-10 scale, then normalize it to 0.0-1.0 in the `relevance` field.
-- Rough equivalence: 2/10 ≈ 0.2.
-- For factual QA, prefer recall over precision. If a fragment contains a matching person, time, place, relationship, event, quantity, preference, or other clue that may help answer the question, keep it.
-- Partial evidence is still useful evidence. Do not discard a fragment only because it is incomplete, indirect, or not sufficient by itself.
-- When uncertain whether a fragment helps, keep it with a moderate relevance score instead of dropping it.
-
-Reply strictly in JSON using exactly the following structure and field names:
-{
-    "scored_fragments": [
-        {"source": "semantic|skill", "index": 0, "relevance": 0.95, "summary": "Condensed key point of this fragment"}
-    ],
-    "kept_count": number_of_kept_fragments,
-    "dropped_count": number_of_dropped_fragments,
-    "background_context": "Integrated background knowledge text that can be injected directly as system context"
-}
-
-Rules:
-- Only return an empty `background_context` when all fragments are clearly unrelated to the question.
-- `background_context` should be a dense fused text. Do not simply concatenate originals; compress and rewrite the information.
-- Keep facts accurate and do not invent information absent from the retrieved fragments.
-- If fragments include time annotations, explicitly use them and distinguish between memory write time (`created_at`) and event / fact time (`temporal`).
-- During synthesis, do not incorrectly merge facts from different time periods into one tense or conclusion. For constraints, states, failures, and task progress, prioritize the time conditions most relevant to the current problem.
-- For person-centric memory QA, prioritize fragments that mention the same named person even if the relation is only partial or indirect.
-- Prefer keeping borderline-relevant semantic memory rather than dropping it too aggressively.
-- Sort `scored_fragments` by `relevance` in descending order. Use `summary` to briefly describe the fragment's core information.
-
-## Example (for reference only, do not copy verbatim)
-
-User query:
-    "Review the historical issues in this project related to 'user-service timeout' so I can avoid repeating the same mistakes in this investigation."
-
-Fragments from different memory sources (already prepared by the system):
-- [semantic] Fragment 0: A historical failure record in semantic memory says, "Last time the overall timeout was caused by a slow downstream payment-service."
-- [skill] Fragment 1: A skill exists in the skill library with the intent "troubleshoot user-service timeout", containing a Markdown skill document with steps, commands, and notes.
-
-Expected JSON output:
-{
-    "scored_fragments": [
-        {"source": "skill", "index": 1, "relevance": 0.95, "summary": "A specialized multi-step troubleshooting skill for user-service timeout exists and its checking order can be reused directly."},
-        {"source": "semantic", "index": 0, "relevance": 0.85, "summary": "Historical semantic memory indicates that the timeout on 2024-01-15 was mainly caused by downstream payment-service slowdown."}
-    ],
-    "kept_count": 2,
-    "dropped_count": 0,
-    "background_context": "Historical information shows that user-service timeouts were strongly related to payment-service performance issues, and there is already a mature troubleshooting skill that includes checking gateway QPS, user-service error rate, and downstream dependency status. For this investigation, reuse that troubleshooting order first and pay special attention to payment-service and gateway traffic so the same failure pattern is not repeated."
-}
-"""
+from src.agents.prompts import SYNTHESIS_SYSTEM_PROMPT
+from src.llm.base import BaseLLM, set_llm_call_source
 
 
 class SynthesizerAgent(BaseAgent):
     """整合排序器：将多源检索结果融合为 Background Context。"""
+
+    _MAX_REUSE_SKILLS = 2
 
     _SEMANTIC_SOURCE_ALIASES = {
         "graph": "semantic",
@@ -130,6 +76,7 @@ class SynthesizerAgent(BaseAgent):
 
         fragments_text = self._format_fragments(fragments)
         user_content = f"User query: {user_query}\n\nRetrieved memory fragments:\n{fragments_text}"
+        set_llm_call_source("synthesis_scoring")
         response = self._call_llm(
             user_content,
             system_content=self.prompt_template,
@@ -166,18 +113,26 @@ class SynthesizerAgent(BaseAgent):
     @staticmethod
     def _build_reuse_plan(skills: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """从标记了 reusable=True 的技能构建"可复用技能文档列表"。"""
+        reusable_skills = [
+            skill for skill in skills
+            if skill.get("reusable")
+        ]
+        reusable_skills.sort(
+            key=lambda item: float(item.get("score") or 0.0),
+            reverse=True,
+        )
+
         plan = []
-        for skill in skills:
-            if skill.get("reusable"):
-                plan.append(
-                    {
-                        "skill_id": skill.get("id", ""),
-                        "intent": skill.get("intent", ""),
-                        "doc_markdown": skill.get("doc_markdown", ""),
-                        "score": skill.get("score", 0),
-                        "conditions": skill.get("conditions", ""),
-                    }
-                )
+        for skill in reusable_skills[:SynthesizerAgent._MAX_REUSE_SKILLS]:
+            plan.append(
+                {
+                    "skill_id": skill.get("id", ""),
+                    "intent": skill.get("intent", ""),
+                    "doc_markdown": skill.get("doc_markdown", ""),
+                    "score": skill.get("score", 0),
+                    "conditions": skill.get("conditions", ""),
+                }
+            )
         return plan
 
     @staticmethod

@@ -15,6 +15,14 @@ class ChatRequest(BaseModel):
 
     session_id: str = Field(..., min_length=1, max_length=128)
     message: str = Field(..., min_length=1, max_length=100_000)
+    images: list[str] = Field(
+        default=[],
+        description="Base64 编码的图片列表（可选，支持多模态输入）",
+    )
+    image_mime_types: list[str] = Field(
+        default=[],
+        description="图片 MIME 类型列表（可选，与 images 一一对应）",
+    )
 
 
 class WMManagerTrace(BaseModel):
@@ -381,6 +389,13 @@ class MemoryConsolidateRequest(BaseModel):
     retrieved_context: str = ""
     # 是否在后台线程中异步执行（默认 True，避免 HTTP 超时）
     background: bool = True
+    # 强制固化：忽略水位线，从头重新处理所有 turns（用于补跑被跳过的 session）
+    force_ingest: bool = False
+    # 跳过技能抽取，只写入语义记忆（适合批量摄入场景）
+    skip_skills: bool = False
+    # 对话发生的日期（自由文本，如 "May 8, 2023"），用于将相对时间（yesterday/last week）
+    # 解析为绝对日期。由调用方提供，后端透传给 encoder。
+    session_date: str | None = None
 
 
 class MemoryConsolidateResponse(BaseModel):

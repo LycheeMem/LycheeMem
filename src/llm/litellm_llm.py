@@ -10,14 +10,15 @@ model 格式遵循 litellm 约定（参考 https://docs.litellm.ai/docs/）：
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
 import litellm
 
-from src.llm.base import BaseLLM
+from src.llm.base import BaseLLM, Message
 
-# ── LiteLLM 全局性能优化（模块首次导入时执行一次）──────────────────────────
+# ── LiteLLM 全局性能优化（模块首次导入时执行一次）──────────────────────────────
 # 1. telemetry=False：禁用 LiteLLM 在每次 API 调用后向其服务器发送遥测 HTTP 请求。
 #    这是迁移到 LiteLLM 后延迟显著上升的主要原因。
 litellm.telemetry = False
@@ -33,7 +34,10 @@ litellm._async_failure_callback = []
 
 
 class LiteLLMLLM(BaseLLM):
-    """通过 LiteLLM 统一调用任意 provider 的 LLM。"""
+    """通过 LiteLLM 统一调用任意 provider 的 LLM。
+    
+    支持多模态消息（文本 + 图片），用于 VLM（视觉语言模型）调用。
+    """
 
     def __init__(
         self,
@@ -68,14 +72,16 @@ class LiteLLMLLM(BaseLLM):
         if response_format is not None:
             kwargs["response_format"] = response_format
         return kwargs
-        
+
     def generate(
         self,
-        messages: list[dict[str, str]],
+        messages: list[Message],
         temperature: float = 0.7,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
+        """同步生成文本。支持多模态消息。"""
+        t0 = time.perf_counter()
         resp = litellm.completion(
             model=self.model,
             messages=messages,
@@ -85,21 +91,25 @@ class LiteLLMLLM(BaseLLM):
                 response_format=response_format,
             ),
         )
+        latency_ms = (time.perf_counter() - t0) * 1000
         usage = getattr(resp, "usage", None)
         if usage:
             self._accumulate_usage(
                 getattr(usage, "prompt_tokens", 0) or 0,
                 getattr(usage, "completion_tokens", 0) or 0,
+                latency_ms,
             )
         return resp.choices[0].message.content or ""
-    
+
     async def agenerate(
         self,
-        messages: list[dict[str, str]],
+        messages: list[Message],
         temperature: float = 0.7,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
+        """异步生成文本。支持多模态消息。"""
+        t0 = time.perf_counter()
         resp = await litellm.acompletion(
             model=self.model,
             messages=messages,
@@ -109,17 +119,19 @@ class LiteLLMLLM(BaseLLM):
                 response_format=response_format,
             ),
         )
+        latency_ms = (time.perf_counter() - t0) * 1000
         usage = getattr(resp, "usage", None)
         if usage:
             self._accumulate_usage(
                 getattr(usage, "prompt_tokens", 0) or 0,
                 getattr(usage, "completion_tokens", 0) or 0,
+                latency_ms,
             )
         return resp.choices[0].message.content or ""
 
     async def astream_generate(
         self,
-        messages: list[dict[str, str]],
+        messages: list[Message],
         temperature: float = 0.7,
         max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
@@ -132,6 +144,7 @@ class LiteLLMLLM(BaseLLM):
         # stream_options 让 LiteLLM 在最后一个 chunk 中附带 usage 信息。
         # 部分不支持该参数的 provider 会通过 drop_params=True 自动忽略。
         kwargs["stream_options"] = {"include_usage": True}
+        t0 = time.perf_counter()
         response = await litellm.acompletion(
             model=self.model,
             messages=messages,
@@ -145,7 +158,8 @@ class LiteLLMLLM(BaseLLM):
                 pt = getattr(usage, "prompt_tokens", 0) or 0
                 ct = getattr(usage, "completion_tokens", 0) or 0
                 if pt or ct:
-                    self._accumulate_usage(pt, ct)
+                    latency_ms = (time.perf_counter() - t0) * 1000
+                    self._accumulate_usage(pt, ct, latency_ms)
             delta = chunk.choices[0].delta
             if delta and delta.content:
                 yield delta.content

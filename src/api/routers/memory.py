@@ -649,7 +649,10 @@ def run_memory_consolidate(
     log = store.get_or_create(req.session_id)
     watermark = log.last_consolidated_turn_index
     raw_total = len(log.turns)
-    turns = [t for t in log.turns[watermark:] if not t.get("deleted", False)]
+
+    # force_ingest=True 时忽略水位线，从头处理所有 turns
+    effective_watermark = 0 if req.force_ingest else watermark
+    turns = [t for t in log.turns[effective_watermark:] if not t.get("deleted", False)]
 
     if not turns:
         return MemoryConsolidateResponse(
@@ -666,7 +669,9 @@ def run_memory_consolidate(
                     turns=turns,
                     session_id=req.session_id,
                     retrieved_context=req.retrieved_context,
-                    turn_index_offset=watermark,
+                    turn_index_offset=effective_watermark,
+                    skip_skills=req.skip_skills,
+                    session_date=req.session_date,
                 )
                 # 后台线程固化成功后推进水位线
                 store.set_last_consolidated_turn_index(req.session_id, raw_total)
@@ -685,7 +690,9 @@ def run_memory_consolidate(
         turns=turns,
         session_id=req.session_id,
         retrieved_context=req.retrieved_context,
-        turn_index_offset=watermark,
+        turn_index_offset=effective_watermark,
+        skip_skills=req.skip_skills,
+        session_date=req.session_date,
     )
     # 同步固化成功后推进水位线
     store.set_last_consolidated_turn_index(req.session_id, raw_total)
