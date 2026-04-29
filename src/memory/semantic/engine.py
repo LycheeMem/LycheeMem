@@ -230,15 +230,16 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
         # ─── Phase 3: 反思循环 ────────────────────────────────────
         for _round in range(self._max_reflection_rounds):
-            context_preview = (
-                self._format_context(selected_candidates) or "(no retrieved results)"
-            )
-            adequacy = self._check_adequacy(
-                query,
-                context_preview,
-                plan=plan,
-                action_state=action_state_obj,
-            )
+            if selected_candidates:
+                context_preview = self._format_context(selected_candidates)
+                adequacy = self._check_adequacy(
+                    query,
+                    context_preview,
+                    plan=plan,
+                    action_state=action_state_obj,
+                )
+            else:
+                adequacy = {"is_sufficient": False}
             if adequacy["is_sufficient"]:
                 break
 

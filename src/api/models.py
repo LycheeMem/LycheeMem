@@ -297,9 +297,9 @@ class MemorySynthesizeResponse(BaseModel):
 class MemorySmartSearchResponse(BaseModel):
     query: str
     mode: str = "compact"
-    graph_results: list[dict[str, Any]]
-    semantic_results: list[dict[str, Any]]
-    skill_results: list[dict[str, Any]]
+    graph_results: list[dict[str, Any]] = Field(default_factory=list)
+    semantic_results: list[dict[str, Any]] = Field(default_factory=list)
+    skill_results: list[dict[str, Any]] = Field(default_factory=list)
     novelty_retrieved_context: str = ""
     total: int
     synthesized: bool = False
