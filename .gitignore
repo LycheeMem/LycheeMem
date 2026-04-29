@@ -19,6 +19,9 @@ import
 tests
 reference
 scripts
+!openclaw-plugin/scripts/
+!openclaw-plugin/scripts/setup_openclaw_plugin.py
+!openclaw-plugin/scripts/verify_openclaw_plugin.py
 promo
 .vite
 gepa*

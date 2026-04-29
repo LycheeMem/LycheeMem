@@ -42,7 +42,7 @@
       },
       "enableProactiveConsolidation": {
         "type": "boolean",
-        "default": true
+        "default": false
       },
       "proactiveConsolidationCooldownSeconds": {
         "type": "number",
@@ -94,7 +94,7 @@
     "enableProactiveConsolidation": {
       "label": "Proactive Consolidation",
       "advanced": true,
-      "help": "Also trigger background consolidation after important new long-term knowledge appears in the conversation."
+      "help": "Also trigger background consolidation after important new long-term knowledge appears in the conversation. Disabled by default to keep normal use and benchmarks predictable."
     },
     "proactiveConsolidationCooldownSeconds": {
       "label": "Proactive Cooldown",

@@ -1,0 +1,19 @@
+{
+  "name": "lycheemem",
+  "version": "0.1.0",
+  "description": "Claude Code integration for LycheeMem structured long-term memory.",
+  "author": {
+    "name": "LycheeMem"
+  },
+  "homepage": "https://github.com/LycheeMem/LycheeMem",
+  "repository": "https://github.com/LycheeMem/LycheeMem",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "mcp",
+    "agent-memory",
+    "long-term-memory"
+  ],
+  "skills": "./skills",
+  "mcpServers": "./.mcp.json"
+}

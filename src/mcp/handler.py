@@ -31,8 +31,9 @@ MCP_SERVER_VERSION = "0.1.0"
 MCP_INSTRUCTIONS = (
     "LycheeMem is a structured long-term memory system for agents. "
     "Prefer lychee_memory_smart_search as the default recall path for agents. It performs search "
-    "and can automatically synthesize memory output in one tool call; full mode "
-    "is the recommended default for normal agent use. "
+    "and can automatically synthesize memory output in one tool call; for normal agent use, "
+    "prefer a lean response_level such as minimal so the model mainly receives background_context "
+    "instead of verbose retrieval JSON. "
     "Use lychee_memory_search to retrieve relevant historical facts, entity relationships, "
     "project context, and reusable procedural knowledge when you explicitly want the raw retrieval "
     "payload. Use lychee_memory_synthesize after lychee_memory_search during development, analysis, "
@@ -75,6 +76,7 @@ def _summarize_arguments(name: str | None, arguments: dict[str, Any]) -> dict[st
             "query": arguments.get("query"),
             "session_id": arguments.get("session_id"),
             "mode": arguments.get("mode"),
+            "response_level": arguments.get("response_level"),
             "top_k": arguments.get("top_k"),
         }
     if name == "lychee_memory_append_turn":
@@ -101,6 +103,12 @@ def _summarize_arguments(name: str | None, arguments: dict[str, Any]) -> dict[st
 
 
 LOGGER = _create_mcp_logger()
+
+
+def _serialize_result(result: Any) -> Any:
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    return result
 
 
 class LycheeMCPHandler:
@@ -162,30 +170,30 @@ class LycheeMCPHandler:
 
         try:
             if name == "lychee_memory_search":
-                result = run_memory_search(
+                result = _serialize_result(run_memory_search(
                     self.pipeline,
                     MemorySearchRequest.model_validate(arguments),
-                ).model_dump()
+                ))
             elif name == "lychee_memory_smart_search":
-                result = run_memory_smart_search(
+                result = _serialize_result(run_memory_smart_search(
                     self.pipeline,
                     MemorySmartSearchRequest.model_validate(arguments),
-                ).model_dump()
+                ))
             elif name == "lychee_memory_append_turn":
-                result = run_memory_append_turn(
+                result = _serialize_result(run_memory_append_turn(
                     self.pipeline,
                     MemoryAppendTurnRequest.model_validate(arguments),
-                ).model_dump()
+                ))
             elif name == "lychee_memory_synthesize":
-                result = run_memory_synthesize(
+                result = _serialize_result(run_memory_synthesize(
                     self.pipeline,
                     MemorySynthesizeRequest.model_validate(arguments),
-                ).model_dump()
+                ))
             elif name == "lychee_memory_consolidate":
-                result = run_memory_consolidate(
+                result = _serialize_result(run_memory_consolidate(
                     self.pipeline,
                     MemoryConsolidateRequest.model_validate(arguments),
-                ).model_dump()
+                ))
             else:
                 LOGGER.warning("call.error req_id=%s user_id=%s tool=%s error=%s", req_id, user_label, name, "Unknown tool")
                 return self._err(req_id, -32602, f"Unknown tool: {name}")

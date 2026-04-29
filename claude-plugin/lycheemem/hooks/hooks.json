@@ -1,0 +1,41 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/lycheemem_hook.py\" user-prompt-submit",
+            "timeout": 20,
+            "statusMessage": "Recalling LycheeMem context"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/lycheemem_hook.py\" stop",
+            "timeout": 30,
+            "statusMessage": "Saving LycheeMem memory"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/lycheemem_hook.py\" session-end",
+            "timeout": 20,
+            "async": true,
+            "statusMessage": "Finalizing LycheeMem memory"
+          }
+        ]
+      }
+    ]
+  }
+}

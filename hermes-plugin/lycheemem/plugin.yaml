@@ -1,0 +1,16 @@
+name: lycheemem
+version: 0.1.0
+description: "LycheeMem standalone Hermes plugin with recall, append, and consolidation hooks plus manual tools."
+author: LycheeMem
+kind: standalone
+provides_tools:
+  - lycheemem_health
+  - lycheemem_smart_search
+  - lycheemem_append_turn
+  - lycheemem_consolidate
+hooks:
+  - on_session_start
+  - pre_llm_call
+  - post_llm_call
+  - on_session_end
+  - on_session_finalize
