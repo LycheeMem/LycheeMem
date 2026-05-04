@@ -54,6 +54,7 @@ async def chat_complete(req: ChatRequest, pipeline=Depends(get_pipeline)):
             user_query=req.message,
             session_id=req.session_id,
             input_images=req.images,
+            reference_time=req.reference_time,
         )
 
         response = _build_chat_response(req.session_id, result)
@@ -134,6 +135,7 @@ async def chat_stream(req: ChatRequest, pipeline=Depends(get_pipeline)):
                 user_query=enhanced_message,  # 使用增强后的消息
                 session_id=req.session_id,
                 input_images=[],  # 传空列表，因为图片已处理
+                reference_time=req.reference_time,
             ):
                 if evt["type"] == "step":
                     step_name = evt["step"]

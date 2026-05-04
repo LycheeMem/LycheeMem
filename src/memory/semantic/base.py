@@ -53,6 +53,7 @@ class BaseSemanticMemoryEngine(ABC):
         recent_context: str = "",
         action_state: dict[str, Any] | None = None,
         retrieval_plan: dict[str, Any] | None = None,
+        reference_time: str | None = None,
     ) -> SemanticSearchResult:
         """检索与 query 相关的长期记忆。
 
@@ -64,6 +65,7 @@ class BaseSemanticMemoryEngine(ABC):
             recent_context: 最近几轮对话上下文（用于 state-conditioned retrieval）。
             action_state: 当前决策状态（可选）。
             retrieval_plan: Action-Aware Retrieval Plan 的 dict 表示（可选）。
+            reference_time: 当前查询的参考时间（ISO 格式，可选）。
 
         Returns:
             SemanticSearchResult 包含格式化 context 和 provenance。

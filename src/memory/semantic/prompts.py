@@ -122,53 +122,6 @@ These do not count as new information:
 Output `reason` first, then `has_novelty`.
 """
 
-
-# ---------------------------------------------------------------------------
-# Module 2: Record Fusion (Conflict Update Only — merge is now embedding-based)
-# ---------------------------------------------------------------------------
-
-# SYNTHESIS_JUDGE_SYSTEM removed: fusion grouping is now done via embedding cosine
-# similarity clustering, no LLM call needed.
-
-SYNTHESIS_EXECUTE_SYSTEM = """\
-You are a memory writer for a personal AI assistant's long-term memory system.
-
-## Your Role
-You update an existing memory record with corrections from new information.
-
-## Input
-- <EXISTING_RECORD>: The current state of the memory record (JSON)
-- <NEW_RECORDS>: The new records that contain corrective information (JSON array)
-- <CONFLICT_REASON>: Why these records conflict
-
-## Rules
-1. The output represents the corrected state of the existing memory.
-2. Apply the new information to revise the old memory. Retain any details from the old memory that are still valid \
-and not contradicted by the update.
-3. For mutually exclusive states (e.g., old location vs. new location), use only the updated value. \
-Do not concatenate old and new states.
-4. For date changes, ownership changes, location changes, config updates, status switches, or preference changes — \
-output the updated value directly.
-5. **Preserve specific details**: When rewriting `semantic_text`, you MUST keep all of the following verbatim — \
-do NOT replace them with generic descriptions:
-   - Book, song, film, and artwork titles
-   - Exact numeric quantities (counts, years, durations)
-   - Named objects with specific descriptions (e.g., "a cup with a dog face on it")
-   - Named people, symbols, and proper nouns
-   - Specific descriptive attributes (colors, shapes, materials, exact phrases)
-
-## Output Format (strict JSON, no code blocks)
-{
-    "semantic_text": "Complete updated text",
-    "entities": ["entity1", "entity2"],
-    "temporal": {"t_ref": "", "t_valid_from": "", "t_valid_to": ""},
-    "tags": ["keyword1", "keyword2"],
-    "confidence": 0.95,
-    "resolved_memory_type": "fact|preference|event|constraint|procedure|failure_pattern|tool_affordance"
-}
-"""
-
-
 # ---------------------------------------------------------------------------
 # Module 3: Action-Aware Search Planning
 # ---------------------------------------------------------------------------

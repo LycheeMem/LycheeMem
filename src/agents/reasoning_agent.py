@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import datetime
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -115,27 +114,6 @@ class ReasoningAgent(BaseAgent):
             messages.append({"role": "user", "content": user_query})
 
         return messages
-
-    @staticmethod
-    def _parse_reference_time(reference_time: str | None) -> datetime.datetime | None:
-        """将 reference_time 字符串解析为 datetime 对象。
-
-        接受 ISO 8601 格式，例如 "2023-12-31" 或 "2023-12-31T23:59:59Z"。
-        解析失败时返回 None（上层回退到系统时间）。
-        """
-        if not reference_time:
-            return None
-        raw = str(reference_time).strip()
-        for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S",
-                    "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
-            try:
-                dt = datetime.datetime.strptime(raw[:len(fmt) + 5], fmt)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=datetime.timezone.utc)
-                return dt
-            except ValueError:
-                continue
-        return None
 
     @classmethod
     def _select_skill_documents(

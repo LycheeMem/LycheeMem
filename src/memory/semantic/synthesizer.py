@@ -655,16 +655,6 @@ class RecordFusionEngine:
             result = "usage_pattern"
         return result
 
-    def _persist_composite(self, composite: CompositeRecord) -> None:
-        self._sqlite.upsert_synthesized(composite)
-        set_embedding_call_source("fusion_persist")
-        self._vector.upsert_synthesized(
-            composite_id=composite.composite_id,
-            memory_type=composite.memory_type,
-            semantic_text=composite.semantic_text,
-            normalized_text=composite.normalized_text,
-        )
-
     def _is_source_group_already_covered(self, source_record_ids: list[str]) -> bool:
         source_set = {s for s in source_record_ids if s}
         if len(source_set) < self._min_records:

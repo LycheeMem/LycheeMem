@@ -18,9 +18,7 @@ import uuid
 
 from src.llm.base import set_llm_call_source
 from src.embedder.base import set_embedding_call_source
-from collections import deque
 from datetime import datetime, timezone
-from difflib import SequenceMatcher
 from typing import Any
 
 from src.embedder.base import BaseEmbedder
@@ -37,19 +35,11 @@ from src.memory.semantic.models import (
     MemoryRecord,
     SearchPlan,
     UsageLog,
-    MEMORY_TYPE_CONSTRAINT,
-    MEMORY_TYPE_FAILURE_PATTERN,
-    MEMORY_TYPE_PROCEDURE,
-    MEMORY_TYPE_TOOL_AFFORDANCE,
-    SYNTH_TYPE_CONSTRAINT,
-    SYNTH_TYPE_PATTERN,
-    SYNTH_TYPE_USAGE,
 )
 from src.memory.semantic.prompts import (
     COMPOSITE_FILTER_SYSTEM,
     NOVELTY_CHECK_SYSTEM,
     RETRIEVAL_ADEQUACY_CHECK_SYSTEM,
-    RETRIEVAL_ADDITIONAL_QUERIES_SYSTEM,
     FEEDBACK_CLASSIFICATION_SYSTEM,
 )
 from src.memory.semantic.scorer import ScoredCandidate, ScoringWeights
@@ -129,6 +119,42 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         self._dedup_threshold = dedup_threshold
         self._max_reflection_rounds = max_reflection_rounds
 
+    @staticmethod
+    def _parse_reference_time(reference_time: str | None) -> datetime | None:
+        if not reference_time:
+            return None
+        raw = str(reference_time).strip()
+        if not raw:
+            return None
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            pass
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+        return None
+
+    @classmethod
+    def _append_reference_time_basis(cls, system_prompt: str, reference_time: str | None) -> str:
+        if not system_prompt:
+            return system_prompt
+        now = cls._parse_reference_time(reference_time)
+        if now is None:
+            now = datetime.now().astimezone()
+        now_utc = now.astimezone(timezone.utc)
+        return (
+            system_prompt
+            + "\n\nCurrent time basis (for resolving relative time expressions):\n"
+            + f"- Current local date: {now.date().isoformat()}\n"
+            + f"- Current UTC time: {now_utc.isoformat()}\n"
+        )
+
     # ════════════════════════════════════════════════════════════════
     # 敏感信息过滤
     # ════════════════════════════════════════════════════════════════
@@ -158,6 +184,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         recent_context: str = "",
         action_state: dict[str, Any] | None = None,
         retrieval_plan: dict[str, Any] | None = None,
+        reference_time: str | None = None,
     ) -> SemanticSearchResult:
         """三阶段 LLM 驱动检索（已替换旧的多通道打分管线）。
 
@@ -206,6 +233,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 query=query,
                 recent_context=recent_context,
                 composites=ann_composites,
+                reference_time=reference_time,
             )
             for composite in ann_composites:
                 cid = composite.composite_id
@@ -251,6 +279,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                     context_preview,
                     plan=plan,
                     action_state=action_state_obj,
+                    reference_time=reference_time,
                 )
             else:
                 adequacy = {"is_sufficient": False}
@@ -354,6 +383,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         query: str,
         recent_context: str,
         composites: list[CompositeRecord],
+        reference_time: str | None = None,
     ) -> tuple[set[str], set[str]]:
         """LLM 过滤一批 CompositeRecord，返回 (selected_ids, needs_detail_ids)。
 
@@ -385,7 +415,12 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
         set_llm_call_source("composite_filter")
         response = self._llm.generate([
-            {"role": "system", "content": COMPOSITE_FILTER_SYSTEM},
+            {
+                "role": "system",
+                "content": self._append_reference_time_basis(
+                    COMPOSITE_FILTER_SYSTEM, reference_time,
+                ),
+            },
             {"role": "user", "content": user_content},
         ])
 
@@ -836,6 +871,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         *,
         plan: SearchPlan,
         action_state: ActionState,
+        reference_time: str | None = None,
     ) -> dict[str, Any]:
         """LLM 判断当前检索结果是否足以回应查询/支撑当前动作。
 
@@ -858,7 +894,12 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         )
         set_llm_call_source("adequacy_check")
         response = self._llm.generate([
-            {"role": "system", "content": RETRIEVAL_ADEQUACY_CHECK_SYSTEM},
+            {
+                "role": "system",
+                "content": self._append_reference_time_basis(
+                    RETRIEVAL_ADEQUACY_CHECK_SYSTEM, reference_time,
+                ),
+            },
             {"role": "user", "content": user_content},
         ])
         try:
@@ -891,79 +932,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 "needs_failure_avoidance": False,
                 "needs_tool_selection_basis": False,
             }
-
-    def _generate_additional_queries(
-        self,
-        query: str,
-        context_text: str,
-        *,
-        adequacy: dict[str, Any],
-        plan: SearchPlan,
-        action_state: ActionState,
-    ) -> dict[str, Any]:
-        """LLM 根据 action-grounded 缺失信息生成补充检索查询和补充计划。
-
-        Returns:
-            A dict containing semantic/pragmatic queries and any constraints / slots / affordances that still need to be supplemented.
-        """
-        missing_info = str(adequacy.get("missing_info", ""))
-        user_content = (
-            f"<USER_QUERY>\n{query}\n</USER_QUERY>\n\n"
-            f"<SEARCH_PLAN>\n{json.dumps(self._plan_to_dict(plan), ensure_ascii=False)}\n</SEARCH_PLAN>\n\n"
-            f"<ACTION_STATE>\n{json.dumps(self._action_state_to_dict(action_state), ensure_ascii=False)}\n</ACTION_STATE>\n\n"
-            f"<CURRENT_MEMORY>\n{context_text}\n</CURRENT_MEMORY>\n\n"
-            f"<MISSING_INFO>\n{missing_info}\n</MISSING_INFO>\n\n"
-            f"<MISSING_CONSTRAINTS>\n{json.dumps(adequacy.get('missing_constraints', []), ensure_ascii=False)}\n</MISSING_CONSTRAINTS>\n\n"
-            f"<MISSING_SLOTS>\n{json.dumps(adequacy.get('missing_slots', []), ensure_ascii=False)}\n</MISSING_SLOTS>\n\n"
-            f"<MISSING_AFFORDANCES>\n{json.dumps(adequacy.get('missing_affordances', []), ensure_ascii=False)}\n</MISSING_AFFORDANCES>\n\n"
-            f"<NEEDS_FAILURE_AVOIDANCE>\n{json.dumps(bool(adequacy.get('needs_failure_avoidance', False)), ensure_ascii=False)}\n</NEEDS_FAILURE_AVOIDANCE>\n\n"
-            f"<NEEDS_TOOL_SELECTION_BASIS>\n{json.dumps(bool(adequacy.get('needs_tool_selection_basis', False)), ensure_ascii=False)}\n</NEEDS_TOOL_SELECTION_BASIS>"
-        )
-        set_llm_call_source("additional_queries")
-        response = self._llm.generate([
-            {"role": "system", "content": RETRIEVAL_ADDITIONAL_QUERIES_SYSTEM},
-            {"role": "user", "content": user_content},
-        ])
-        try:
-            parsed = json.loads(
-                response.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-            )
-            return {
-                "semantic_queries": [
-                    q for q in (parsed.get("semantic_queries") or [])
-                    if isinstance(q, str) and q.strip()
-                ],
-                "pragmatic_queries": [
-                    q for q in (parsed.get("pragmatic_queries") or [])
-                    if isinstance(q, str) and q.strip()
-                ],
-                "tool_hints": [
-                    q for q in (parsed.get("tool_hints") or [])
-                    if isinstance(q, str) and q.strip()
-                ],
-                "required_constraints": [
-                    q for q in (parsed.get("required_constraints") or [])
-                    if isinstance(q, str) and q.strip()
-                ],
-                "required_affordances": [
-                    q for q in (parsed.get("required_affordances") or [])
-                    if isinstance(q, str) and q.strip()
-                ],
-                "missing_slots": [
-                    q for q in (parsed.get("missing_slots") or [])
-                    if isinstance(q, str) and q.strip()
-                ],
-            }
-        except (json.JSONDecodeError, ValueError):
-            pass
-        return {
-            "semantic_queries": [],
-            "pragmatic_queries": [],
-            "tool_hints": [],
-            "required_constraints": [],
-            "required_affordances": [],
-            "missing_slots": [],
-        }
 
     def _check_novelty(
         self, turns: list[dict[str, Any]], retrieved_context: str,
@@ -1066,98 +1034,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         }
 
     @staticmethod
-    def _normalize_tree_retrieval_plan(
-        plan: SearchPlan,
-        action_state: ActionState,
-        *,
-        focus_terms: list[str] | None = None,
-        adequacy: dict[str, Any] | None = None,
-    ) -> SearchPlan:
-        valid_modes = {"root_only", "balanced", "descend"}
-        if plan.tree_retrieval_mode not in valid_modes:
-            plan.tree_retrieval_mode = "balanced"
-
-        adequacy = adequacy or {}
-        detail_signals = any([
-            focus_terms,
-            plan.pragmatic_queries,
-            plan.required_constraints,
-            plan.required_affordances,
-            plan.missing_slots,
-            action_state.missing_slots,
-            action_state.known_constraints,
-            action_state.failure_signal,
-            adequacy.get("missing_constraints"),
-            adequacy.get("missing_affordances"),
-            adequacy.get("missing_slots"),
-            adequacy.get("needs_failure_avoidance"),
-            adequacy.get("needs_tool_selection_basis"),
-        ])
-
-        if plan.mode == "answer" and not detail_signals:
-            plan.tree_retrieval_mode = "root_only"
-            plan.tree_expansion_depth = 0
-            plan.include_leaf_records = False
-            plan.include_episodic_context = False
-            plan.episodic_turn_window = 0
-            return plan
-
-        if plan.mode == "mixed":
-            if plan.tree_retrieval_mode == "root_only":
-                plan.tree_retrieval_mode = "balanced"
-            if detail_signals and adequacy.get("needs_failure_avoidance"):
-                plan.tree_retrieval_mode = "descend"
-            plan.tree_expansion_depth = max(
-                1,
-                min(
-                    int(plan.tree_expansion_depth or 1),
-                    3 if plan.tree_retrieval_mode == "descend" else 2,
-                ),
-            )
-            plan.include_leaf_records = bool(plan.include_leaf_records or detail_signals)
-            plan.include_episodic_context = bool(
-                plan.include_episodic_context
-                or plan.include_leaf_records
-                or detail_signals
-                or adequacy.get("missing_info")
-            )
-            plan.episodic_turn_window = max(0, min(int(plan.episodic_turn_window or 1), 2))
-            return plan
-
-        plan.tree_retrieval_mode = "descend"
-        plan.tree_expansion_depth = max(2, min(int(plan.tree_expansion_depth or 2), 3))
-        plan.include_leaf_records = True
-        plan.include_episodic_context = True
-        plan.episodic_turn_window = max(1, min(int(plan.episodic_turn_window or 1), 2))
-        return plan
-
-    @staticmethod
-    def _merge_action_state_with_plan(
-        action_state: ActionState,
-        plan: SearchPlan,
-    ) -> ActionState:
-        return ActionState(
-            current_subgoal=action_state.current_subgoal,
-            tentative_action=action_state.tentative_action,
-            last_tool_name=action_state.last_tool_name,
-            last_tool_result=action_state.last_tool_result,
-            missing_slots=CompactSemanticEngine._merge_unique(
-                action_state.missing_slots,
-                plan.missing_slots,
-            ),
-            known_constraints=CompactSemanticEngine._merge_unique(
-                action_state.known_constraints,
-                plan.required_constraints,
-            ),
-            available_tools=CompactSemanticEngine._merge_unique(
-                action_state.available_tools,
-                plan.tool_hints,
-            ),
-            failure_signal=action_state.failure_signal,
-            token_budget=action_state.token_budget,
-            recent_context_excerpt=action_state.recent_context_excerpt,
-        )
-
     @staticmethod
     def _merge_unique(primary: list[str], secondary: list[str]) -> list[str]:
         seen: set[str] = set()
@@ -1172,81 +1048,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             seen.add(key)
             merged.append(item)
         return merged
-
-    @staticmethod
-    def _derive_record_type_bias(
-        *,
-        plan: SearchPlan,
-        action_state: ActionState,
-        adequacy: dict[str, Any] | None = None,
-    ) -> list[str]:
-        adequacy = adequacy or {}
-        bias: list[str] = []
-
-        if plan.mode in {"action", "mixed"}:
-            bias.extend([MEMORY_TYPE_PROCEDURE, MEMORY_TYPE_CONSTRAINT])
-
-        missing_constraints = adequacy.get("missing_constraints") or plan.required_constraints
-        if missing_constraints:
-            bias.extend([MEMORY_TYPE_CONSTRAINT, MEMORY_TYPE_PROCEDURE])
-
-        missing_slots = adequacy.get("missing_slots") or plan.missing_slots or action_state.missing_slots
-        if missing_slots:
-            bias.extend([MEMORY_TYPE_PROCEDURE, MEMORY_TYPE_TOOL_AFFORDANCE])
-
-        missing_affordances = adequacy.get("missing_affordances") or plan.required_affordances
-        if missing_affordances or adequacy.get("needs_tool_selection_basis"):
-            bias.extend([MEMORY_TYPE_TOOL_AFFORDANCE, MEMORY_TYPE_PROCEDURE, MEMORY_TYPE_CONSTRAINT])
-
-        if adequacy.get("needs_failure_avoidance") or action_state.failure_signal:
-            bias.extend([MEMORY_TYPE_FAILURE_PATTERN, MEMORY_TYPE_CONSTRAINT, MEMORY_TYPE_PROCEDURE])
-
-        return CompactSemanticEngine._merge_unique(bias, [])
-
-    @staticmethod
-    def _derive_synth_type_bias(
-        *,
-        plan: SearchPlan,
-        action_state: ActionState,
-        adequacy: dict[str, Any] | None = None,
-    ) -> list[str]:
-        adequacy = adequacy or {}
-        bias: list[str] = []
-
-        if plan.mode in {"action", "mixed"}:
-            bias.extend([SYNTH_TYPE_USAGE, SYNTH_TYPE_CONSTRAINT])
-
-        missing_constraints = adequacy.get("missing_constraints") or plan.required_constraints
-        if missing_constraints:
-            bias.extend([SYNTH_TYPE_CONSTRAINT, SYNTH_TYPE_USAGE])
-
-        missing_slots = adequacy.get("missing_slots") or plan.missing_slots or action_state.missing_slots
-        if missing_slots:
-            bias.extend([SYNTH_TYPE_USAGE, SYNTH_TYPE_PATTERN])
-
-        missing_affordances = adequacy.get("missing_affordances") or plan.required_affordances
-        if missing_affordances or adequacy.get("needs_tool_selection_basis"):
-            bias.extend([SYNTH_TYPE_USAGE, SYNTH_TYPE_PATTERN])
-
-        if adequacy.get("needs_failure_avoidance") or action_state.failure_signal:
-            bias.extend([SYNTH_TYPE_PATTERN, SYNTH_TYPE_CONSTRAINT, SYNTH_TYPE_USAGE])
-
-        return CompactSemanticEngine._merge_unique(bias, [])
-
-    @staticmethod
-    def _build_reflection_scoring_context(
-        *,
-        adequacy: dict[str, Any],
-        action_state: ActionState,
-    ) -> dict[str, Any]:
-        return {
-            "missing_constraints": list(adequacy.get("missing_constraints") or []),
-            "missing_slots": list(adequacy.get("missing_slots") or []),
-            "missing_affordances": list(adequacy.get("missing_affordances") or []),
-            "needs_failure_avoidance": bool(adequacy.get("needs_failure_avoidance", False)),
-            "needs_tool_selection_basis": bool(adequacy.get("needs_tool_selection_basis", False)),
-            "available_tools": list(action_state.available_tools),
-        }
 
     @staticmethod
     def _record_to_candidate(record: MemoryRecord) -> dict[str, Any]:
@@ -1293,16 +1094,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             "source_record_ids": list(record.source_record_ids),
             "child_composite_ids": list(record.child_composite_ids),
         }
-
-    @staticmethod
-    def _cosine_similarity(a: list[float], b: list[float]) -> float:
-        """余弦相似度。"""
-        dot = sum(x * y for x, y in zip(a, b))
-        norm_a = sum(x * x for x in a) ** 0.5
-        norm_b = sum(x * x for x in b) ** 0.5
-        if norm_a == 0 or norm_b == 0:
-            return 0.0
-        return dot / (norm_a * norm_b)
 
     @staticmethod
     def _merge_temporal(

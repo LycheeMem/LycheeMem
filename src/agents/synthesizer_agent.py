@@ -44,6 +44,7 @@ class SynthesizerAgent(BaseAgent):
         user_query: str,
         retrieved_graph_memories: list[dict[str, Any]] | None = None,
         retrieved_skills: list[dict[str, Any]] | None = None,
+        reference_time: str | None = None,
         **kwargs,
     ) -> dict[str, Any]:
         """将多源检索结果整合为 background_context + 技能复用计划。
@@ -81,6 +82,7 @@ class SynthesizerAgent(BaseAgent):
             user_content,
             system_content=self.prompt_template,
             add_time_basis=True,
+            now=self._parse_reference_time(reference_time),
         )
 
         try:

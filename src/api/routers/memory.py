@@ -449,6 +449,7 @@ def run_memory_search(
         session_id=req.session_id,
         top_k=req.top_k,
         include_skills=req.include_skills,
+        reference_time=req.reference_time,
         **search_runtime,
     )
 
@@ -495,6 +496,7 @@ def run_memory_synthesize(
         user_query=req.user_query,
         retrieved_graph_memories=semantic_results,
         retrieved_skills=req.skill_results,
+        reference_time=req.reference_time,
     )
 
     provenance_raw = result.get("provenance", [])
@@ -556,6 +558,7 @@ def run_memory_smart_search(
             session_id=req.session_id,
             include_graph=req.include_graph,
             include_skills=req.include_skills,
+            reference_time=req.reference_time,
         ),
     )
 
@@ -590,6 +593,7 @@ def run_memory_smart_search(
             graph_results=search_result.graph_results,
             semantic_results=search_result.semantic_results,
             skill_results=search_result.skill_results,
+            reference_time=req.reference_time,
         ),
     )
     payload: dict[str, Any] = {
