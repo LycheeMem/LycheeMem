@@ -12,6 +12,7 @@ curr_dir = Path(__file__).parent
 def main():
     parser = argparse.ArgumentParser(description="LycheeMem: Compact, efficient, and extensible long-term memory for LLM agents")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload for development")
+    parser.add_argument("--port", type=int, default=8000, help="Port for the API server")
     args = parser.parse_args()
 
     # 创建data/
@@ -32,9 +33,9 @@ def main():
     app = create_app(pipeline)
 
     host = settings.api_host
-    port = settings.api_port
+    port = args.port or settings.api_port
 
-    print(f"🚀 LycheeMem server starting on http://{host}:{port}")
+    print(f"   LycheeMem server starting on http://{host}:{port}")
     print(f"   LLM:  {settings.llm_model}")
     print(f"   Embed:{settings.embedding_model}")
     print(f"   Docs: http://{host}:{port}/docs")
