@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     #   openai/<custom-model>（配合 embedding_api_base 使用）
     #   gemini/gemini-embedding-001
     embedding_model: str = "openai/text-embedding-3-small"
-    embedding_dim: int = 1536
+    embedding_dim: int = 0  # 0 = 自动探测（启动时调用一次 API 获取实际维度）
     embedding_api_key: str = ""  # 可选
     embedding_api_base: str = ""  # 可选
 

@@ -25,6 +25,22 @@ from src.memory.working.session_store import InMemorySessionStore
 logger = logging.getLogger(__name__)
 
 
+def _resolve_embedding_dim(embedder: BaseEmbedder, settings) -> int:
+    """返回实际 embedding_dim；若配置为 0，则通过一次真实 API 调用自动探测。"""
+    dim = getattr(settings, "embedding_dim", 0) or 0
+    if dim > 0:
+        return dim
+    logger.info("embedding_dim 未配置，自动探测中…")
+    try:
+        vec = embedder.embed_query("probe")
+        dim = len(vec)
+        logger.info("自动探测 embedding_dim = %d", dim)
+    except Exception as exc:
+        logger.warning("自动探测 embedding_dim 失败，回退到变长模式: %s", exc)
+        dim = 0
+    return dim
+
+
 def _create_session_store(settings=None):
     """根据配置创建会话存储。"""
     backend = getattr(settings, "session_backend", "memory") if settings else "memory"
@@ -56,11 +72,12 @@ def create_pipeline(
     min_recent_turns = settings.min_recent_turns
     skill_top_k = settings.skill_top_k
     session_store = _create_session_store(settings)
+    embedding_dim = _resolve_embedding_dim(embedder, settings)
     skill_store = SQLiteSkillStore(
         db_path=getattr(settings, "skill_db_path", "data/skill_store.db"),
         vector_db_path=getattr(settings, "skill_vector_db_path", "data/skill_vector"),
         embedder=embedder,
-        embedding_dim=getattr(settings, "embedding_dim", 1536),
+        embedding_dim=embedding_dim,
     )
 
     compressor = WorkingMemoryCompressor(
@@ -82,7 +99,7 @@ def create_pipeline(
         dedup_threshold=getattr(settings, "compact_dedup_threshold", 0.85),
         synthesis_min_records=getattr(settings, "compact_synthesis_min_records", 2),
         synthesis_similarity=getattr(settings, "compact_synthesis_similarity", 0.75),
-        embedding_dim=getattr(settings, "embedding_dim", 1536),
+        embedding_dim=embedding_dim,
     )
     # 启动时补全尚未向量化的原始对话 turns（增量，已索引的跳过）
     semantic_engine.index_unvectorized_turns()
@@ -155,7 +172,7 @@ def create_pipeline(
         db_path=getattr(global_settings, "visual_memory_db_path", "data/visual_memory.db"),
         vector_db_path=getattr(global_settings, "visual_vector_db_path", "data/visual_vector"),
         image_storage_path=getattr(global_settings, "visual_image_path", "data/visual_memory"),
-        embedding_dim=getattr(global_settings, "embedding_dim", 1024),
+        embedding_dim=_resolve_embedding_dim(embedder, global_settings),
         embedder=embedder,  # 文本 embedder（向后兼容）
         multimodal_embedder=multimodal_embedder,  # 多模态 embedder（新增）
     )
