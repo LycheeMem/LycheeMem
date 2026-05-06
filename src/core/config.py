@@ -58,6 +58,13 @@ class Settings(BaseSettings):
     compact_dedup_threshold: float = 0.85
     compact_synthesis_min_records: int = 2
     compact_synthesis_similarity: float = 0.75
+    experimental_transformer_rerank: bool = False
+    transformer_rerank_model_path: str = ""
+    transformer_rerank_max_replacements: int = 1
+    transformer_rerank_merge_margin: float = 0.3
+    transformer_rerank_min_engine_score_delta: float = -1.0
+    transformer_rerank_wide_top_k: int = 50
+    transformer_rerank_device: str = "auto"
 
     # ─── Skill Store (SQLite + LanceDB) ───
     skill_db_path: str = "data/skill_store.db"

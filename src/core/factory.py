@@ -83,6 +83,29 @@ def create_pipeline(
         synthesis_min_records=getattr(settings, "compact_synthesis_min_records", 2),
         synthesis_similarity=getattr(settings, "compact_synthesis_similarity", 0.75),
         embedding_dim=getattr(settings, "embedding_dim", 1536),
+        experimental_transformer_rerank=getattr(
+            settings,
+            "experimental_transformer_rerank",
+            False,
+        ),
+        transformer_rerank_model_path=getattr(settings, "transformer_rerank_model_path", ""),
+        transformer_rerank_max_replacements=getattr(
+            settings,
+            "transformer_rerank_max_replacements",
+            1,
+        ),
+        transformer_rerank_merge_margin=getattr(
+            settings,
+            "transformer_rerank_merge_margin",
+            0.3,
+        ),
+        transformer_rerank_min_engine_score_delta=getattr(
+            settings,
+            "transformer_rerank_min_engine_score_delta",
+            -1.0,
+        ),
+        transformer_rerank_wide_top_k=getattr(settings, "transformer_rerank_wide_top_k", 50),
+        transformer_rerank_device=getattr(settings, "transformer_rerank_device", "auto"),
     )
     # 启动时补全尚未向量化的原始对话 turns（增量，已索引的跳过）
     semantic_engine.index_unvectorized_turns()

@@ -11,6 +11,7 @@ node_modules
 data
 appdata
 .ruff_cache
+.cache/
 .github
 dist
 logs

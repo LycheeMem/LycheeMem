@@ -25,6 +25,12 @@ dependencies = [
     "ruff>=0.8.0",
 ]
 
+[project.optional-dependencies]
+rerank = [
+    "torch>=2.0.0",
+    "transformers>=4.40.0",
+]
+
 
 [build-system]
 requires = ["hatchling"]

@@ -20,6 +20,7 @@ class SemanticSearchResult:
     provenance: list[dict[str, Any]]  # 溯源信息列表
     retrieval_plan: dict[str, Any] = field(default_factory=dict)
     action_state: dict[str, Any] = field(default_factory=dict)
+    diagnostics: dict[str, Any] = field(default_factory=dict)
     usage_log_id: str = ""
     mode: str = "answer"
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import uuid
 
@@ -52,7 +53,10 @@ from src.memory.semantic.prompts import (
 from src.memory.semantic.scorer import ScoredCandidate, ScoringWeights
 from src.memory.semantic.sqlite_store import SQLiteSemanticStore
 from src.memory.semantic.synthesizer import RecordFusionEngine
+from src.memory.semantic.transformer_reranker import TransformerReranker
 from src.memory.semantic.vector_index import LanceVectorIndex
+
+logger = logging.getLogger("src.memory.semantic.engine")
 
 # ──────────────────────────────────────────────────────────────────
 # 敏感信息模式：匹配到任意一项即跳过写入长期记忆
@@ -102,6 +106,13 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         scorer_weights: ScoringWeights | None = None,
         embedding_dim: int = 0,
         max_reflection_rounds: int = 2,
+        experimental_transformer_rerank: bool = False,
+        transformer_rerank_model_path: str = "",
+        transformer_rerank_max_replacements: int = 1,
+        transformer_rerank_merge_margin: float = 0.3,
+        transformer_rerank_min_engine_score_delta: float = -1.0,
+        transformer_rerank_wide_top_k: int = 50,
+        transformer_rerank_device: str = "auto",
     ):
         self._llm = llm
         self._embedder = embedder
@@ -125,6 +136,198 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
         self._dedup_threshold = dedup_threshold
         self._max_reflection_rounds = max_reflection_rounds
+        self._experimental_transformer_rerank = bool(experimental_transformer_rerank)
+        self._transformer_rerank_model_path = str(transformer_rerank_model_path or "")
+        self._transformer_rerank_max_replacements = max(0, int(transformer_rerank_max_replacements))
+        self._transformer_rerank_merge_margin = max(0.0, float(transformer_rerank_merge_margin))
+        self._transformer_rerank_min_engine_score_delta = float(
+            transformer_rerank_min_engine_score_delta,
+        )
+        self._transformer_rerank_wide_top_k = max(1, int(transformer_rerank_wide_top_k))
+        self._transformer_rerank_device = str(transformer_rerank_device or "auto")
+        self._transformer_reranker: TransformerReranker | None = None
+        self._transformer_rerank_load_error = ""
+        if self._experimental_transformer_rerank:
+            if not self._transformer_rerank_model_path:
+                self._transformer_rerank_load_error = "missing_model_path"
+                self._experimental_transformer_rerank = False
+            else:
+                try:
+                    self._transformer_reranker = TransformerReranker(
+                        model_path=self._transformer_rerank_model_path,
+                        device=self._transformer_rerank_device,
+                    )
+                except Exception as exc:
+                    self._transformer_rerank_load_error = f"{type(exc).__name__}: {exc}"
+                    logger.warning(
+                        "experimental transformer rerank disabled; failed to load model %s: %s",
+                        self._transformer_rerank_model_path,
+                        exc,
+                    )
+                    self._experimental_transformer_rerank = False
+
+    def _apply_experimental_transformer_rerank(
+        self,
+        query: str,
+        candidates: list[ScoredCandidate],
+        *,
+        top_k: int,
+        diagnostics: dict[str, Any],
+    ) -> None:
+        """Apply the default-off local transformer reranker before top-k truncation."""
+        diagnostics["transformer_rerank_enabled"] = bool(self._experimental_transformer_rerank)
+        diagnostics["transformer_rerank_model_path"] = self._transformer_rerank_model_path
+        diagnostics["transformer_rerank_device"] = self._transformer_rerank_device
+        diagnostics["transformer_rerank_available"] = False
+        diagnostics["transformer_rerank_fired"] = False
+        diagnostics["transformer_rerank_reason"] = "disabled"
+        diagnostics["transformer_rerank_wide_count"] = 0
+        diagnostics["transformer_rerank_replacements"] = 0
+        diagnostics["transformer_rerank_added_ids"] = []
+        diagnostics["transformer_rerank_removed_ids"] = []
+        diagnostics["transformer_rerank_scores"] = {}
+        diagnostics["transformer_rerank_latency_ms"] = 0.0
+
+        if not self._experimental_transformer_rerank:
+            if self._transformer_rerank_load_error:
+                diagnostics["transformer_rerank_reason"] = self._transformer_rerank_load_error
+            return
+        if not self._transformer_rerank_model_path:
+            diagnostics["transformer_rerank_reason"] = "missing_model_path"
+            return
+        if self._transformer_reranker is None:
+            diagnostics["transformer_rerank_reason"] = "load_failed"
+            if self._transformer_rerank_load_error:
+                diagnostics["transformer_rerank_error"] = self._transformer_rerank_load_error
+            return
+        if not candidates:
+            diagnostics["transformer_rerank_reason"] = "empty_baseline"
+            return
+
+        diagnostics["transformer_rerank_available"] = True
+        baseline_top = sorted(candidates, key=lambda c: c.final_score, reverse=True)[:top_k]
+        baseline_id_list = [candidate.id for candidate in baseline_top if candidate.id]
+        if not baseline_id_list:
+            diagnostics["transformer_rerank_reason"] = "empty_baseline"
+            return
+
+        try:
+            wide_candidates = self._fallback_record_search(
+                query=query,
+                top_k=max(self._transformer_rerank_wide_top_k, top_k),
+            )
+        except Exception as exc:
+            diagnostics["transformer_rerank_reason"] = "wide_search_failed"
+            diagnostics["transformer_rerank_error"] = str(exc)
+            return
+
+        candidate_by_id = {
+            str(candidate.get("id") or "").strip(): candidate
+            for candidate in wide_candidates
+            if str(candidate.get("id") or "").strip()
+        }
+        for candidate in baseline_top:
+            if candidate.source == "record" and candidate.id not in candidate_by_id:
+                candidate_by_id[candidate.id] = dict(candidate.data or {})
+
+        wide_candidates = list(candidate_by_id.values())
+        diagnostics["transformer_rerank_wide_count"] = len(wide_candidates)
+        if not wide_candidates:
+            diagnostics["transformer_rerank_reason"] = "empty_wide_candidates"
+            return
+
+        decision = self._transformer_reranker.decide(
+            query=query,
+            baseline_id_list=baseline_id_list,
+            wide_candidates=wide_candidates,
+            top_k=top_k,
+            max_replacements=self._transformer_rerank_max_replacements,
+            merge_margin=self._transformer_rerank_merge_margin,
+        )
+        diagnostics["transformer_rerank_fired"] = decision.fired
+        diagnostics["transformer_rerank_reason"] = decision.reason
+        diagnostics["transformer_rerank_replacements"] = decision.replacements
+        diagnostics["transformer_rerank_added_ids"] = list(decision.added_ids)
+        diagnostics["transformer_rerank_removed_ids"] = list(decision.removed_ids)
+        diagnostics["transformer_rerank_scores"] = dict(decision.scores)
+        diagnostics["transformer_rerank_latency_ms"] = decision.latency_ms
+        if not decision.fired or not decision.final_ids:
+            return
+
+        if (
+            self._transformer_rerank_min_engine_score_delta > -1.0
+            and decision.added_ids
+            and decision.removed_ids
+        ):
+            rejected = False
+            score_pairs: list[dict[str, Any]] = []
+            for added_id, removed_id in zip(decision.added_ids, decision.removed_ids, strict=False):
+                added_data = candidate_by_id.get(added_id) or {}
+                removed_data = candidate_by_id.get(removed_id) or {}
+                try:
+                    added_score = float(added_data.get("semantic_distance") or 1.0)
+                except (TypeError, ValueError):
+                    added_score = 1.0
+                try:
+                    removed_score = float(removed_data.get("semantic_distance") or 1.0)
+                except (TypeError, ValueError):
+                    removed_score = 1.0
+                delta = removed_score - added_score
+                score_pairs.append({
+                    "added_id": added_id,
+                    "removed_id": removed_id,
+                    "added_distance": round(added_score, 4),
+                    "removed_distance": round(removed_score, 4),
+                    "delta": round(delta, 4),
+                })
+                if delta < self._transformer_rerank_min_engine_score_delta:
+                    rejected = True
+            diagnostics["transformer_rerank_engine_score_pairs"] = score_pairs
+            diagnostics["transformer_rerank_min_engine_score_delta"] = (
+                self._transformer_rerank_min_engine_score_delta
+            )
+            if rejected:
+                diagnostics["transformer_rerank_fired"] = False
+                diagnostics["transformer_rerank_reason"] = "engine_score_guard_rejected"
+                diagnostics["transformer_rerank_replacements"] = 0
+                diagnostics["transformer_rerank_added_ids"] = []
+                diagnostics["transformer_rerank_removed_ids"] = []
+                return
+
+        existing_by_id = {candidate.id: candidate for candidate in candidates}
+        for rank, candidate_id in enumerate(decision.final_ids[:top_k], 1):
+            forced_score = 1.25 - rank * 0.0001
+            model_score = float(decision.scores.get(candidate_id, 0.0))
+            existing = existing_by_id.get(candidate_id)
+            if existing is not None:
+                original_score = float(existing.final_score or 0.0)
+                existing.score_breakdown = dict(existing.score_breakdown or {})
+                existing.score_breakdown.update({
+                    "transformer_rerank_selected": 1.0,
+                    "transformer_rerank_original_score": original_score,
+                    "transformer_rerank_model_score": model_score,
+                })
+                existing.final_score = forced_score
+                continue
+
+            data = candidate_by_id.get(candidate_id)
+            if not data:
+                continue
+            score_breakdown = {
+                "fallback_search": 1.0,
+                "transformer_rerank_selected": 1.0,
+                "transformer_rerank_original_score": 0.7,
+                "transformer_rerank_model_score": model_score,
+            }
+            new_candidate = ScoredCandidate(
+                id=candidate_id,
+                source=str(data.get("source") or "record"),
+                final_score=forced_score,
+                score_breakdown=score_breakdown,
+                data=data,
+            )
+            candidates.append(new_candidate)
+            existing_by_id[candidate_id] = new_candidate
 
     # ════════════════════════════════════════════════════════════════
     # 敏感信息过滤
@@ -165,6 +368,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         """
         action_state_obj = self._dict_to_action_state(action_state)
         top_k = max(1, int(top_k or 5))
+        diagnostics: dict[str, Any] = {}
 
         if retrieval_plan:
             plan = self._dict_to_plan(retrieval_plan)
@@ -308,6 +512,13 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             focus_terms=[],
         )
 
+        self._apply_experimental_transformer_rerank(
+            query,
+            selected_candidates,
+            top_k=top_k,
+            diagnostics=diagnostics,
+        )
+
         # 按 final_score 降序排列，取 top_k
         selected_candidates.sort(key=lambda c: c.final_score, reverse=True)
         top = selected_candidates[:top_k]
@@ -341,6 +552,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             provenance=provenance,
             retrieval_plan=self._plan_to_dict(plan),
             action_state=self._action_state_to_dict(action_state_obj),
+            diagnostics=diagnostics,
             usage_log_id=log_id,
             mode=plan.mode,
         )
