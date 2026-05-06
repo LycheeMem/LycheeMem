@@ -14,12 +14,19 @@ model 格式遵循 litellm 约定（参考 https://docs.litellm.ai/docs/embeddin
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
 import litellm
 
 from src.embedder.base import BaseEmbedder
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_TIMEOUT_SECONDS = 60.0
+_DEFAULT_RETRY_ATTEMPTS = 10
+_DEFAULT_RETRY_BACKOFF_SECONDS = 1.0
 
 # litellm 全局配置在 src.llm.litellm_llm 中统一设置；
 # 此处仅保留一个保底 suppress，确保单独使用 Embedder 时也生效。
@@ -48,6 +55,9 @@ class LiteLLMEmbedder(BaseEmbedder):
         self._dimensions = dimensions
         self._task_type = task_type
         self._query_task_type = query_task_type
+        self._timeout = _DEFAULT_TIMEOUT_SECONDS
+        self._retry_attempts = _DEFAULT_RETRY_ATTEMPTS
+        self._retry_backoff_seconds = _DEFAULT_RETRY_BACKOFF_SECONDS
         self._extra = extra_kwargs
         # task_type 仅对 Gemini / Vertex AI 有意义，其他 provider 不传。
         _m = model.lower()
@@ -59,6 +69,8 @@ class LiteLLMEmbedder(BaseEmbedder):
             kwargs["api_key"] = self._api_key
         if self._api_base:
             kwargs["api_base"] = self._api_base
+        if self._timeout is not None and self._timeout > 0:
+            kwargs["timeout"] = self._timeout
         if self._dimensions is not None:
             kwargs["dimensions"] = self._dimensions
         if task_type and self._supports_task_type:
@@ -71,6 +83,24 @@ class LiteLLMEmbedder(BaseEmbedder):
         return kwargs
 
     @staticmethod
+    def _is_retryable_exception(exc: Exception) -> bool:
+        """Return False for client/config errors that retrying will not fix."""
+        status_code = getattr(exc, "status_code", None)
+        if status_code is None:
+            response = getattr(exc, "response", None)
+            status_code = getattr(response, "status_code", None)
+        try:
+            code = int(status_code)
+        except (TypeError, ValueError):
+            return True
+        return code not in {400, 401, 403, 404, 422}
+
+    def _sleep_before_retry(self, attempt: int) -> None:
+        if self._retry_backoff_seconds <= 0:
+            return
+        time.sleep(self._retry_backoff_seconds * (2 ** max(0, attempt - 1)))
+
+    @staticmethod
     def _extract_embedding(item: Any) -> list[float]:
         """兼容 litellm 返回 dict 或对象两种格式。"""
         if isinstance(item, dict):
@@ -79,12 +109,33 @@ class LiteLLMEmbedder(BaseEmbedder):
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """批量生成 embedding（文档侧）。"""
+        if not texts:
+            return []
         t0 = time.perf_counter()
-        resp = litellm.embedding(
-            model=self.model,
-            input=texts,
-            **self._build_kwargs(task_type=self._task_type),
-        )
+        kwargs = self._build_kwargs(task_type=self._task_type)
+        last_exc: Exception | None = None
+        for attempt in range(1, self._retry_attempts + 1):
+            try:
+                resp = litellm.embedding(
+                    model=self.model,
+                    input=texts,
+                    **kwargs,
+                )
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= self._retry_attempts or not self._is_retryable_exception(exc):
+                    raise
+                logger.warning(
+                    "Embedding call failed; retrying model=%s attempt=%d/%d error=%s",
+                    self.model,
+                    attempt,
+                    self._retry_attempts,
+                    exc,
+                )
+                self._sleep_before_retry(attempt)
+        else:
+            raise last_exc or RuntimeError("Embedding call failed")
         latency_ms = (time.perf_counter() - t0) * 1000
         usage = getattr(resp, "usage", None)
         tokens = int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
@@ -94,11 +145,30 @@ class LiteLLMEmbedder(BaseEmbedder):
     def embed_query(self, text: str) -> list[float]:
         """单条查询 embedding（查询侧）。"""
         t0 = time.perf_counter()
-        resp = litellm.embedding(
-            model=self.model,
-            input=[text],
-            **self._build_kwargs(task_type=self._query_task_type),
-        )
+        kwargs = self._build_kwargs(task_type=self._query_task_type)
+        last_exc: Exception | None = None
+        for attempt in range(1, self._retry_attempts + 1):
+            try:
+                resp = litellm.embedding(
+                    model=self.model,
+                    input=[text],
+                    **kwargs,
+                )
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= self._retry_attempts or not self._is_retryable_exception(exc):
+                    raise
+                logger.warning(
+                    "Embedding query failed; retrying model=%s attempt=%d/%d error=%s",
+                    self.model,
+                    attempt,
+                    self._retry_attempts,
+                    exc,
+                )
+                self._sleep_before_retry(attempt)
+        else:
+            raise last_exc or RuntimeError("Embedding query failed")
         latency_ms = (time.perf_counter() - t0) * 1000
         usage = getattr(resp, "usage", None)
         tokens = int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
