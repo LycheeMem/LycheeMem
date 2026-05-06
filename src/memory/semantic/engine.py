@@ -9,16 +9,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
 import uuid
 
 from src.llm.base import set_llm_call_source
-from collections import deque
 from datetime import datetime, timezone
-from difflib import SequenceMatcher
 from typing import Any
 
 from src.embedder.base import BaseEmbedder

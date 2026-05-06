@@ -8,7 +8,8 @@ unless it is explicitly enabled by configuration.
 
 The reranker loads a local sequence-classification checkpoint and scores a wider
 memory candidate pool. It may replace a small number of baseline top-k results
-when the model score is stronger than the weakest selected candidate.
+when an outside candidate's transformer score is higher than the weakest
+baseline candidate's transformer score by at least `merge_margin`.
 
 The current v0 policy is conservative:
 
@@ -73,3 +74,6 @@ to the local directory.
 
 The validated v0 checkpoint used during development was based on
 `prajjwal1/bert-tiny` and trained for LoCoMo memory evidence reranking.
+
+This branch provides the runtime hook and configuration surface. It does not
+bundle a model checkpoint or enable the reranker by default.
