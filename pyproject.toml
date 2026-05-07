@@ -26,6 +26,13 @@ dependencies = [
     "pillow>=9.0.0",
 ]
 
+[project.optional-dependencies]
+# 本地 Embedding 支持（sentence-transformers）
+local-embed = [
+    "sentence-transformers>=3.0.0",
+    "torch>=2.0.0",
+]
+
 
 [build-system]
 requires = ["hatchling"]

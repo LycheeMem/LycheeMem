@@ -26,10 +26,22 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_embedding_dim(embedder: BaseEmbedder, settings) -> int:
-    """返回实际 embedding_dim；若配置为 0，则通过一次真实 API 调用自动探测。"""
+    """返回实际 embedding_dim；若配置为 0，则自动探测。
+    
+    本地 SentenceTransformerEmbedder 有 dimension 属性，优先读取；
+    否则通过一次真实 API 调用探测。
+    """
     dim = getattr(settings, "embedding_dim", 0) or 0
     if dim > 0:
         return dim
+    # 本地模型：直接读属性（会触发懒加载，但无网络调用）
+    if hasattr(embedder, "dimension"):
+        try:
+            dim = int(embedder.dimension)
+            logger.info("本地模型 embedding_dim = %d", dim)
+            return dim
+        except Exception:
+            pass
     logger.info("embedding_dim 未配置，自动探测中…")
     try:
         vec = embedder.embed_query("probe")

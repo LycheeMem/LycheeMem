@@ -54,6 +54,16 @@ def _create_llm(settings):
 
 
 def _create_embedder(settings):
+    # 本地模式：使用 sentence-transformers，不调用远程 API
+    if getattr(settings, "embedding_local", False):
+        from src.embedder.st_embedder import SentenceTransformerEmbedder
+
+        return SentenceTransformerEmbedder(
+            model_name=settings.embedding_model,
+            device=settings.embedding_device,
+            dimensions=settings.embedding_dim
+        )
+
     from src.embedder.litellm_embedder import LiteLLMEmbedder
 
     return LiteLLMEmbedder(

@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     embedding_api_key: str = ""  # 可选
     embedding_api_base: str = ""  # 可选
 
+    # ─── 本地 Embedding（sentence-transformers）───
+    # 设为 true 时使用本地模型，EMBEDDING_MODEL 填 HuggingFace 模型路径
+    # 例如：Qwen/Qwen3-Embedding-0.6B、BAAI/bge-m3、sentence-transformers/all-MiniLM-L6-v2
+    embedding_local: bool = False
+    embedding_device: str = "auto"          # auto / cpu / cuda / mps
+
     wm_max_tokens: int = 128000
     wm_warn_threshold: float = 0.7
     wm_block_threshold: float = 0.9
