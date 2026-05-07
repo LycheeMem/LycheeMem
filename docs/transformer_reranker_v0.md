@@ -4,6 +4,26 @@ This document describes the optional transformer reranker for semantic memory
 search. The feature is default-off and does not change normal memory search
 unless it is explicitly enabled by configuration.
 
+## Status
+
+This is an experimental learned memory-selection feature. It is intended for
+controlled evaluation, not default production use.
+
+The source branch provides:
+
+- a default-off runtime hook in semantic memory search
+- local checkpoint loading
+- optional `torch` / `transformers` dependencies
+- replacement diagnostics
+- validation notes for the current v0 checkpoint
+
+The source branch does not bundle:
+
+- a model checkpoint
+- LoCoMo data
+- generated bundle caches
+- training outputs
+
 ## What It Does
 
 The reranker loads a local sequence-classification checkpoint and scores a wider
@@ -18,6 +38,10 @@ The current v0 policy is conservative:
 - maximum replacements defaults to 1
 - wide candidate pool defaults to 50
 - merge margin defaults to 0.3
+
+In plain terms: baseline search still retrieves memories first. The reranker
+only gets a narrow chance to correct the final top-k selection when a better
+evidence candidate already appears in the wider candidate pool.
 
 ## Install
 
@@ -43,6 +67,37 @@ TRANSFORMER_RERANK_DEVICE=auto
 
 If the checkpoint is missing or cannot be loaded, the hook disables itself and
 search continues with baseline behavior.
+
+## Validation Summary
+
+The current v0 checkpoint was evaluated on LoCoMo evidence retrieval. The metric
+is whether the correct evidence appears in the returned top-10 memories
+(`hit@10`), not final LLM answer quality.
+
+```text
+LoCoMo memory backend, 200 QA:
+  baseline hit@10: 124/200 = 0.620
+  v0 hit@10:       130/200 = 0.650
+  added/lost/net:  +7/-1/+6
+
+LoCoMo LanceDB backend, 200 QA:
+  baseline hit@10: 124/200 = 0.620
+  v0 hit@10:       131/200 = 0.655
+  added/lost/net:  +8/-1/+7
+
+LoCoMo full-memory cache, 5 seeds:
+  held added/lost/net: +115/-7/+108
+  added/lost ratio:   16.43
+
+LoCoMo split evaluation:
+  interleave held:            466/765 -> 495/765, net +29
+  prefix held:                473/766 -> 501/766, net +28
+  conversation-heldout held:  476/772 -> 504/772, net +28
+```
+
+These numbers show a reproducible improvement on LoCoMo memory evidence
+retrieval. They do not prove broad cross-dataset generalization or downstream
+answer-quality improvement.
 
 ## Diagnostics
 
@@ -77,3 +132,21 @@ The validated v0 checkpoint used during development was based on
 
 This branch provides the runtime hook and configuration surface. It does not
 bundle a model checkpoint or enable the reranker by default.
+
+## Reproduction Notes
+
+The current checkpoint and generated caches are research artifacts. They should
+be distributed separately, for example as a GitHub Release artifact or a
+Hugging Face model repository.
+
+For full reproduction, a researcher needs:
+
+- LoCoMo-derived memory evidence bundles
+- the transformer reranker training script
+- the frozen checkpoint or training recipe
+- the real-search evaluation script
+- the validation commands and metrics
+
+The research branch currently used for those materials is
+`stage-e-transformer-hook-pr`. A future cleanup should move stable reproduction
+assets into a dedicated `benchmarks/` or `examples/` package.
