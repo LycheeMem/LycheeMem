@@ -40,6 +40,7 @@ class ConsolidatorAgent(BaseAgent):
         retrieved_context: str = "",
         turn_index_offset: int = 0,
         skip_skills: bool = False,
+        skip_novelty_check: bool = False,
         session_date: str | None = None,
         **kwargs,
     ) -> dict[str, Any]:
@@ -67,6 +68,7 @@ class ConsolidatorAgent(BaseAgent):
             retrieved_context=retrieved_context,
             turn_index_offset=turn_index_offset,
             skip_skills=skip_skills,
+            skip_novelty_check=skip_novelty_check,
             session_date=session_date,
         )
 
@@ -78,6 +80,7 @@ class ConsolidatorAgent(BaseAgent):
         retrieved_context: str = "",
         turn_index_offset: int = 0,
         skip_skills: bool = False,
+        skip_novelty_check: bool = False,
         session_date: str | None = None,
     ) -> dict[str, Any]:
         """Compact 后端路径：语义固化 → 按新颖性门控技能抽取。
@@ -92,6 +95,7 @@ class ConsolidatorAgent(BaseAgent):
             retrieved_context=retrieved_context,
             turn_index_offset=turn_index_offset,
             reference_timestamp=session_date,
+            skip_novelty_check=skip_novelty_check,
         )
 
         steps: list[dict[str, Any]] = list(ingest_result.steps)
@@ -108,7 +112,7 @@ class ConsolidatorAgent(BaseAgent):
                 "skills_added": 0,
                 "facts_added": ingest_result.records_merged,
                 "records_expired": ingest_result.records_expired,
-                "has_novelty": False,
+                "has_novelty": has_novelty,
                 "steps": steps,
             }
 
@@ -186,6 +190,12 @@ class ConsolidatorAgent(BaseAgent):
     def _safe_parse(self, response: str) -> dict[str, Any]:
         """安全解析 LLM 输出，失败时返回安全默认值。"""
         try:
-            return self._parse_json(response)
+            result = self._parse_json(response)
+            # LLM 有时直接返回数组而非对象，兼容处理
+            if isinstance(result, list):
+                return {"new_skills": result}
+            if not isinstance(result, dict):
+                return {"new_skills": []}
+            return result
         except (ValueError, KeyError):
             return {"new_skills": []}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from abc import ABC, abstractmethod
 from contextvars import ContextVar
@@ -20,8 +21,18 @@ def set_embedding_call_source(source: str) -> None:
 
 
 # ── 全局 Embedding 统计（进程级单例）────────────────────────────────────────────
-# 统计文件路径：<项目根>/data/embedding_stats.json
-_STATS_FILE = Path(__file__).parent.parent.parent / "data" / "embedding_stats.json"
+def _stats_file_from_env(env_name: str, default_name: str) -> Path:
+    stats_dir = os.getenv("LYCHEE_STATS_DIR")
+    if stats_dir:
+        return Path(stats_dir).expanduser() / default_name
+    raw = os.getenv(env_name)
+    if raw:
+        return Path(raw).expanduser()
+    return Path(__file__).parent.parent.parent / "data" / default_name
+
+
+# 统计文件路径：默认 <项目根>/data/embedding_stats.json，可用 LYCHEE_STATS_DIR 或 EMBEDDING_STATS_PATH 覆盖。
+_STATS_FILE = _stats_file_from_env("EMBEDDING_STATS_PATH", "embedding_stats.json")
 
 
 class _GlobalEmbeddingStats:

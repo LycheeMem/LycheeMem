@@ -541,6 +541,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         retrieved_context: str = "",
         turn_index_offset: int = 0,
         reference_timestamp: str | None = None,
+        skip_novelty_check: bool = False,
     ) -> ConsolidationResult:
         """完整固化流程：新颖性检查 → 编码 → 去重写入 → 合成。"""
         if not turns:
@@ -562,13 +563,21 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         # Step 1: 新颖性检查
         # 只检查最近一次 user-assistant 交换（最后 2 条），避免历史已固化轮次
         # 的重复内容干扰判断，导致"本轮新信息"被误判为"已有记忆覆盖"。
-        last_exchange = turns[-2:] if len(turns) >= 2 else turns
-        has_novelty = self._check_novelty(last_exchange, retrieved_context)
-        steps.append({
-            "name": "novelty_check",
-            "status": "done",
-            "detail": "检测到新信息" if has_novelty else "无新信息，跳过固化",
-        })
+        if skip_novelty_check:
+            has_novelty = True
+            steps.append({
+                "name": "novelty_check",
+                "status": "skipped",
+                "detail": "skip_novelty_check=True，直接进入固化",
+            })
+        else:
+            last_exchange = turns[-2:] if len(turns) >= 2 else turns
+            has_novelty = self._check_novelty(last_exchange, retrieved_context)
+            steps.append({
+                "name": "novelty_check",
+                "status": "done",
+                "detail": "检测到新信息" if has_novelty else "无新信息，跳过固化",
+            })
         if not has_novelty:
             return ConsolidationResult(
                 records_added=0,

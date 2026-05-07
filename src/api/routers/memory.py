@@ -675,6 +675,7 @@ def run_memory_consolidate(
                     retrieved_context=req.retrieved_context,
                     turn_index_offset=effective_watermark,
                     skip_skills=req.skip_skills,
+                    skip_novelty_check=req.skip_novelty_check,
                     session_date=req.session_date,
                 )
                 # 后台线程固化成功后推进水位线
@@ -696,6 +697,7 @@ def run_memory_consolidate(
         retrieved_context=req.retrieved_context,
         turn_index_offset=effective_watermark,
         skip_skills=req.skip_skills,
+        skip_novelty_check=req.skip_novelty_check,
         session_date=req.session_date,
     )
     # 同步固化成功后推进水位线
