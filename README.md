@@ -117,6 +117,27 @@ cd LycheeMem
 pip install -e .
 ```
 
+### Configuration
+
+Create a `.env` file in your working directory and fill in your values. The full template in `.env.example` also includes session/user DB paths, JWT settings, and working-memory thresholds; the snippet below shows the most important ones:
+
+```dotenv
+# LLM — litellm format: provider/model
+LLM_MODEL=openai/gpt-4o-mini
+LLM_API_KEY=sk-...
+LLM_API_BASE=                     # optional
+
+# Embedder
+EMBEDDING_MODEL=openai/text-embedding-3-small
+EMBEDDING_DIM=1536
+EMBEDDING_API_KEY=                # optional
+EMBEDDING_API_BASE=               # optional
+
+```
+
+> **Supported LLM providers** (via [litellm](https://github.com/BerriAI/litellm)):
+> `openai/gpt-4o-mini` · `gemini/gemini-2.0-flash` · `ollama_chat/qwen2.5` · any OpenAI-compatible endpoint
+
 ### Optional Transformer Reranker
 
 LycheeMemory includes a default-off transformer reranker for semantic memory
@@ -151,27 +172,6 @@ Then start LycheeMemory normally. If the model path or optional dependencies are
 missing, the reranker disables itself and baseline memory search continues. See
 [Transformer Reranker v0](docs/transformer_reranker_v0.md) for metrics,
 diagnostics, and limitations.
-
-### Configuration
-
-Create a `.env` file in your working directory and fill in your values. The full template in `.env.example` also includes session/user DB paths, JWT settings, and working-memory thresholds; the snippet below shows the most important ones:
-
-```dotenv
-# LLM — litellm format: provider/model
-LLM_MODEL=openai/gpt-4o-mini
-LLM_API_KEY=sk-...
-LLM_API_BASE=                     # optional
-
-# Embedder
-EMBEDDING_MODEL=openai/text-embedding-3-small
-EMBEDDING_DIM=1536
-EMBEDDING_API_KEY=                # optional
-EMBEDDING_API_BASE=               # optional
-
-```
-
-> **Supported LLM providers** (via [litellm](https://github.com/BerriAI/litellm)):  
-> `openai/gpt-4o-mini` · `gemini/gemini-2.0-flash` · `ollama_chat/qwen2.5` · any OpenAI-compatible endpoint
 
 ### Start the Server
 
