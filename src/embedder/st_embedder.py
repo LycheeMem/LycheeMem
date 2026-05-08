@@ -7,7 +7,7 @@
   EMBEDDING_LOCAL=true
   EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
   # 可选：
-  EMBEDDING_DEVICE=auto   # auto / cpu / cuda / mps
+  EMBEDDING_DEVICE=auto   # auto / cpu / cuda / cuda:0 / cuda:1 / mps
   EMBEDDING_DIM=1024      # 若模型支持 Matryoshka 则可截断维度；0 = 自动
 
 查询侧 prompt（如 Qwen3 的 "query" prompt）会在模型加载后自动检测并启用，无需手动配置。
@@ -31,7 +31,7 @@ class SentenceTransformerEmbedder(BaseEmbedder):
     参数
     ----
     model_name : HuggingFace 模型路径，如 "Qwen/Qwen3-Embedding-0.6B"
-    device     : 推理设备，"auto" / "cpu" / "cuda" / "mps"，默认 auto
+    device     : 推理设备，"auto" / "cpu" / "cuda" / "cuda:0" / "cuda:1" / "mps"，默认 auto
     normalize  : 是否对输出向量做 L2 归一化，默认 True
     dimensions : 截断到指定维度（Matryoshka 模型支持）；0 表示不截断
     trust_remote_code : 传给 SentenceTransformer 的 trust_remote_code 参数
@@ -82,16 +82,19 @@ class SentenceTransformerEmbedder(BaseEmbedder):
         if self._model_kwargs:
             load_kwargs["model_kwargs"] = self._model_kwargs
 
-        # 尝试优化加载（flash_attention_2），失败则降级
-        if self._device in ("auto", "cuda"):
+        # cuda / cuda:N / auto 尝试 flash_attention_2 优化，失败则降级
+        _is_cuda = self._device == "auto" or self._device.startswith("cuda")
+        if _is_cuda:
+            # 指定具体 GPU 时用 device_map=device，否则 auto
+            _device_map = device if device else "auto"
             try:
                 self._model = SentenceTransformer(
                     self.model_name,
-                    model_kwargs={"attn_implementation": "flash_attention_2", "device_map": "auto"},
+                    model_kwargs={"attn_implementation": "flash_attention_2", "device_map": _device_map},
                     processor_kwargs={"padding_side": "left"},
                     trust_remote_code=self._trust_remote_code,
                 )
-                logger.info("已启用 flash_attention_2 优化")
+                logger.info("已启用 flash_attention_2 优化 (device_map=%s)", _device_map)
             except Exception as e:
                 logger.debug("flash_attention_2 不可用（%s），使用标准加载", e)
                 self._model = SentenceTransformer(self.model_name, **load_kwargs)

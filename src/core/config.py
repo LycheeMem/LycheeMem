@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # 设为 true 时使用本地模型，EMBEDDING_MODEL 填 HuggingFace 模型路径
     # 例如：Qwen/Qwen3-Embedding-0.6B、BAAI/bge-m3、sentence-transformers/all-MiniLM-L6-v2
     embedding_local: bool = False
-    embedding_device: str = "auto"          # auto / cpu / cuda / mps
+    embedding_device: str = "auto"          # auto / cpu / cuda / cuda:0 / cuda:1 / mps
 
     wm_max_tokens: int = 128000
     wm_warn_threshold: float = 0.7
