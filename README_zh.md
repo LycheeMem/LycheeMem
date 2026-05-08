@@ -151,15 +151,15 @@ pip install "lycheemem[rerank]"
 下载当前 v0 checkpoint：
 
 ```bash
-huggingface-cli download fuhao23/lycheemem-bert-tiny-reranker-locomo-v0 \
-  --local-dir ./lycheemem-bert-tiny-reranker-locomo-v0
+huggingface-cli download LycheeMem/reranker \
+  --local-dir ./lycheemem-reranker-v0
 ```
 
 显式开启：
 
 ```bash
 export EXPERIMENTAL_TRANSFORMER_RERANK=true
-export TRANSFORMER_RERANK_MODEL_PATH=./lycheemem-bert-tiny-reranker-locomo-v0
+export TRANSFORMER_RERANK_MODEL_PATH=./lycheemem-reranker-v0
 export TRANSFORMER_RERANK_MAX_REPLACEMENTS=1
 export TRANSFORMER_RERANK_MERGE_MARGIN=0.3
 export TRANSFORMER_RERANK_WIDE_TOP_K=50

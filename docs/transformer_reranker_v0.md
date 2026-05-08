@@ -57,8 +57,8 @@ pip install "lycheemem[rerank]"
 Download the current v0 checkpoint from Hugging Face:
 
 ```bash
-huggingface-cli download fuhao23/lycheemem-bert-tiny-reranker-locomo-v0 \
-  --local-dir ./lycheemem-bert-tiny-reranker-locomo-v0
+huggingface-cli download LycheeMem/reranker \
+  --local-dir ./lycheemem-reranker-v0
 ```
 
 ## Configure
@@ -67,7 +67,7 @@ Set these environment variables, or the equivalent settings values:
 
 ```bash
 EXPERIMENTAL_TRANSFORMER_RERANK=true
-TRANSFORMER_RERANK_MODEL_PATH=./lycheemem-bert-tiny-reranker-locomo-v0
+TRANSFORMER_RERANK_MODEL_PATH=./lycheemem-reranker-v0
 TRANSFORMER_RERANK_MAX_REPLACEMENTS=1
 TRANSFORMER_RERANK_MERGE_MARGIN=0.3
 TRANSFORMER_RERANK_WIDE_TOP_K=50
@@ -149,7 +149,7 @@ Selected candidates also include `transformer_rerank_*` fields in
 The checkpoint is distributed separately from the source repository:
 
 ```text
-https://huggingface.co/fuhao23/lycheemem-bert-tiny-reranker-locomo-v0
+https://huggingface.co/LycheeMem/reranker
 ```
 
 Download it locally, then point `TRANSFORMER_RERANK_MODEL_PATH` to that local
