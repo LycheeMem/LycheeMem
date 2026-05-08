@@ -29,6 +29,8 @@ dependencies = [
 rerank = [
     "torch>=2.0.0",
     "transformers>=4.40.0",
+    "huggingface-hub>=0.23.0",
+    "safetensors>=0.4.0",
 ]
 
 

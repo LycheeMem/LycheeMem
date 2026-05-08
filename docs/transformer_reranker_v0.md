@@ -6,8 +6,10 @@ unless it is explicitly enabled by configuration.
 
 ## Status
 
-This is an experimental learned memory-selection feature. It is intended for
-controlled evaluation, not default production use.
+This is an optional learned memory-selection feature. It is suitable as a
+default-off release candidate: users must explicitly install rerank
+dependencies, download a local checkpoint, and enable the experiment flag before
+it changes memory search behavior.
 
 The source branch provides:
 
@@ -52,13 +54,20 @@ extra only when using the reranker:
 pip install "lycheemem[rerank]"
 ```
 
+Download the current v0 checkpoint from Hugging Face:
+
+```bash
+huggingface-cli download fuhao23/lycheemem-bert-tiny-reranker-locomo-v0 \
+  --local-dir ./lycheemem-bert-tiny-reranker-locomo-v0
+```
+
 ## Configure
 
 Set these environment variables, or the equivalent settings values:
 
 ```bash
 EXPERIMENTAL_TRANSFORMER_RERANK=true
-TRANSFORMER_RERANK_MODEL_PATH=/path/to/local/checkpoint
+TRANSFORMER_RERANK_MODEL_PATH=./lycheemem-bert-tiny-reranker-locomo-v0
 TRANSFORMER_RERANK_MAX_REPLACEMENTS=1
 TRANSFORMER_RERANK_MERGE_MARGIN=0.3
 TRANSFORMER_RERANK_WIDE_TOP_K=50
@@ -95,9 +104,23 @@ LoCoMo split evaluation:
   conversation-heldout held:  476/772 -> 504/772, net +28
 ```
 
+External zero-shot evidence-selection fixtures, same checkpoint and same
+runtime policy:
+
+```text
+dataset                         cases  baseline@10  wide     v0@10    added/lost/net
+LongMemEval-S cleaned           500    469          500      484      +16/-1/+15
+MSC-MemFuse-MC10 turn-level     299    142          279      152      +10/-0/+10
+HotpotQA distractor sentence    7405   6957         7405     7076     +141/-22/+119
+```
+
 These numbers show a reproducible improvement on LoCoMo memory evidence
-retrieval. They do not prove broad cross-dataset generalization or downstream
-answer-quality improvement.
+retrieval and positive zero-shot evidence-selection transfer on three external
+fixture shapes. They do not prove downstream answer-quality improvement.
+
+HotpotQA has a weaker safety profile than the memory-style fixtures
+(`+141/-22`, ratio `6.41`), so deployments should keep diagnostics enabled and
+avoid treating rerank as an always-safe replacement for baseline search.
 
 ## Diagnostics
 
@@ -123,21 +146,25 @@ Selected candidates also include `transformer_rerank_*` fields in
 
 ## Model Artifact
 
-The checkpoint should not be committed to the source repository. Publish it as a
-release artifact or store it separately, then point `TRANSFORMER_RERANK_MODEL_PATH`
-to the local directory.
+The checkpoint is distributed separately from the source repository:
+
+```text
+https://huggingface.co/fuhao23/lycheemem-bert-tiny-reranker-locomo-v0
+```
+
+Download it locally, then point `TRANSFORMER_RERANK_MODEL_PATH` to that local
+directory.
 
 The validated v0 checkpoint used during development was based on
 `prajjwal1/bert-tiny` and trained for LoCoMo memory evidence reranking.
 
-This branch provides the runtime hook and configuration surface. It does not
+The source tree provides the runtime hook and configuration surface. It does not
 bundle a model checkpoint or enable the reranker by default.
 
 ## Reproduction Notes
 
-The current checkpoint and generated caches are research artifacts. They should
-be distributed separately, for example as a GitHub Release artifact or a
-Hugging Face model repository.
+Generated caches and training outputs are research artifacts and are not bundled
+with the source tree.
 
 For full reproduction, a researcher needs:
 
@@ -147,6 +174,5 @@ For full reproduction, a researcher needs:
 - the real-search evaluation script
 - the validation commands and metrics
 
-The research branch currently used for those materials is
-`stage-e-transformer-hook-pr`. A future cleanup should move stable reproduction
-assets into a dedicated `benchmarks/` or `examples/` package.
+The release checkpoint is available on Hugging Face. Full training reproduction
+still requires the LoCoMo-derived evidence bundles and evaluation scripts.

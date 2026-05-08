@@ -51,6 +51,7 @@ LycheeMemory is a compact memory framework for LLM agents. It starts from effici
 <a id="news"></a>
 
 ## 🔥 News
+- **[05/08/2026]** Optional transformer memory reranker v0 is available behind an explicit opt-in flag. It improves evidence retrieval hit@10 on LoCoMo and zero-shot LongMemEval-S / MSC-MemFuse / HotpotQA fixtures. See [Transformer Reranker v0](docs/transformer_reranker_v0.md).
 - **[04/29/2026]** Hermes and Claude Code plugin integrations are now available, bringing LycheeMemory's automatic recall, turn mirroring, and consolidation workflow to more agent runtimes. Setup guides: [Hermes](hermes-plugin/lycheemem/INSTALL_HERMES.md) · [Claude Code](claude-plugin/lycheemem/INSTALL_CLAUDE.md)
 - **[04/26/2026]** Visual (Multimodal) Memory module added! See [Visual Memory](#visual-memory).
 - **[04/13/2026]** LycheeMem is now LycheeMemory.
@@ -115,6 +116,41 @@ git clone https://github.com/LycheeMem/LycheeMem.git
 cd LycheeMem
 pip install -e .
 ```
+
+### Optional Transformer Reranker
+
+LycheeMemory includes a default-off transformer reranker for semantic memory
+search. It can improve evidence selection when the correct memory is already in
+the wider candidate pool. The base install does not include PyTorch or
+Transformers.
+
+Install the optional dependencies:
+
+```bash
+pip install "lycheemem[rerank]"
+```
+
+Download the current v0 checkpoint:
+
+```bash
+huggingface-cli download fuhao23/lycheemem-bert-tiny-reranker-locomo-v0 \
+  --local-dir ./lycheemem-bert-tiny-reranker-locomo-v0
+```
+
+Enable it explicitly:
+
+```bash
+export EXPERIMENTAL_TRANSFORMER_RERANK=true
+export TRANSFORMER_RERANK_MODEL_PATH=./lycheemem-bert-tiny-reranker-locomo-v0
+export TRANSFORMER_RERANK_MAX_REPLACEMENTS=1
+export TRANSFORMER_RERANK_MERGE_MARGIN=0.3
+export TRANSFORMER_RERANK_WIDE_TOP_K=50
+```
+
+Then start LycheeMemory normally. If the model path or optional dependencies are
+missing, the reranker disables itself and baseline memory search continues. See
+[Transformer Reranker v0](docs/transformer_reranker_v0.md) for metrics,
+diagnostics, and limitations.
 
 ### Configuration
 
@@ -750,4 +786,3 @@ python examples/api_pipeline_demo.py --multi-turn
 # Use a fixed session_id (useful for accumulating history across multiple runs)
 python examples/api_pipeline_demo.py --session-id my-test-session
 ```
-
