@@ -24,9 +24,9 @@ from src.embedder.base import BaseEmbedder
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TIMEOUT_SECONDS = 60.0
-_DEFAULT_RETRY_ATTEMPTS = 10
-_DEFAULT_RETRY_BACKOFF_SECONDS = 1.0
+_DEFAULT_TIMEOUT_SECONDS = 600.0
+_DEFAULT_RETRY_ATTEMPTS = 100
+_DEFAULT_RETRY_BACKOFF_SECONDS = 3.0
 
 # litellm 全局配置在 src.llm.litellm_llm 中统一设置；
 # 此处仅保留一个保底 suppress，确保单独使用 Embedder 时也生效。
