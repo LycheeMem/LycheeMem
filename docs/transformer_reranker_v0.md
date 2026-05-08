@@ -54,11 +54,12 @@ extra only when using the reranker:
 pip install "lycheemem[rerank]"
 ```
 
-Download the current v0 checkpoint from Hugging Face:
+Download the current v0 checkpoint from Hugging Face to a stable local folder:
 
 ```bash
+mkdir -p ~/.cache/lycheemem/models
 huggingface-cli download LycheeMem/reranker \
-  --local-dir ./lycheemem-reranker-v0
+  --local-dir ~/.cache/lycheemem/models/reranker-v0
 ```
 
 ## Configure
@@ -67,7 +68,7 @@ Set these environment variables, or the equivalent settings values:
 
 ```bash
 EXPERIMENTAL_TRANSFORMER_RERANK=true
-TRANSFORMER_RERANK_MODEL_PATH=./lycheemem-reranker-v0
+TRANSFORMER_RERANK_MODEL_PATH=~/.cache/lycheemem/models/reranker-v0
 TRANSFORMER_RERANK_MAX_REPLACEMENTS=1
 TRANSFORMER_RERANK_MERGE_MARGIN=0.3
 TRANSFORMER_RERANK_WIDE_TOP_K=50
@@ -152,8 +153,8 @@ The checkpoint is distributed separately from the source repository:
 https://huggingface.co/LycheeMem/reranker
 ```
 
-Download it locally, then point `TRANSFORMER_RERANK_MODEL_PATH` to that local
-directory.
+Download it locally, then point `TRANSFORMER_RERANK_MODEL_PATH` to the same
+local directory.
 
 The validated v0 checkpoint used during development was based on
 `prajjwal1/bert-tiny` and trained for LoCoMo memory evidence reranking.

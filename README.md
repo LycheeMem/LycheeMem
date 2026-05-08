@@ -151,18 +151,19 @@ Install the optional dependencies:
 pip install "lycheemem[rerank]"
 ```
 
-Download the current v0 checkpoint:
+Download the current v0 checkpoint to a stable local folder:
 
 ```bash
+mkdir -p ~/.cache/lycheemem/models
 huggingface-cli download LycheeMem/reranker \
-  --local-dir ./lycheemem-reranker-v0
+  --local-dir ~/.cache/lycheemem/models/reranker-v0
 ```
 
-Enable it explicitly:
+Enable it with the same local folder path:
 
 ```bash
 export EXPERIMENTAL_TRANSFORMER_RERANK=true
-export TRANSFORMER_RERANK_MODEL_PATH=./lycheemem-reranker-v0
+export TRANSFORMER_RERANK_MODEL_PATH=~/.cache/lycheemem/models/reranker-v0
 export TRANSFORMER_RERANK_MAX_REPLACEMENTS=1
 export TRANSFORMER_RERANK_MERGE_MARGIN=0.3
 export TRANSFORMER_RERANK_WIDE_TOP_K=50
@@ -170,8 +171,8 @@ export TRANSFORMER_RERANK_WIDE_TOP_K=50
 
 Then start LycheeMemory normally. If the model path or optional dependencies are
 missing, the reranker disables itself and baseline memory search continues. See
-[Transformer Reranker v0](docs/transformer_reranker_v0.md) for metrics,
-diagnostics, and limitations.
+[Transformer Reranker v0](docs/transformer_reranker_v0.md) for metrics and
+diagnostics.
 
 ### Start the Server
 

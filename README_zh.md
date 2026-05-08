@@ -148,24 +148,25 @@ LycheeMemory 提供一个默认关闭的 Transformer 记忆重排器。它不会
 pip install "lycheemem[rerank]"
 ```
 
-下载当前 v0 checkpoint：
+把当前 v0 checkpoint 下载到一个固定的本地目录：
 
 ```bash
+mkdir -p ~/.cache/lycheemem/models
 huggingface-cli download LycheeMem/reranker \
-  --local-dir ./lycheemem-reranker-v0
+  --local-dir ~/.cache/lycheemem/models/reranker-v0
 ```
 
-显式开启：
+用同一个本地目录显式开启：
 
 ```bash
 export EXPERIMENTAL_TRANSFORMER_RERANK=true
-export TRANSFORMER_RERANK_MODEL_PATH=./lycheemem-reranker-v0
+export TRANSFORMER_RERANK_MODEL_PATH=~/.cache/lycheemem/models/reranker-v0
 export TRANSFORMER_RERANK_MAX_REPLACEMENTS=1
 export TRANSFORMER_RERANK_MERGE_MARGIN=0.3
 export TRANSFORMER_RERANK_WIDE_TOP_K=50
 ```
 
-然后正常启动 LycheeMemory。如果模型路径或可选依赖缺失，重排器会自动关闭，系统继续使用原始记忆检索。指标、诊断字段和限制说明见 [Transformer Reranker v0](docs/transformer_reranker_v0.md)。
+然后正常启动 LycheeMemory。如果模型路径或可选依赖缺失，重排器会自动关闭，系统继续使用原始记忆检索。指标和诊断字段见 [Transformer Reranker v0](docs/transformer_reranker_v0.md)。
 
 ### 启动服务器
 
