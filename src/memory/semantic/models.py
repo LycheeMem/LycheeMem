@@ -167,9 +167,9 @@ class SearchPlan:
     include_leaf_records: bool = False  # 是否将叶子 record 纳入最终候选池
     include_episodic_context: bool = False  # 是否补充原始对话上下文
     episodic_turn_window: int = 0  # 原始对话窗口大小（按 evidence turn 向两侧扩展）
-    depth: int = 5  # 执行层根据 mode / is_aggregate_query 推导的检索深度
+    depth: int = 5  # 建议检索深度 (top_k)
     is_aggregate_query: bool = False  # 是否为需要跨多条记忆聚合/枚举的问题
-    aggregate_target: str = ""  # 聚合对象
+    aggregate_target: str = ""  # 聚合对象，如 "kitchen items replaced or fixed"
     aggregate_constraints: list[str] = field(default_factory=list)  # 聚合筛选条件/动作谓词
     reasoning: str = ""  # 规划理由
 
