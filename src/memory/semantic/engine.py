@@ -235,8 +235,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             )
 
         plan = self._normalize_plan_for_query(query, plan)
-        if plan.is_aggregate_query:
-            top_k = max(top_k, int(plan.depth or 0), 15)
+        top_k = max(top_k, int(plan.depth or 0))
 
         _debug_search("search.plan", self._plan_to_dict(plan))
         query_variants = self._build_plan_query_variants(query, plan)
@@ -1162,7 +1161,10 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             include_leaf_records=bool(d.get("include_leaf_records", False)),
             include_episodic_context=bool(d.get("include_episodic_context", False)),
             episodic_turn_window=max(0, int(d.get("episodic_turn_window", 0) or 0)),
-            depth=int(d.get("depth", 5)),
+            depth=CompactSemanticEngine._execution_depth(
+                mode,
+                bool(d.get("is_aggregate_query", False)),
+            ),
             is_aggregate_query=bool(d.get("is_aggregate_query", False)),
             aggregate_target=str(d.get("aggregate_target", "") or ""),
             aggregate_constraints=[
@@ -1218,6 +1220,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
     @staticmethod
     def _normalize_plan_for_query(query: str, plan: SearchPlan) -> SearchPlan:
         """Apply execution settings from the LLM plan without rule-based re-planning."""
+        plan.depth = CompactSemanticEngine._execution_depth(plan.mode, plan.is_aggregate_query)
         if not plan.is_aggregate_query:
             return plan
 
@@ -1228,8 +1231,15 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         plan.include_leaf_records = True
         plan.include_episodic_context = True
         plan.episodic_turn_window = max(1, int(plan.episodic_turn_window or 0))
-        plan.depth = max(15, int(plan.depth or 0))
         return plan
+
+    @staticmethod
+    def _execution_depth(mode: str, is_aggregate: bool) -> int:
+        if is_aggregate:
+            return 15
+        if str(mode or "").strip().lower() in {"action", "mixed"}:
+            return 8
+        return 5
 
     @staticmethod
     def _build_plan_query_variants(query: str, plan: SearchPlan) -> list[str]:

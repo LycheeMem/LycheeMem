@@ -341,8 +341,8 @@ class SearchCoordinator(BaseAgent):
             "mode": str(plan.get("mode") or "answer"),
             "semantic_queries": [str(x) for x in (plan.get("semantic_queries") or []) if str(x or "").strip()],
             "pragmatic_queries": [str(x) for x in (plan.get("pragmatic_queries") or []) if str(x or "").strip()],
-            "depth": int(plan.get("depth", 5) or 5),
         }
+        slim["depth"] = cls._execution_depth(slim["mode"], is_aggregate)
         if not is_aggregate:
             slim["is_aggregate_query"] = False
             slim["aggregate_target"] = ""
@@ -361,8 +361,15 @@ class SearchCoordinator(BaseAgent):
         slim["aggregate_target"] = target
         slim["aggregate_constraints"] = constraints
         slim["semantic_queries"] = semantic_queries or [str(user_query or "").strip()]
-        slim["depth"] = max(15, int(plan.get("depth", 0) or 0))
         return slim
+
+    @staticmethod
+    def _execution_depth(mode: str, is_aggregate: bool) -> int:
+        if is_aggregate:
+            return 15
+        if str(mode or "").strip().lower() in {"action", "mixed"}:
+            return 8
+        return 5
 
     def _build_skill_query(
         self,
