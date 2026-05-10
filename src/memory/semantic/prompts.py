@@ -159,12 +159,9 @@ The memory system uses your plan to decide what to search for, how deep to searc
 
 ## How Your Output Is Used
 - `semantic_queries` and `pragmatic_queries` are used as search terms for vector similarity search and full-text search across the memory database.
-- `temporal_filter` restricts results to a specific time range.
-- `tool_hints`, `required_constraints`, `required_affordances` are used to boost search results that match these criteria.
-- `missing_slots` identifies information gaps; the system uses these to run targeted entity-level searches.
-- `tree_retrieval_mode` / `tree_expansion_depth` / `include_leaf_records` control how the search handles merged memory summaries (see below).
-- `include_episodic_context` / `episodic_turn_window` control whether original conversation turns are attached to search results.
 - `depth` sets how many memory records to retrieve (top_k).
+- `is_aggregate_query` switches retrieval from single-answer lookup to broad evidence gathering across many memories.
+- `aggregate_target` and `aggregate_constraints` tell the retrieval engine what entity set and predicates must be covered.
 
 ## Prioritize Intent Over Surface Text
 Do not plan searches based only on the query's wording. Consider what the user is actually trying to accomplish:
@@ -181,7 +178,7 @@ When <ACTION_STATE> is present:
 - Always treat <USER_QUERY> and <RECENT_CONTEXT> as the **primary** source of intent. Infer for yourself whether the user is asking a factual question, executing a task, or troubleshooting.
 - `current_subgoal` describes what the user is trying to accomplish in natural language.
 - `tentative_action` is an optional hint that may or may not be present. Only use it when it is **non-empty** and clearly provides a more operational description than the raw query; otherwise ignore it.
-- `known_constraints` and `missing_slots` are reliable structural signals and should directly influence `required_constraints`, `missing_slots`, and tree traversal depth.
+- `known_constraints` and `missing_slots` are reliable structural signals and should influence the search terms you generate.
 - If the query looks like a factual question but ACTION_STATE shows the user is actually filling parameters for a task or troubleshooting, use `mixed` or `action` mode.
 - If `failure_signal` is non-empty, prioritize searching for failure patterns, constraints, and procedures.
 
@@ -199,67 +196,47 @@ on one independent topic. **Must contain at least 1 query.** If the user's messa
 ### 3. `pragmatic_queries` — Action-focused search terms
 Keywords targeting practical information: tool names, operation types, constraints, failure patterns. May be empty in `answer` mode.
 
-### 4. `temporal_filter` — Time range filter
-Set to `{"since": "ISO date", "until": "ISO date"}` when the query involves a specific time range. Set to `null` otherwise.
-
-### 5. `tool_hints` — Tool/API names that may be relevant
-
-### 6. `required_constraints` — Constraints that must be confirmed before the task can proceed
-
-### 7. `required_affordances` — Capabilities that a tool or workflow must have for the current task
-Example: "How do I bulk import data?" → `["supports batch processing"]`. May be empty for pure factual queries.
-
-### 8. `missing_slots` — Key information gaps
-- For `action`/`mixed` mode: parameters that determine whether the next step is executable (e.g., target namespace, image version).
-- For `answer` mode on personal memory questions: the specific **names, attributes, and topic keywords** that the ideal matching memory record would contain.
-  Examples:
-    - "What sport did Emily play in college?" → `["Emily", "sport", "college"]`
-    - "When did Caroline start her current job?" → `["Caroline", "job", "work"]`
-    - "How many siblings does Melanie have?" → `["Melanie", "siblings", "family"]`
-  Extract the person name (if mentioned), the subject attribute, and the context noun.
-
-### 9. `tree_retrieval_mode` / `tree_expansion_depth` / `include_leaf_records` — Merged summary handling
-The memory database organizes related memories into merged summaries. These settings control how the search handles them:
-- `"root_only"` + depth 0: Return only the top-level merged summaries. Fastest; best for simple factual lookups.
-- `"balanced"` + depth 1: Return summaries plus one level of their component memories. Good balance of breadth and detail.
-- `"descend"` + depth 2+: Drill deep into summaries to find specific details. Use when precise values, steps, or parameters \
-are needed, or when `missing_slots` / `failure_signal` exist.
-- `include_leaf_records`: When true, include the individual source memories in addition to the summaries.
-
-### 10. `include_episodic_context` / `episodic_turn_window` — Original conversation attachment
-Sometimes a memory record is too compressed and loses the original tone, conditions, or parameter details.
-- `include_episodic_context: true`: The system will attach the original conversation turns that produced each memory, \
-giving the answer model access to the full original wording.
-- `episodic_turn_window`: How many surrounding turns to include around each matched memory's source turn \
-(0 = exact turn only, 1 = one turn before and after for context).
-- For simple factual queries, this is usually `false`. For queries where original wording, failure context, or detailed parameters matter, use `true`.
-
-### 11. `depth` — Number of results to retrieve
+### 4. `depth` — Number of results to retrieve
 Recommended top_k: 3–5 for simple queries, 8–15 for complex or multi-topic queries.
+
+### 5. Aggregate/list/count questions
+Some factual questions require collecting **all matching memories** rather than finding one best memory.
+Set `is_aggregate_query: true` when the user asks to count, list, enumerate, compare, or summarize multiple personal-memory facts, especially with phrasing like:
+- "how many ...", "which ...", "what ... did I ...", "list all ...", "all the ...", "every ...", "分别/哪些/几个/多少/所有/一共/总共".
+- Questions involving plural objects or multiple actions across time/sessions, e.g. "How many kitchen items did I replace or fix?"
+
+For aggregate questions:
+- Set `depth` to at least 15.
+- Put the thing being counted/listed in `aggregate_target`.
+- Put required predicates or filters in `aggregate_constraints`, such as `["replaced", "fixed", "kitchen"]`.
+- Treat `semantic_queries` as recall probes, not final filters. Some words in the user query are filters (location, category, owner, time, project, relationship), and matching memories may omit those filters while still belonging to the requested set.
+- For aggregate questions, generate a balanced set of semantic queries:
+  1. A few fully qualified probes that preserve the target and predicate.
+  2. A few decontextualized probes that remove non-essential filters but keep the object class and predicate.
+  3. A few event-style predicate probes that describe how the fact may appear in ordinary conversation, without forcing the category/location word.
+- Do not enumerate concrete likely answer entities unless they are explicitly named in <USER_QUERY>, <RECENT_CONTEXT>, or <ACTION_STATE>. Generalize by separating filters from recall probes, not by hard-coding examples.
+- For a query shaped like "How many [category/location-qualified objects] did I [action A] or [action B]?", include probes for:
+  - the fully qualified object set with each action,
+  - the object set with category/location qualifiers removed,
+  - natural event descriptions of each action that do not require the category/location word.
+- Before finalizing an aggregate plan, check whether every semantic query contains the same location/category/project/person filter from the user query. If so, add decontextualized recall probes that omit that repeated filter while preserving the requested object class or event predicate.
+- The engine will derive broad tree, leaf-record, and original-turn recall settings internally from `is_aggregate_query`; do not output those settings.
 
 ## Output Format (strict JSON, no code blocks)
 {
-    "reasoning": "Why you chose this search strategy",
     "mode": "answer|action|mixed",
     "semantic_queries": ["query 1", "query 2"],
     "pragmatic_queries": ["query 1"],
-    "temporal_filter": {"since": "ISO date", "until": "ISO date"},
-    "tool_hints": ["tool name"],
-    "required_constraints": ["constraint 1"],
-    "required_affordances": ["affordance 1"],
-    "missing_slots": ["slot 1"],
-    "tree_retrieval_mode": "root_only|balanced|descend",
-    "tree_expansion_depth": 0,
-    "include_leaf_records": false,
-    "include_episodic_context": false,
-    "episodic_turn_window": 0,
-    "depth": 5
+    "depth": 5,
+    "is_aggregate_query": false,
+    "aggregate_target": "",
+    "aggregate_constraints": []
 }
 
 Notes:
-- Set `temporal_filter` to `null` when no time filtering is needed.
 - Use `[]` for empty list fields.
-- Output `reasoning` first, then the planning fields.
+- Use `false` / empty string / `[]` for aggregate fields when the query is a simple single-answer lookup.
+- Do not output fields other than those shown in the JSON schema.
 """
 
 
@@ -280,7 +257,7 @@ This costs an extra search cycle, so only mark insufficient when important infor
 
 ## Input
 - <USER_QUERY>: The user's original query
-- <SEARCH_PLAN>: The current search plan (includes `mode`, `required_constraints`, `required_affordances`, `missing_slots`)
+- <SEARCH_PLAN>: The current search plan
 - <ACTION_STATE>: Current decision state (includes `tentative_action`, `known_constraints`, `available_tools`, `failure_signal`)
 - <RETRIEVED_MEMORY>: The memory items found so far (formatted text)
 
@@ -289,16 +266,16 @@ This costs an extra search cycle, so only mark insufficient when important infor
 For **factual questions** (`answer` mode):
 - Do the retrieved memories directly address the core question?
 - Are key facts, names, dates, or values present?
+- If `is_aggregate_query` is true, do **not** mark sufficient just because one or two examples were found. The retrieved memories must provide broad coverage for the requested count/list, or evidence that no more matching items exist.
 
 For **task requests** (`action`/`mixed` mode):
 - Are the key constraints covered?
-- Have the information gaps (`missing_slots` from the search plan) been filled?
+- Have the information gaps from the user query or action state been filled?
 - Is there enough information for tool selection?
 - Are there relevant failure patterns or pitfalls to be aware of?
 
 Additional checks:
 - If <ACTION_STATE> contains `known_constraints`, `missing_slots`, or `failure_signal`, treat them as primary evaluation signals.
-- If the search plan lists `required_affordances`, check whether the retrieved memories provide evidence for those capabilities.
 - **Lean toward marking as sufficient.** Only output `false` when critical information is clearly missing.
 
 ## Output Format (strict JSON, no code blocks)

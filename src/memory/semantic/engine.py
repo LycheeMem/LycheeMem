@@ -13,7 +13,9 @@ import concurrent.futures
 import hashlib
 import json
 import logging
+import os
 import re
+import sys
 import uuid
 
 from src.llm.base import set_llm_call_source
@@ -72,6 +74,20 @@ _SENSITIVE_PATTERNS: list[re.Pattern] = [
         r"|6(?:011|5[0-9]{2})[0-9]{12})\b"        # Discover
     ),
 ]
+
+
+def _debug_search_enabled() -> bool:
+    return 1
+
+
+def _debug_search(label: str, payload: Any) -> None:
+    if not _debug_search_enabled():
+        return
+    try:
+        text = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+    except Exception:
+        text = str(payload)
+    print(f"\n[LYCHEE_SEARCH_DEBUG] {label}\n{text}", file=sys.stderr, flush=True)
 
 
 class CompactSemanticEngine(BaseSemanticMemoryEngine):
@@ -196,6 +212,17 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         action_state_obj = self._dict_to_action_state(action_state)
         top_k = max(1, int(top_k or 5))
 
+        _debug_search("search.start", {
+            "query": query,
+            "session_id": session_id,
+            "top_k": top_k,
+            "reference_time": reference_time,
+            "has_query_embedding": query_embedding is not None,
+            "recent_context_chars": len(recent_context or ""),
+            "input_retrieval_plan": retrieval_plan,
+            "input_action_state": action_state,
+        })
+
         if retrieval_plan:
             plan = self._dict_to_plan(retrieval_plan)
         else:
@@ -207,19 +234,66 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 include_episodic_context=True,
             )
 
+        plan = self._normalize_plan_for_query(query, plan)
+        if plan.is_aggregate_query:
+            top_k = max(top_k, int(plan.depth or 0), 15)
+
+        _debug_search("search.plan", self._plan_to_dict(plan))
+        query_variants = self._build_plan_query_variants(query, plan)
+        _debug_search("search.query_variants", {
+            "count": len(query_variants),
+            "queries": query_variants,
+        })
+
         selected_candidates: list[ScoredCandidate] = []
         seen_ids: set[str] = set()
 
         # ─── Phase 1: ANN 预过滤 + LLM 过滤 CompositeRecord ─────
-        # 先用向量 ANN 检索 top-20 相关 composites，再做一次 LLM 过滤
-        ann_composite_results = self._vector.search_synthesized(
-            query, column="vector", limit=20,
-        )
+        # 先用向量 ANN 检索相关 composites，再做一次 LLM 过滤。
+        # 注意：这里必须让 planner 生成的 semantic/pragmatic queries 真正驱动召回，
+        # 否则 multi-query plan 只会停留在日志里，实际仍是单 query ANN。
+        ann_composite_by_id: dict[str, dict[str, Any]] = {}
+        ann_per_query: list[dict[str, Any]] = []
+        for variant in query_variants:
+            hits = self._vector.search_synthesized(
+                variant, column="vector", limit=20,
+            )
+            ann_per_query.append({
+                "query": variant,
+                "count": len(hits),
+                "ids": [
+                    str(r.get("composite_id", "")).strip()
+                    for r in hits
+                    if str(r.get("composite_id", "")).strip()
+                ],
+                "raw_hits": hits,
+            })
+            for r in hits:
+                cid = str(r.get("composite_id", "")).strip()
+                if not cid:
+                    continue
+                current = ann_composite_by_id.get(cid)
+                distance = float(r.get("_distance", 999.0))
+                if current is None or distance < float(current.get("_distance", 999.0)):
+                    ann_composite_by_id[cid] = dict(r)
+                ann_composite_by_id[cid].setdefault("matched_queries", [])
+                if variant not in ann_composite_by_id[cid]["matched_queries"]:
+                    ann_composite_by_id[cid]["matched_queries"].append(variant)
+        ann_composite_results = sorted(
+            ann_composite_by_id.values(),
+            key=lambda r: float(r.get("_distance", 999.0)),
+        )[: max(20, min(80, 20 * len(query_variants)))]
         ann_composite_ids = [
             str(r.get("composite_id", "")).strip()
             for r in ann_composite_results
             if str(r.get("composite_id", "")).strip()
         ]
+        _debug_search("phase1.ann_composites", {
+            "count": len(ann_composite_results),
+            "ids": ann_composite_ids,
+            "per_query": ann_per_query,
+            "raw_hits": ann_composite_results,
+        })
         ann_composites: list[CompositeRecord] = []
         for cid in ann_composite_ids:
             comp = self._sqlite.get_synthesized(cid)
@@ -235,6 +309,10 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 composites=ann_composites,
                 reference_time=reference_time,
             )
+            _debug_search("phase1.llm_filter", {
+                "selected_ids": sorted(sel_ids),
+                "needs_detail_ids": sorted(det_ids),
+            })
             for composite in ann_composites:
                 cid = composite.composite_id
                 if cid in sel_ids and cid not in seen_ids:
@@ -253,6 +331,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         # ─── Phase 2: 下钻叶子 MemoryRecord ──────────────────────
         for composite_id in list(needs_detail_ids):
             leaf_ids = self._collect_leaf_record_ids(composite_id)
+            _debug_search("phase2.tree_descent", {
+                "composite_id": composite_id,
+                "leaf_count": len(leaf_ids),
+                "leaf_ids": leaf_ids,
+            })
             records = self._sqlite.get_records_by_ids(leaf_ids)
             for record in records:
                 if record.expired:
@@ -271,9 +354,17 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 ))
 
         # ─── Phase 3: 反思循环 ────────────────────────────────────
-        for _round in range(self._max_reflection_rounds):
+        reflection_rounds = max(self._max_reflection_rounds, 1 if plan.is_aggregate_query else 0)
+        for _round in range(reflection_rounds):
+            force_broad_recall = bool(plan.is_aggregate_query and _round == 0)
             if selected_candidates:
                 context_preview = self._format_context(selected_candidates)
+                _debug_search("phase3.context_before_adequacy", {
+                    "round": _round + 1,
+                    "candidate_count": len(selected_candidates),
+                    "candidate_ids": [c.id for c in selected_candidates],
+                    "context": context_preview,
+                })
                 adequacy = self._check_adequacy(
                     query,
                     context_preview,
@@ -283,19 +374,89 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 )
             else:
                 adequacy = {"is_sufficient": False}
-            if adequacy["is_sufficient"]:
+            _debug_search("phase3.adequacy", {
+                "round": _round + 1,
+                "adequacy": adequacy,
+            })
+            if adequacy["is_sufficient"] and not force_broad_recall:
                 break
+            if adequacy["is_sufficient"] and force_broad_recall:
+                _debug_search("phase3.aggregate_force_broad_recall", {
+                    "round": _round + 1,
+                    "reason": "aggregate query requires at least one atomic record/raw-turn recall pass before early stop",
+                    "aggregate_target": plan.aggregate_target,
+                    "aggregate_constraints": plan.aggregate_constraints,
+                })
 
-            # Fallback: FTS + 语义向量 + 实用向量检索 MemoryRecord + 原始 turns
-            fallback_candidates = self._fallback_record_search(
-                query=query,
-                top_k=max(top_k, 10),
+            # Fallback: FTS + 语义向量 + 实用向量检索 MemoryRecord + 原始 turns。
+            # 同样逐个执行 query variants，避免 plan 里的细粒度查询没有进入补召回。
+            fallback_by_id: dict[str, dict[str, Any]] = {}
+            raw_turn_by_id: dict[str, dict[str, Any]] = {}
+            fallback_per_query: list[dict[str, Any]] = []
+            raw_turn_per_query: list[dict[str, Any]] = []
+            for variant in query_variants:
+                record_hits = self._fallback_record_search(
+                    query=variant,
+                    top_k=max(top_k, 10),
+                )
+                fallback_per_query.append({
+                    "query": variant,
+                    "count": len(record_hits),
+                    "ids": [str(item.get("id", "")).strip() for item in record_hits],
+                    "candidates": self._debug_candidate_payload(record_hits),
+                })
+                for item in record_hits:
+                    cid = str(item.get("id", "")).strip()
+                    if not cid:
+                        continue
+                    current = fallback_by_id.get(cid)
+                    distance = float(item.get("semantic_distance", 1.0))
+                    if current is None or distance < float(current.get("semantic_distance", 1.0)):
+                        fallback_by_id[cid] = dict(item)
+                    fallback_by_id[cid].setdefault("matched_queries", [])
+                    if variant not in fallback_by_id[cid]["matched_queries"]:
+                        fallback_by_id[cid]["matched_queries"].append(variant)
+
+                turn_hits = self._search_raw_turns_direct(
+                    query=variant,
+                    session_id=session_id,
+                    top_k=max(top_k, 10),
+                )
+                raw_turn_per_query.append({
+                    "query": variant,
+                    "count": len(turn_hits),
+                    "ids": [str(item.get("id", "")).strip() for item in turn_hits],
+                    "candidates": self._debug_candidate_payload(turn_hits),
+                })
+                for item in turn_hits:
+                    cid = str(item.get("id", "")).strip()
+                    if not cid:
+                        continue
+                    current = raw_turn_by_id.get(cid)
+                    distance = float(item.get("semantic_distance", 1.0))
+                    if current is None or distance < float(current.get("semantic_distance", 1.0)):
+                        raw_turn_by_id[cid] = dict(item)
+                    raw_turn_by_id[cid].setdefault("matched_queries", [])
+                    if variant not in raw_turn_by_id[cid]["matched_queries"]:
+                        raw_turn_by_id[cid]["matched_queries"].append(variant)
+
+            fallback_candidates = sorted(
+                fallback_by_id.values(),
+                key=lambda item: float(item.get("semantic_distance", 1.0)),
             )
-            raw_turn_candidates = self._search_raw_turns_direct(
-                query=query,
-                session_id=session_id,
-                top_k=max(top_k, 10),
+            raw_turn_candidates = sorted(
+                raw_turn_by_id.values(),
+                key=lambda item: float(item.get("semantic_distance", 1.0)),
             )
+            _debug_search("phase3.fallback_candidates", {
+                "round": _round + 1,
+                "record_count": len(fallback_candidates),
+                "raw_turn_count": len(raw_turn_candidates),
+                "record_per_query": fallback_per_query,
+                "raw_turn_per_query": raw_turn_per_query,
+                "record_candidates": self._debug_candidate_payload(fallback_candidates),
+                "raw_turn_candidates": self._debug_candidate_payload(raw_turn_candidates),
+            })
             new_added = 0
             for cdata in fallback_candidates:
                 cid = str(cdata.get("id", ""))
@@ -339,10 +500,20 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             plan=plan,
             focus_terms=[],
         )
+        _debug_search("episodic_enriched", {
+            "candidate_count": len(selected_candidates),
+            "candidates": self._debug_scored_payload(selected_candidates),
+        })
 
         # 按 final_score 降序排列，取 top_k
         selected_candidates.sort(key=lambda c: c.final_score, reverse=True)
         top = selected_candidates[:top_k]
+        _debug_search("search.final_top", {
+            "top_k": top_k,
+            "selected_total": len(selected_candidates),
+            "kept": self._debug_scored_payload(top),
+            "dropped": self._debug_scored_payload(selected_candidates[top_k:]),
+        })
 
         # 记录使用日志
         log_id = self._log_usage(
@@ -367,6 +538,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         # 格式化
         context = self._format_context(top)
         provenance = self._build_provenance(top)
+        _debug_search("search.final_context", {
+            "context": context,
+            "provenance_count": len(provenance),
+            "provenance": provenance,
+        })
 
         return SemanticSearchResult(
             context=context,
@@ -987,6 +1163,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             include_episodic_context=bool(d.get("include_episodic_context", False)),
             episodic_turn_window=max(0, int(d.get("episodic_turn_window", 0) or 0)),
             depth=int(d.get("depth", 5)),
+            is_aggregate_query=bool(d.get("is_aggregate_query", False)),
+            aggregate_target=str(d.get("aggregate_target", "") or ""),
+            aggregate_constraints=[
+                str(x) for x in (d.get("aggregate_constraints") or []) if str(x or "").strip()
+            ],
             reasoning=d.get("reasoning", ""),
         )
 
@@ -1028,21 +1209,35 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             "mode": plan.mode,
             "semantic_queries": list(plan.semantic_queries),
             "pragmatic_queries": list(plan.pragmatic_queries),
-            "temporal_filter": plan.temporal_filter,
-            "tool_hints": list(plan.tool_hints),
-            "required_constraints": list(plan.required_constraints),
-            "required_affordances": list(plan.required_affordances),
-            "missing_slots": list(plan.missing_slots),
-            "tree_retrieval_mode": plan.tree_retrieval_mode,
-            "tree_expansion_depth": plan.tree_expansion_depth,
-            "include_leaf_records": plan.include_leaf_records,
-            "include_episodic_context": plan.include_episodic_context,
-            "episodic_turn_window": plan.episodic_turn_window,
             "depth": plan.depth,
-            "reasoning": plan.reasoning,
+            "is_aggregate_query": plan.is_aggregate_query,
+            "aggregate_target": plan.aggregate_target,
+            "aggregate_constraints": list(plan.aggregate_constraints),
         }
 
     @staticmethod
+    def _normalize_plan_for_query(query: str, plan: SearchPlan) -> SearchPlan:
+        """Apply execution settings from the LLM plan without rule-based re-planning."""
+        if not plan.is_aggregate_query:
+            return plan
+
+        if not plan.semantic_queries:
+            plan.semantic_queries = [str(query or "").strip()]
+        plan.tree_retrieval_mode = "descend"
+        plan.tree_expansion_depth = max(2, int(plan.tree_expansion_depth or 0))
+        plan.include_leaf_records = True
+        plan.include_episodic_context = True
+        plan.episodic_turn_window = max(1, int(plan.episodic_turn_window or 0))
+        plan.depth = max(15, int(plan.depth or 0))
+        return plan
+
+    @staticmethod
+    def _build_plan_query_variants(query: str, plan: SearchPlan) -> list[str]:
+        secondary = list(plan.semantic_queries or []) + list(plan.pragmatic_queries or [])
+        if plan.is_aggregate_query:
+            secondary.extend(plan.missing_slots or [])
+        return CompactSemanticEngine._merge_unique([query], secondary)
+
     @staticmethod
     def _merge_unique(primary: list[str], secondary: list[str]) -> list[str]:
         seen: set[str] = set()
@@ -1511,6 +1706,50 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             return ""
         return re.sub(r"\.\d+(?=(?:Z|[+-]\d{2}:?\d{2})?$)", "", raw)
 
+    @staticmethod
+    def _debug_candidate_payload(candidates: list[dict[str, Any]], *, max_text: int = 500) -> list[dict[str, Any]]:
+        payload: list[dict[str, Any]] = []
+        for item in candidates:
+            text = str(
+                item.get("display_text")
+                or item.get("semantic_text")
+                or item.get("normalized_text")
+                or ""
+            ).strip()
+            if len(text) > max_text:
+                text = text[:max_text] + "..."
+            payload.append({
+                "id": item.get("id") or item.get("record_id") or item.get("episode_id") or "",
+                "source": item.get("source", ""),
+                "memory_type": item.get("memory_type", ""),
+                "semantic_distance": item.get("semantic_distance", ""),
+                "created_at": item.get("created_at", ""),
+                "source_session": item.get("source_session", ""),
+                "evidence_turn_range": item.get("evidence_turn_range", []),
+                "entities": item.get("entities", []),
+                "temporal": item.get("temporal", {}),
+                "text": text,
+            })
+        return payload
+
+    @classmethod
+    def _debug_scored_payload(cls, scored: list[ScoredCandidate], *, max_text: int = 500) -> list[dict[str, Any]]:
+        payload: list[dict[str, Any]] = []
+        for candidate in scored:
+            item = dict(candidate.data)
+            rows = cls._debug_candidate_payload([item], max_text=max_text)
+            row = rows[0] if rows else {}
+            row.update({
+                "id": candidate.id,
+                "source": candidate.source,
+                "final_score": candidate.final_score,
+                "score_breakdown": candidate.score_breakdown,
+                "episode_refs": item.get("episode_refs", []),
+                "episodic_context": str(item.get("episodic_context") or "")[:max_text],
+            })
+            payload.append(row)
+        return payload
+
     def _format_context(self, scored: list[ScoredCandidate]) -> str:
         """将 top-k 候选格式化为 LLM 可注入的文本。"""
         if not scored:
@@ -1592,20 +1831,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             session_id=session_id,
             timestamp=datetime.now(timezone.utc).isoformat(),
             query=query,
-            retrieval_plan={
-                "mode": plan.mode,
-                "semantic_queries": plan.semantic_queries,
-                "pragmatic_queries": plan.pragmatic_queries,
-                "required_constraints": plan.required_constraints,
-                "required_affordances": plan.required_affordances,
-                "missing_slots": plan.missing_slots,
-                "tree_retrieval_mode": plan.tree_retrieval_mode,
-                "tree_expansion_depth": plan.tree_expansion_depth,
-                "include_leaf_records": plan.include_leaf_records,
-                "include_episodic_context": plan.include_episodic_context,
-                "episodic_turn_window": plan.episodic_turn_window,
-                "depth": plan.depth,
-            },
+            retrieval_plan=self._plan_to_dict(plan),
             action_state=self._action_state_to_dict(action_state),
             retrieved_record_ids=retrieved_ids,
             kept_record_ids=kept_ids,

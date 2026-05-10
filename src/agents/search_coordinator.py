@@ -9,7 +9,6 @@ ActionState，让 planner 看到“当前想做什么、最近发生了什么、
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from src.agents.base_agent import BaseAgent
@@ -329,9 +328,41 @@ class SearchCoordinator(BaseAgent):
                 raw = parts[1].lstrip("json").strip() if len(parts) >= 3 else parts[-1].strip()
             plan = json.loads(raw)
             plan.pop("reasoning", None)
-            return plan
+            return self._normalize_retrieval_plan(plan, user_query)
         except Exception:
             return None
+
+    @classmethod
+    def _normalize_retrieval_plan(cls, plan: dict[str, Any], user_query: str) -> dict[str, Any]:
+        """Normalize the LLM retrieval plan shape without re-planning by rules."""
+        plan = dict(plan or {})
+        is_aggregate = bool(plan.get("is_aggregate_query"))
+        slim = {
+            "mode": str(plan.get("mode") or "answer"),
+            "semantic_queries": [str(x) for x in (plan.get("semantic_queries") or []) if str(x or "").strip()],
+            "pragmatic_queries": [str(x) for x in (plan.get("pragmatic_queries") or []) if str(x or "").strip()],
+            "depth": int(plan.get("depth", 5) or 5),
+        }
+        if not is_aggregate:
+            slim["is_aggregate_query"] = False
+            slim["aggregate_target"] = ""
+            slim["aggregate_constraints"] = []
+            return slim
+
+        target = str(plan.get("aggregate_target") or "").strip()
+        constraints = [
+            str(x) for x in (plan.get("aggregate_constraints") or []) if str(x or "").strip()
+        ]
+        semantic_queries = [
+            str(x) for x in (plan.get("semantic_queries") or []) if str(x or "").strip()
+        ]
+
+        slim["is_aggregate_query"] = True
+        slim["aggregate_target"] = target
+        slim["aggregate_constraints"] = constraints
+        slim["semantic_queries"] = semantic_queries or [str(user_query or "").strip()]
+        slim["depth"] = max(15, int(plan.get("depth", 0) or 0))
+        return slim
 
     def _build_skill_query(
         self,
@@ -350,10 +381,6 @@ class SearchCoordinator(BaseAgent):
         if mode in {"action", "mixed"}:
             for key in (
                 "pragmatic_queries",
-                "tool_hints",
-                "required_constraints",
-                "required_affordances",
-                "missing_slots",
             ):
                 for value in plan.get(key, []) or []:
                     item = str(value or "").strip()
