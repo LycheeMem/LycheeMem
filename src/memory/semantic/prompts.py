@@ -201,21 +201,19 @@ Recommended top_k: 3–5 for simple queries, 8–15 for complex or multi-topic q
 
 ### 5. Aggregate/list/count questions
 Some factual questions require collecting **all matching memories** rather than finding one best memory.
-Set `is_aggregate_query: true` when the user asks to count, list, enumerate, compare, or summarize multiple personal-memory facts, especially with phrasing like:
-- "how many ...", "which ...", "what ... did I ...", "list all ...", "all the ...", "every ...", "分别/哪些/几个/多少/所有/一共/总共".
-- Questions involving plural objects or multiple actions across time/sessions, e.g. "How many kitchen items did I replace or fix?"
+Set `is_aggregate_query: true` when the user is asking for a count, list, enumeration, comparison, or summary that requires collecting multiple personal-memory facts across records or sessions.
 
 For aggregate questions:
 - Set `depth` to at least 15.
 - Put the thing being counted/listed in `aggregate_target`.
-- Put required predicates or filters in `aggregate_constraints`, such as `["replaced", "fixed", "kitchen"]`.
+- Put required predicates or filters in `aggregate_constraints`.
 - Treat `semantic_queries` as recall probes, not final filters. Some words in the user query are filters (location, category, owner, time, project, relationship), and matching memories may omit those filters while still belonging to the requested set.
 - For aggregate questions, generate a balanced set of semantic queries:
   1. A few fully qualified probes that preserve the target and predicate.
   2. A few decontextualized probes that remove non-essential filters but keep the object class and predicate.
   3. A few event-style predicate probes that describe how the fact may appear in ordinary conversation, without forcing the category/location word.
 - Do not enumerate concrete likely answer entities unless they are explicitly named in <USER_QUERY>, <RECENT_CONTEXT>, or <ACTION_STATE>. Generalize by separating filters from recall probes, not by hard-coding examples.
-- For a query shaped like "How many [category/location-qualified objects] did I [action A] or [action B]?", include probes for:
+- For questions shaped as a count/list over category- or location-qualified objects plus one or more predicates, include probes for:
   - the fully qualified object set with each action,
   - the object set with category/location qualifiers removed,
   - natural event descriptions of each action that do not require the category/location word.
