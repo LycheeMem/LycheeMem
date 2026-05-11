@@ -22,9 +22,9 @@ from src.llm.base import BaseLLM, Message
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_TIMEOUT_SECONDS = 60.0
+_DEFAULT_TIMEOUT_SECONDS = 600.0
 _DEFAULT_RETRY_ATTEMPTS = 10
-_DEFAULT_RETRY_BACKOFF_SECONDS = 1.0
+_DEFAULT_RETRY_BACKOFF_SECONDS = 2.0
 
 # ── LiteLLM 全局性能优化（模块首次导入时执行一次）──────────────────────────────
 # 1. telemetry=False：禁用 LiteLLM 在每次 API 调用后向其服务器发送遥测 HTTP 请求。
