@@ -55,13 +55,25 @@ def _create_llm(settings):
 
 def _create_embedder(settings):
     backend = str(getattr(settings, "embedding_backend", "litellm") or "litellm").lower()
-    if backend == "http":
+    embedding_model = str(getattr(settings, "embedding_model", "") or "").strip()
+    embedding_api_base = str(getattr(settings, "embedding_api_base", "") or "").strip()
+    looks_like_shared_embedding_server = (
+        embedding_model == "local-embed"
+        or embedding_api_base.rstrip("/").endswith(":8765")
+    )
+
+    if backend == "http" or looks_like_shared_embedding_server:
         from src.embedder.http_embedder import HTTPEmbeddingServerEmbedder
 
+        if not embedding_api_base:
+            raise RuntimeError(
+                "EMBEDDING_BACKEND=http or EMBEDDING_MODEL=local-embed requires "
+                "EMBEDDING_API_BASE, for example http://localhost:8765"
+            )
         return HTTPEmbeddingServerEmbedder(
-            api_base=settings.embedding_api_base,
+            api_base=embedding_api_base,
             api_key=settings.embedding_api_key or None,
-            model=settings.embedding_model or "local-embed",
+            model=embedding_model or "local-embed",
         )
 
     # 本地模式：使用 sentence-transformers，不调用远程 API
