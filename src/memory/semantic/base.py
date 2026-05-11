@@ -60,7 +60,7 @@ class BaseSemanticMemoryEngine(ABC):
         Args:
             query: 用户查询文本。
             session_id: 当前会话 ID（可选，用于 session-aware 检索）。
-            top_k: 检索返回上限；0 表示由 planner 的 depth 决定。
+            top_k: 检索返回上限；0 表示由检索模式决定。
             query_embedding: 预计算的 query 向量。
             recent_context: 最近几轮对话上下文（用于 state-conditioned retrieval）。
             action_state: 当前决策状态（可选）。

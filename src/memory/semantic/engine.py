@@ -44,6 +44,7 @@ from src.memory.semantic.prompts import (
     RETRIEVAL_ADEQUACY_CHECK_SYSTEM,
     FEEDBACK_CLASSIFICATION_SYSTEM,
 )
+from src.memory.semantic.reranker import LocalCrossEncoderReranker, RerankCandidate
 from src.memory.semantic.scorer import ScoredCandidate, ScoringWeights
 from src.memory.semantic.sqlite_store import SQLiteSemanticStore
 from src.memory.semantic.synthesizer import RecordFusionEngine
@@ -111,6 +112,15 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         scorer_weights: ScoringWeights | None = None,
         embedding_dim: int = 0,
         max_reflection_rounds: int = 2,
+        composite_filter_enabled: bool = False,
+        adequacy_check_enabled: bool = False,
+        reranker_enabled: bool = False,
+        reranker_model: str = "BAAI/bge-reranker-v2-m3",
+        reranker_device: str = "auto",
+        reranker_batch_size: int = 16,
+        reranker_max_length: int = 512,
+        reranker_composite_limit: int = 80,
+        reranker_fallback_limit: int = 100,
     ):
         self._llm = llm
         self._embedder = embedder
@@ -134,6 +144,21 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
         self._dedup_threshold = dedup_threshold
         self._max_reflection_rounds = max_reflection_rounds
+        self._composite_filter_enabled = bool(composite_filter_enabled)
+        self._adequacy_check_enabled = bool(adequacy_check_enabled)
+        self._reranker_enabled = bool(reranker_enabled)
+        self._reranker_composite_limit = max(20, int(reranker_composite_limit or 80))
+        self._reranker_fallback_limit = max(20, int(reranker_fallback_limit or 100))
+        self._reranker = (
+            LocalCrossEncoderReranker(
+                model_name=reranker_model,
+                device=reranker_device,
+                batch_size=reranker_batch_size,
+                max_length=reranker_max_length,
+            )
+            if self._reranker_enabled
+            else None
+        )
 
     @staticmethod
     def _parse_reference_time(reference_time: str | None) -> datetime | None:
@@ -210,12 +235,12 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                  检索补充 MemoryRecord + 原始对话 turns
         """
         action_state_obj = self._dict_to_action_state(action_state)
-        top_k = max(1, int(top_k or 5))
+        requested_top_k = max(0, int(top_k or 0))
 
         _debug_search("search.start", {
             "query": query,
             "session_id": session_id,
-            "top_k": top_k,
+            "requested_top_k": requested_top_k,
             "reference_time": reference_time,
             "has_query_embedding": query_embedding is not None,
             "recent_context_chars": len(recent_context or ""),
@@ -230,13 +255,12 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 mode="answer",
                 semantic_queries=[query],
                 pragmatic_queries=[],
-                depth=top_k,
+                depth=self._depth_for_mode("answer", False),
                 include_episodic_context=True,
             )
 
         plan = self._normalize_plan_for_query(query, plan)
-        if plan.is_aggregate_query:
-            top_k = max(top_k, int(plan.depth or 0), 15)
+        top_k = max(requested_top_k, int(plan.depth or 0), 1)
 
         _debug_search("search.plan", self._plan_to_dict(plan))
         query_variants = self._build_plan_query_variants(query, plan)
@@ -274,42 +298,99 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                     continue
                 current = ann_composite_by_id.get(cid)
                 distance = float(r.get("_distance", 999.0))
+                matched_queries = list((current or {}).get("matched_queries") or [])
                 if current is None or distance < float(current.get("_distance", 999.0)):
                     ann_composite_by_id[cid] = dict(r)
+                    ann_composite_by_id[cid]["matched_queries"] = matched_queries
                 ann_composite_by_id[cid].setdefault("matched_queries", [])
                 if variant not in ann_composite_by_id[cid]["matched_queries"]:
                     ann_composite_by_id[cid]["matched_queries"].append(variant)
+        composite_prefilter_limit = max(
+            20,
+            min(
+                self._reranker_composite_limit if self._reranker is not None else 80,
+                20 * len(query_variants),
+            ),
+        )
         ann_composite_results = sorted(
             ann_composite_by_id.values(),
             key=lambda r: float(r.get("_distance", 999.0)),
-        )[: max(20, min(80, 20 * len(query_variants)))]
+        )[:composite_prefilter_limit]
         ann_composite_ids = [
             str(r.get("composite_id", "")).strip()
             for r in ann_composite_results
             if str(r.get("composite_id", "")).strip()
         ]
+        ann_composites_by_id: dict[str, CompositeRecord] = {}
+        for cid in ann_composite_ids:
+            comp = self._sqlite.get_synthesized(cid)
+            if comp:
+                ann_composites_by_id[cid] = comp
+
+        composite_hit_by_id: dict[str, dict[str, Any]] = {
+            str(r.get("composite_id", "")).strip(): dict(r)
+            for r in ann_composite_results
+            if str(r.get("composite_id", "")).strip()
+        }
+        if self._reranker is not None and ann_composites_by_id:
+            composite_rerank_candidates: list[dict[str, Any]] = []
+            for r in ann_composite_results:
+                cid = str(r.get("composite_id", "")).strip()
+                comp = ann_composites_by_id.get(cid)
+                if comp is None:
+                    continue
+                cdata = self._synth_to_candidate(comp)
+                cdata["semantic_distance"] = self._safe_float(r.get("_distance"), 1.0)
+                cdata["_distance"] = self._safe_float(r.get("_distance"), 1.0)
+                cdata["matched_queries"] = list(r.get("matched_queries") or [])
+                composite_rerank_candidates.append(cdata)
+
+            ann_composite_results = self._rerank_candidate_dicts(
+                query=query,
+                plan=plan,
+                candidates=composite_rerank_candidates,
+                limit=composite_prefilter_limit,
+                distance_key="semantic_distance",
+            )
+            ann_composite_ids = [
+                str(r.get("id", "")).strip()
+                for r in ann_composite_results
+                if str(r.get("id", "")).strip()
+            ]
+            composite_hit_by_id = {
+                str(r.get("id", "")).strip(): dict(r)
+                for r in ann_composite_results
+                if str(r.get("id", "")).strip()
+            }
         _debug_search("phase1.ann_composites", {
             "count": len(ann_composite_results),
             "ids": ann_composite_ids,
             "per_query": ann_per_query,
             "raw_hits": ann_composite_results,
         })
-        ann_composites: list[CompositeRecord] = []
-        for cid in ann_composite_ids:
-            comp = self._sqlite.get_synthesized(cid)
-            if comp:
-                ann_composites.append(comp)
+        ann_composites: list[CompositeRecord] = [
+            ann_composites_by_id[cid]
+            for cid in ann_composite_ids
+            if cid in ann_composites_by_id
+        ]
 
         needs_detail_ids: set[str] = set()
 
         if ann_composites:
-            sel_ids, det_ids = self._llm_filter_composites(
-                query=query,
-                recent_context=recent_context,
-                composites=ann_composites,
-                reference_time=reference_time,
-            )
+            if self._composite_filter_enabled:
+                sel_ids, det_ids = self._llm_filter_composites(
+                    query=query,
+                    recent_context=recent_context,
+                    composites=ann_composites,
+                    reference_time=reference_time,
+                )
+                filter_mode = "llm"
+            else:
+                sel_ids = {composite.composite_id for composite in ann_composites}
+                det_ids = set(sel_ids) if plan.is_aggregate_query else set()
+                filter_mode = "disabled_select_all"
             _debug_search("phase1.llm_filter", {
+                "mode": filter_mode,
                 "selected_ids": sorted(sel_ids),
                 "needs_detail_ids": sorted(det_ids),
             })
@@ -318,11 +399,34 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 if cid in sel_ids and cid not in seen_ids:
                     seen_ids.add(cid)
                     data = self._synth_to_candidate(composite)
+                    hit_data = composite_hit_by_id.get(cid, {})
+                    if hit_data:
+                        data.update({
+                            "semantic_distance": self._safe_float(
+                                hit_data.get("semantic_distance", hit_data.get("_distance")),
+                                data.get("semantic_distance", 0.5),
+                            ),
+                            "matched_queries": list(hit_data.get("matched_queries") or []),
+                        })
+                        if "rerank_score" in hit_data:
+                            data["rerank_score"] = hit_data.get("rerank_score")
+                            data["cross_encoder_score"] = hit_data.get("cross_encoder_score")
+                    final_score = (
+                        self._final_score_from_rerank(data, "composite", bonus=0.05)
+                        if self._reranker is not None and "rerank_score" in data
+                        else 1.0
+                    )
+                    score_breakdown = {"llm_selected": 1.0}
+                    if "rerank_score" in data:
+                        score_breakdown.update({
+                            "rerank_score": data.get("rerank_score"),
+                            "cross_encoder_score": data.get("cross_encoder_score"),
+                        })
                     selected_candidates.append(ScoredCandidate(
                         id=cid,
                         source="composite",
-                        final_score=1.0,
-                        score_breakdown={"llm_selected": 1.0},
+                        final_score=final_score,
+                        score_breakdown=score_breakdown,
                         data=data,
                     ))
                 if cid in det_ids:
@@ -345,16 +449,38 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                     continue
                 seen_ids.add(rid)
                 data = self._record_to_candidate(record)
+                parent_hit = composite_hit_by_id.get(composite_id, {})
+                if parent_hit:
+                    data["tree_parent_id"] = composite_id
+                    data["matched_queries"] = list(parent_hit.get("matched_queries") or [])
+                    if "rerank_score" in parent_hit:
+                        data["rerank_score"] = parent_hit.get("rerank_score")
+                        data["cross_encoder_score"] = parent_hit.get("cross_encoder_score")
+                final_score = (
+                    self._final_score_from_rerank(data, "record", bonus=0.03)
+                    if self._reranker is not None and "rerank_score" in data
+                    else 0.9
+                )
+                score_breakdown = {"tree_descent": 1.0}
+                if "rerank_score" in data:
+                    score_breakdown.update({
+                        "parent_rerank_score": data.get("rerank_score"),
+                        "cross_encoder_score": data.get("cross_encoder_score"),
+                    })
                 selected_candidates.append(ScoredCandidate(
                     id=rid,
                     source="record",
-                    final_score=0.9,
-                    score_breakdown={"tree_descent": 1.0},
+                    final_score=final_score,
+                    score_breakdown=score_breakdown,
                     data=data,
                 ))
 
         # ─── Phase 3: 反思循环 ────────────────────────────────────
-        reflection_rounds = max(self._max_reflection_rounds, 1 if plan.is_aggregate_query else 0)
+        reflection_rounds = (
+            1
+            if not self._adequacy_check_enabled
+            else max(self._max_reflection_rounds, 1 if plan.is_aggregate_query else 0)
+        )
         for _round in range(reflection_rounds):
             force_broad_recall = bool(plan.is_aggregate_query and _round == 0)
             if selected_candidates:
@@ -365,17 +491,24 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                     "candidate_ids": [c.id for c in selected_candidates],
                     "context": context_preview,
                 })
-                adequacy = self._check_adequacy(
-                    query,
-                    context_preview,
-                    plan=plan,
-                    action_state=action_state_obj,
-                    reference_time=reference_time,
-                )
+                if self._adequacy_check_enabled:
+                    adequacy = self._check_adequacy(
+                        query,
+                        context_preview,
+                        plan=plan,
+                        action_state=action_state_obj,
+                        reference_time=reference_time,
+                    )
+                    adequacy_mode = "llm"
+                else:
+                    adequacy = {"is_sufficient": False, "missing_info": "adequacy_check disabled"}
+                    adequacy_mode = "disabled_force_fallback"
             else:
                 adequacy = {"is_sufficient": False}
+                adequacy_mode = "no_candidates"
             _debug_search("phase3.adequacy", {
                 "round": _round + 1,
+                "mode": adequacy_mode,
                 "adequacy": adequacy,
             })
             if adequacy["is_sufficient"] and not force_broad_recall:
@@ -411,8 +544,10 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                         continue
                     current = fallback_by_id.get(cid)
                     distance = float(item.get("semantic_distance", 1.0))
+                    matched_queries = list((current or {}).get("matched_queries") or [])
                     if current is None or distance < float(current.get("semantic_distance", 1.0)):
                         fallback_by_id[cid] = dict(item)
+                        fallback_by_id[cid]["matched_queries"] = matched_queries
                     fallback_by_id[cid].setdefault("matched_queries", [])
                     if variant not in fallback_by_id[cid]["matched_queries"]:
                         fallback_by_id[cid]["matched_queries"].append(variant)
@@ -434,8 +569,10 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                         continue
                     current = raw_turn_by_id.get(cid)
                     distance = float(item.get("semantic_distance", 1.0))
+                    matched_queries = list((current or {}).get("matched_queries") or [])
                     if current is None or distance < float(current.get("semantic_distance", 1.0)):
                         raw_turn_by_id[cid] = dict(item)
+                        raw_turn_by_id[cid]["matched_queries"] = matched_queries
                     raw_turn_by_id[cid].setdefault("matched_queries", [])
                     if variant not in raw_turn_by_id[cid]["matched_queries"]:
                         raw_turn_by_id[cid]["matched_queries"].append(variant)
@@ -448,6 +585,34 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 raw_turn_by_id.values(),
                 key=lambda item: float(item.get("semantic_distance", 1.0)),
             )
+            if self._reranker is not None:
+                combined_candidates: list[dict[str, Any]] = []
+                for item in fallback_candidates:
+                    cdata = dict(item)
+                    cdata["source"] = cdata.get("source") or "record"
+                    combined_candidates.append(cdata)
+                for item in raw_turn_candidates:
+                    cdata = dict(item)
+                    cdata["source"] = "episode"
+                    combined_candidates.append(cdata)
+
+                reranked_fallback = self._rerank_candidate_dicts(
+                    query=query,
+                    plan=plan,
+                    candidates=combined_candidates,
+                    limit=self._reranker_fallback_limit,
+                    distance_key="semantic_distance",
+                )
+                fallback_candidates = [
+                    item
+                    for item in reranked_fallback
+                    if str(item.get("source") or "").casefold() != "episode"
+                ]
+                raw_turn_candidates = [
+                    item
+                    for item in reranked_fallback
+                    if str(item.get("source") or "").casefold() == "episode"
+                ]
             _debug_search("phase3.fallback_candidates", {
                 "round": _round + 1,
                 "record_count": len(fallback_candidates),
@@ -463,11 +628,22 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 if not cid or cid in seen_ids:
                     continue
                 seen_ids.add(cid)
+                final_score = (
+                    self._final_score_from_rerank(cdata, cdata.get("source", "record"), bonus=0.01)
+                    if self._reranker is not None and "rerank_score" in cdata
+                    else 0.7
+                )
+                score_breakdown = {"fallback_search": 1.0}
+                if "rerank_score" in cdata:
+                    score_breakdown.update({
+                        "rerank_score": cdata.get("rerank_score"),
+                        "cross_encoder_score": cdata.get("cross_encoder_score"),
+                    })
                 selected_candidates.append(ScoredCandidate(
                     id=cid,
                     source=cdata.get("source", "record"),
-                    final_score=0.7,
-                    score_breakdown={"fallback_search": 1.0},
+                    final_score=final_score,
+                    score_breakdown=score_breakdown,
                     data=cdata,
                 ))
                 new_added += 1
@@ -477,11 +653,22 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 if not cid or cid in seen_ids:
                     continue
                 seen_ids.add(cid)
+                final_score = (
+                    self._final_score_from_rerank(cdata, "episode", bonus=0.01)
+                    if self._reranker is not None and "rerank_score" in cdata
+                    else 0.65
+                )
+                score_breakdown = {"fallback_raw_turn": 1.0}
+                if "rerank_score" in cdata:
+                    score_breakdown.update({
+                        "rerank_score": cdata.get("rerank_score"),
+                        "cross_encoder_score": cdata.get("cross_encoder_score"),
+                    })
                 selected_candidates.append(ScoredCandidate(
                     id=cid,
                     source="episode",
-                    final_score=0.65,
-                    score_breakdown={"fallback_raw_turn": 1.0},
+                    final_score=final_score,
+                    score_breakdown=score_breakdown,
                     data=cdata,
                 ))
                 new_added += 1
@@ -505,9 +692,17 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             "candidates": self._debug_scored_payload(selected_candidates),
         })
 
-        # 按 final_score 降序排列，取 top_k
+        # 普通检索按 final_score 排序；聚合检索使用覆盖式选择保留更多证据来源。
         selected_candidates.sort(key=lambda c: c.final_score, reverse=True)
-        top = selected_candidates[:top_k]
+        if self._reranker is not None and plan.is_aggregate_query:
+            top = self._coverage_select_scored(selected_candidates, top_k)
+            top_ids = {c.id for c in top}
+            selected_candidates = top + [
+                c for c in selected_candidates
+                if c.id not in top_ids
+            ]
+        else:
+            top = selected_candidates[:top_k]
         _debug_search("search.final_top", {
             "top_k": top_k,
             "selected_total": len(selected_candidates),
@@ -621,6 +816,288 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             return selected_ids, needs_detail_ids
         except (json.JSONDecodeError, ValueError):
             return set(), set()
+
+    def _rerank_candidate_dicts(
+        self,
+        *,
+        query: str,
+        plan: SearchPlan,
+        candidates: list[dict[str, Any]],
+        limit: int,
+        distance_key: str = "semantic_distance",
+    ) -> list[dict[str, Any]]:
+        """Rerank generic candidate dictionaries with the configured reranker."""
+        if not candidates or self._reranker is None:
+            return candidates[:limit]
+
+        cap = max(limit, 1)
+        to_rerank = candidates[:cap]
+        rerank_inputs: list[RerankCandidate] = []
+        for item in to_rerank:
+            cid = self._candidate_id(item)
+            if not cid:
+                continue
+            distance = self._safe_float(
+                item.get(distance_key, item.get("_distance", 1.0)),
+                1.0,
+            )
+            rerank_inputs.append(
+                RerankCandidate(
+                    id=cid,
+                    source=str(item.get("source") or "record"),
+                    text=self._candidate_text(item),
+                    metadata=item,
+                    retrieval_score=self._distance_to_retrieval_score(distance),
+                )
+            )
+
+        try:
+            results = self._reranker.rerank(
+                query=query,
+                retrieval_plan=self._plan_to_dict(plan),
+                candidates=rerank_inputs,
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).warning("semantic reranker failed: %s", exc)
+            _debug_search("reranker.error", {"error": str(exc)})
+            self._reranker = None
+            return candidates[:limit]
+
+        score_by_id = {result.id: result for result in results}
+        ranked: list[dict[str, Any]] = []
+        for item in to_rerank:
+            cid = self._candidate_id(item)
+            if not cid:
+                continue
+            enriched = dict(item)
+            distance = self._safe_float(
+                enriched.get(distance_key, enriched.get("_distance", 1.0)), 1.0
+            )
+            enriched["retrieval_score"] = self._distance_to_retrieval_score(distance)
+            result = score_by_id.get(cid)
+            if result is not None:
+                enriched["rerank_score"] = result.rerank_score
+                enriched["cross_encoder_score"] = result.cross_encoder_score
+            ranked.append(enriched)
+
+        ranked.sort(
+            key=lambda item: (
+                self._safe_float(item.get("rerank_score"), 0.0),
+                self._safe_float(item.get("retrieval_score"), 0.0),
+            ),
+            reverse=True,
+        )
+        if plan.is_aggregate_query:
+            return self._coverage_select_dicts(ranked, limit)
+        return ranked[:limit]
+
+    def _coverage_select_dicts(
+        self,
+        candidates: list[dict[str, Any]],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """MMR-style aggregate selection over generic diversity signals."""
+        if limit <= 0 or not candidates:
+            return []
+        pool = candidates[: max(limit, min(len(candidates), limit * 4))]
+        selected: list[dict[str, Any]] = []
+        remaining = list(pool)
+
+        while remaining and len(selected) < limit:
+            best_index = 0
+            best_score = float("-inf")
+            for index, item in enumerate(remaining):
+                relevance = self._safe_float(item.get("rerank_score"), 0.0)
+                if not relevance:
+                    relevance = self._safe_float(item.get("retrieval_score"), 0.0)
+                max_similarity = max(
+                    (self._candidate_similarity(item, chosen) for chosen in selected),
+                    default=0.0,
+                )
+                score = 0.75 * relevance - 0.25 * max_similarity
+                if score > best_score:
+                    best_score = score
+                    best_index = index
+            selected.append(remaining.pop(best_index))
+        return selected
+
+    def _coverage_select_scored(
+        self,
+        candidates: list[ScoredCandidate],
+        limit: int,
+    ) -> list[ScoredCandidate]:
+        if limit <= 0 or not candidates:
+            return []
+        ordered = sorted(candidates, key=lambda c: c.final_score, reverse=True)
+        pool = ordered[: max(limit, min(len(ordered), limit * 4))]
+        selected: list[ScoredCandidate] = []
+        remaining = list(pool)
+
+        while remaining and len(selected) < limit:
+            best_index = 0
+            best_score = float("-inf")
+            for index, item in enumerate(remaining):
+                max_similarity = max(
+                    (
+                        self._candidate_similarity(item.data, chosen.data)
+                        for chosen in selected
+                    ),
+                    default=0.0,
+                )
+                score = 0.75 * item.final_score - 0.25 * max_similarity
+                if score > best_score:
+                    best_score = score
+                    best_index = index
+            selected.append(remaining.pop(best_index))
+        return selected
+
+    @classmethod
+    def _candidate_similarity(cls, left: dict[str, Any], right: dict[str, Any]) -> float:
+        left_session = cls._as_text(left.get("source_session"))
+        right_session = cls._as_text(right.get("source_session"))
+        session_sim = 1.0 if left_session and left_session == right_session else 0.0
+        entity_sim = cls._jaccard(
+            cls._as_string_set(left.get("entities")),
+            cls._as_string_set(right.get("entities")),
+        )
+        query_sim = cls._jaccard(
+            cls._as_string_set(left.get("matched_queries")),
+            cls._as_string_set(right.get("matched_queries")),
+        )
+        record_sim = cls._jaccard(
+            cls._as_string_set(left.get("source_record_ids")),
+            cls._as_string_set(right.get("source_record_ids")),
+        )
+        turn_sim = cls._jaccard(
+            cls._turn_set(left.get("evidence_turn_range")),
+            cls._turn_set(right.get("evidence_turn_range")),
+        )
+        text_sim = cls._jaccard(
+            cls._token_set(cls._candidate_text(left)),
+            cls._token_set(cls._candidate_text(right)),
+        )
+        return min(
+            1.0,
+            0.15 * session_sim
+            + 0.20 * entity_sim
+            + 0.15 * query_sim
+            + 0.15 * record_sim
+            + 0.10 * turn_sim
+            + 0.25 * text_sim,
+        )
+
+    @staticmethod
+    def _candidate_id(item: dict[str, Any]) -> str:
+        return str(
+            item.get("id")
+            or item.get("composite_id")
+            or item.get("record_id")
+            or item.get("episode_id")
+            or ""
+        ).strip()
+
+    @staticmethod
+    def _candidate_text(item: dict[str, Any]) -> str:
+        return str(
+            item.get("display_text")
+            or item.get("semantic_text")
+            or item.get("normalized_text")
+            or ""
+        ).strip()
+
+    @staticmethod
+    def _distance_to_retrieval_score(distance: float) -> float:
+        if distance != distance:
+            return 0.0
+        return max(0.0, min(1.0, 1.0 - float(distance)))
+
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @classmethod
+    def _final_score_from_rerank(
+        cls,
+        data: dict[str, Any],
+        source: str,
+        *,
+        bonus: float = 0.0,
+    ) -> float:
+        rerank_score = cls._safe_float(
+            data.get("rerank_score"),
+            cls._distance_to_retrieval_score(
+                cls._safe_float(data.get("semantic_distance"), 1.0)
+            ),
+        )
+        final = (
+            rerank_score * cls._source_weight(source)
+            + cls._retrieval_signal_bonus(data)
+            + bonus
+        )
+        return max(0.0, min(1.0, final))
+
+    @staticmethod
+    def _source_weight(source: str) -> float:
+        source_key = str(source or "").strip().casefold()
+        if source_key == "record":
+            return 1.0
+        if source_key == "episode":
+            return 0.96
+        if source_key == "composite":
+            return 0.94
+        return 0.95
+
+    @classmethod
+    def _retrieval_signal_bonus(cls, data: dict[str, Any]) -> float:
+        matched_count = len(cls._as_string_set(data.get("matched_queries")))
+        distance = cls._safe_float(
+            data.get("semantic_distance"),
+            cls._safe_float(data.get("_distance"), 1.0),
+        )
+        distance_bonus = 0.03 * cls._distance_to_retrieval_score(distance)
+        query_bonus = min(0.03, 0.01 * matched_count)
+        return distance_bonus + query_bonus
+
+    @staticmethod
+    def _as_text(value: Any) -> str:
+        return str(value or "").strip()
+
+    @classmethod
+    def _as_string_set(cls, value: Any) -> set[str]:
+        if value is None:
+            return set()
+        if isinstance(value, str):
+            values = [value]
+        elif isinstance(value, (list, tuple, set)):
+            values = list(value)
+        else:
+            values = [value]
+        return {cls._as_text(item).casefold() for item in values if cls._as_text(item)}
+
+    @staticmethod
+    def _token_set(text: str) -> set[str]:
+        return {
+            token
+            for token in re.findall(r"[\w]+", str(text or "").casefold())
+            if token
+        }
+
+    @classmethod
+    def _turn_set(cls, value: Any) -> set[str]:
+        if value is None:
+            return set()
+        if isinstance(value, (list, tuple, set)):
+            return {cls._as_text(item) for item in value if cls._as_text(item)}
+        return {cls._as_text(value)} if cls._as_text(value) else set()
+
+    @staticmethod
+    def _jaccard(left: set[str], right: set[str]) -> float:
+        if not left or not right:
+            return 0.0
+        return len(left & right) / max(1, len(left | right))
 
     def _collect_leaf_record_ids(self, composite_id: str) -> list[str]:
         """递归收集从给定 CompositeRecord 向下到叶子的全部 MemoryRecord ID。
@@ -1145,6 +1622,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         mode = d.get("mode", "answer")
         if mode not in ("answer", "action", "mixed"):
             mode = "answer"
+        is_aggregate_query = bool(d.get("is_aggregate_query", False))
         temporal_filter = d.get("temporal_filter")
         if temporal_filter and not isinstance(temporal_filter, dict):
             temporal_filter = None
@@ -1162,13 +1640,13 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             include_leaf_records=bool(d.get("include_leaf_records", False)),
             include_episodic_context=bool(d.get("include_episodic_context", False)),
             episodic_turn_window=max(0, int(d.get("episodic_turn_window", 0) or 0)),
-            depth=int(d.get("depth", 5)),
-            is_aggregate_query=bool(d.get("is_aggregate_query", False)),
+            depth=self._depth_for_mode(mode, is_aggregate_query),
+            is_aggregate_query=is_aggregate_query,
             aggregate_target=str(d.get("aggregate_target", "") or ""),
             aggregate_constraints=[
                 str(x) for x in (d.get("aggregate_constraints") or []) if str(x or "").strip()
             ],
-            reasoning=d.get("reasoning", ""),
+            reasoning=str(d.get("reason") or d.get("reasoning") or ""),
         )
 
     @staticmethod
@@ -1206,18 +1684,31 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
     @staticmethod
     def _plan_to_dict(plan: SearchPlan) -> dict[str, Any]:
         return {
+            "reason": plan.reasoning,
             "mode": plan.mode,
             "semantic_queries": list(plan.semantic_queries),
             "pragmatic_queries": list(plan.pragmatic_queries),
-            "depth": plan.depth,
+            "execution_depth": plan.depth,
             "is_aggregate_query": plan.is_aggregate_query,
             "aggregate_target": plan.aggregate_target,
             "aggregate_constraints": list(plan.aggregate_constraints),
         }
 
     @staticmethod
-    def _normalize_plan_for_query(query: str, plan: SearchPlan) -> SearchPlan:
+    def _depth_for_mode(mode: str, is_aggregate_query: bool) -> int:
+        if is_aggregate_query:
+            return 15
+        mode_key = str(mode or "answer").strip().lower()
+        if mode_key == "action":
+            return 8
+        if mode_key == "mixed":
+            return 10
+        return 5
+
+    @classmethod
+    def _normalize_plan_for_query(cls, query: str, plan: SearchPlan) -> SearchPlan:
         """Apply execution settings from the LLM plan without rule-based re-planning."""
+        plan.depth = cls._depth_for_mode(plan.mode, plan.is_aggregate_query)
         if not plan.is_aggregate_query:
             return plan
 
@@ -1228,7 +1719,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         plan.include_leaf_records = True
         plan.include_episodic_context = True
         plan.episodic_turn_window = max(1, int(plan.episodic_turn_window or 0))
-        plan.depth = max(15, int(plan.depth or 0))
         return plan
 
     @staticmethod
@@ -1723,6 +2213,10 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 "source": item.get("source", ""),
                 "memory_type": item.get("memory_type", ""),
                 "semantic_distance": item.get("semantic_distance", ""),
+                "retrieval_score": item.get("retrieval_score", ""),
+                "rerank_score": item.get("rerank_score", ""),
+                "cross_encoder_score": item.get("cross_encoder_score", ""),
+                "matched_queries": item.get("matched_queries", []),
                 "created_at": item.get("created_at", ""),
                 "source_session": item.get("source_session", ""),
                 "evidence_turn_range": item.get("evidence_turn_range", []),
@@ -1797,6 +2291,9 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 "semantic_source_type": sc.source,
                 "score": sc.final_score,
                 "score_breakdown": sc.score_breakdown,
+                "rerank_score": d.get("rerank_score", ""),
+                "cross_encoder_score": d.get("cross_encoder_score", ""),
+                "matched_queries": d.get("matched_queries", []),
                 "semantic_text": d.get("semantic_text", ""),
                 "display_text": d.get("display_text") or d.get("semantic_text", ""),
                 "created_at": d.get("created_at", ""),

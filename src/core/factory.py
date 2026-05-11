@@ -112,6 +112,15 @@ def create_pipeline(
         synthesis_min_records=getattr(settings, "compact_synthesis_min_records", 2),
         synthesis_similarity=getattr(settings, "compact_synthesis_similarity", 0.75),
         embedding_dim=embedding_dim,
+        composite_filter_enabled=getattr(settings, "composite_filter_enabled", False),
+        adequacy_check_enabled=getattr(settings, "adequacy_check_enabled", False),
+        reranker_enabled=getattr(settings, "reranker_enabled", False),
+        reranker_model=getattr(settings, "reranker_model", "BAAI/bge-reranker-v2-m3"),
+        reranker_device=getattr(settings, "reranker_device", "auto"),
+        reranker_batch_size=getattr(settings, "reranker_batch_size", 16),
+        reranker_max_length=getattr(settings, "reranker_max_length", 512),
+        reranker_composite_limit=getattr(settings, "reranker_composite_limit", 80),
+        reranker_fallback_limit=getattr(settings, "reranker_fallback_limit", 100),
     )
     # 启动时补全尚未向量化的原始对话 turns（增量，已索引的跳过）
     semantic_engine.index_unvectorized_turns()

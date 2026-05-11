@@ -61,6 +61,7 @@ The quality and completeness of this text directly determines the quality of the
 - **Prioritize recall over precision.** Keep fragments with any matching person, time, place, event, quantity, or preference clue.
 - Keep borderline fragments rather than dropping them aggressively.
 - Partial evidence is still useful — do not discard fragments that are incomplete but directionally relevant.
+- For count/list/category questions, keep fragments when a mentioned object plausibly belongs to the requested category by ordinary world knowledge, even if the category word itself is absent from the fragment.
 
 ## Output Format (strict JSON)
 {
@@ -82,6 +83,7 @@ The quality and completeness of this text directly determines the quality of the
   - Specific descriptive attributes: colors, shapes, materials, exact quoted phrases (e.g., "Trans Lives Matter")
 - Respect time annotations: distinguish `created_at` (when the memory was stored) from `temporal` (when the event occurred). \
 Do not merge facts from different time periods into one tense.
+- When fusing context for count/list/category questions, preserve the object name and, when useful, add a brief category bridge in neutral wording. Do not drop a fragment merely because the fragment names the object but omits the broader category label used in the question.
 - Sort `scored_fragments` descending by `relevance`.
 - Return empty `background_context` only when every fragment is clearly unrelated to the query.
 """
@@ -118,6 +120,11 @@ Guidelines:
   - "What did X do to relax" ↔ "X went on a nature walk after the road trip" — bridge the semantic gap and answer.
   - "What setback did X face in [month]" ↔ memory states X got hurt in that period — match on time + person and answer.
   - Do NOT refuse because the exact phrase in the question does not appear verbatim in memory. Use reasoning to bridge the gap.
+
+- **CATEGORY BRIDGING FOR LISTS/COUNTS** — When the user asks for items in a category, do not require the memory to explicitly repeat that category word.
+  - Decide whether each named object belongs to the requested category using ordinary world knowledge and the memory context.
+  - For aggregate counts/lists, include an object when the object-category match and the requested event/predicate are both supported by the retrieved memory, even if either is expressed indirectly.
+  - Exclude an object only when the memory contradicts the category/event match or the evidence is too weak to support it.
 
 - **INFERENTIAL QUESTIONS** — When the question uses words like "would", "might", "likely", "could", "considered", or asks for a probable judgment:
   - First apply the ENTITY PREMISE CHECK above. Only infer about the person the question explicitly asks about.

@@ -327,7 +327,6 @@ class SearchCoordinator(BaseAgent):
                 parts = raw.split("```")
                 raw = parts[1].lstrip("json").strip() if len(parts) >= 3 else parts[-1].strip()
             plan = json.loads(raw)
-            plan.pop("reasoning", None)
             return self._normalize_retrieval_plan(plan, user_query)
         except Exception:
             return None
@@ -338,10 +337,10 @@ class SearchCoordinator(BaseAgent):
         plan = dict(plan or {})
         is_aggregate = bool(plan.get("is_aggregate_query"))
         slim = {
+            "reason": str(plan.get("reason") or plan.get("reasoning") or ""),
             "mode": str(plan.get("mode") or "answer"),
             "semantic_queries": [str(x) for x in (plan.get("semantic_queries") or []) if str(x or "").strip()],
             "pragmatic_queries": [str(x) for x in (plan.get("pragmatic_queries") or []) if str(x or "").strip()],
-            "depth": int(plan.get("depth", 5) or 5),
         }
         if not is_aggregate:
             slim["is_aggregate_query"] = False
@@ -361,7 +360,6 @@ class SearchCoordinator(BaseAgent):
         slim["aggregate_target"] = target
         slim["aggregate_constraints"] = constraints
         slim["semantic_queries"] = semantic_queries or [str(user_query or "").strip()]
-        slim["depth"] = max(15, int(plan.get("depth", 0) or 0))
         return slim
 
     def _build_skill_query(

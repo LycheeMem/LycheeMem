@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     compact_dedup_threshold: float = 0.85
     compact_synthesis_min_records: int = 2
     compact_synthesis_similarity: float = 0.75
+    composite_filter_enabled: bool = False
+    adequacy_check_enabled: bool = False
+    reranker_enabled: bool = False
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    reranker_device: str = "auto"
+    reranker_batch_size: int = 16
+    reranker_max_length: int = 512
+    reranker_composite_limit: int = 80
+    reranker_fallback_limit: int = 100
 
     skill_db_path: str = "data/skill_store.db"
     skill_vector_db_path: str = "data/skill_vector"

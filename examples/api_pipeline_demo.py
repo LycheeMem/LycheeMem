@@ -2,8 +2,6 @@
 LycheeMem — 纯 API Pipeline 流程示例脚本
 ==========================================
 
-演示如何仅通过 HTTP API 完成完整的 Pipeline 流程，无需直接调用 Python 代码：
-
     Step 1: POST /memory/search     → 从图谱和技能库检索相关记忆
     Step 2: POST /memory/synthesize → LLM-as-Judge 评分融合，生成 background_context
     Step 3: POST /memory/reason     → 基于上下文推理，生成最终回答（写入会话）

@@ -151,17 +151,10 @@ Analyze the user's turn and classify whether it contains explicit feedback regar
 """
 
 RETRIEVAL_PLANNING_SYSTEM = """\
-You are a search planner for a personal AI assistant's long-term memory system.
+You produce a structured JSON plan for looking up relevant personal memories.
 
 ## Your Role
-You analyze the user's query, recent conversation context, and current decision state to produce a structured search plan. \
-The memory system uses your plan to decide what to search for and whether broad recall is needed.
-
-## How Your Output Is Used
-- `semantic_queries` and `pragmatic_queries` are used as search terms for vector similarity search and full-text search across the memory database.
-- `depth` sets how many memory records to retrieve (top_k).
-- `is_aggregate_query` switches retrieval from single-answer lookup to broad evidence gathering across many memories.
-- `aggregate_target` and `aggregate_constraints` tell the retrieval engine what entity set and predicates must be covered.
+Analyze the user's query, recent conversation context, and current decision state. Return only the JSON object described below. The JSON should describe the user's information need and the memory wording most likely to contain relevant evidence.
 
 ## Prioritize Intent Over Surface Text
 Do not plan searches based only on the query's wording. Consider what the user is actually trying to accomplish:
@@ -184,48 +177,42 @@ When <ACTION_STATE> is present:
 
 ## Output Fields
 
+### 0. `reason` — Planning rationale
+Briefly explain your planning decision. Mention why the query is or is not aggregate, what predicates/constraints matter, and why the search phrases are likely evidence expressions.
+
 ### 1. `mode` — Search mode
 - `"answer"`: The user is asking a factual question (e.g., "What is my cat's name?"). Search focuses on facts, preferences, and events.
 - `"action"`: The user wants to perform a task (e.g., "Deploy this to production"). Search focuses on procedures, constraints, tools, and failure patterns.
 - `"mixed"`: The request involves both question-answering and task support.
 
 ### 2. `semantic_queries` — Content-focused search terms
-Keywords or phrases targeting the memory content itself. Used for vector and full-text search. Each query should focus \
-on one independent topic. **Must contain at least 1 query.** If the user's message covers multiple topics, generate a separate query for each.
+Natural-language words or phrases likely to appear in relevant remembered facts, events, preferences, or states. Each query should focus on one independent topic. **Must contain at least 1 query.** If the user's message covers multiple topics, generate a separate query for each.
 
 ### 3. `pragmatic_queries` — Action-focused search terms
 Keywords targeting practical information: tool names, operation types, constraints, failure patterns. May be empty in `answer` mode.
 
-### 4. `depth` — Number of results to retrieve
-Recommended top_k: 3–5 for simple queries, 8–15 for complex or multi-topic queries.
-
-### 5. Aggregate/list/count questions
+### 4. Aggregate/list/count questions
 Some factual questions require collecting **all matching memories** rather than finding one best memory.
 Set `is_aggregate_query: true` when the user is asking for a count, list, enumeration, comparison, or summary that requires collecting multiple personal-memory facts across records or sessions.
 
 For aggregate questions:
-- Set `depth` to at least 15.
 - Put the thing being counted/listed in `aggregate_target`.
 - Put required predicates or filters in `aggregate_constraints`.
-- Treat `semantic_queries` as recall probes, not final filters. Some words in the user query are filters (location, category, owner, time, project, relationship), and matching memories may omit those filters while still belonging to the requested set.
-- For aggregate questions, generate a balanced set of semantic queries:
-  1. A few fully qualified probes that preserve the target and predicate.
-  2. A few decontextualized probes that remove non-essential filters but keep the object class and predicate.
-  3. A few event-style predicate probes that describe how the fact may appear in ordinary conversation, without forcing the category/location word.
-- Do not enumerate concrete likely answer entities unless they are explicitly named in <USER_QUERY>, <RECENT_CONTEXT>, or <ACTION_STATE>. Generalize by separating filters from recall probes, not by hard-coding examples.
-- For questions shaped as a count/list over category- or location-qualified objects plus one or more predicates, include probes for:
-  - the fully qualified object set with each action,
-  - the object set with category/location qualifiers removed,
-  - natural event descriptions of each action that do not require the category/location word.
-- Before finalizing an aggregate plan, check whether every semantic query contains the same location/category/project/person filter from the user query. If so, add decontextualized recall probes that omit that repeated filter while preserving the requested object class or event predicate.
-- The engine will derive broad tree, leaf-record, and original-turn recall settings internally from `is_aggregate_query`; do not output those settings.
+- For `semantic_queries`, do not write keyword templates that combine the target with the predicate/action. Do not produce mostly direct action phrases, action nouns, or surface-level synonyms.
+- Generate `semantic_queries` as ordinary memory wording that could imply the predicate even when the predicate and its direct synonyms are absent.
+- For each aggregate constraint/predicate, first infer its event class. If the predicate implies substitution, acquisition, setup, removal, restoration, recovery, completion, cancellation, or state change, write phrases for the resulting state or conversational evidence of that event class.
+- Prefer short natural fragments that could appear in remembered conversation over labels. The fragments should sound like evidence someone might have mentioned, not like normalized database search keywords.
+- For aggregate questions, most `semantic_queries` should avoid the original predicate words, their inflections, and obvious action-word synonyms. If most queries still contain those words, rewrite them.
+- Do not require every query to repeat category, location, owner, project, relationship, or other filter words from the user query. Relevant memories may omit those words while still belonging to the requested set.
+- Do not enumerate concrete likely answer entities unless they are explicitly named in <USER_QUERY>, <RECENT_CONTEXT>, or <ACTION_STATE>. Generalize from predicate semantics, not from domain-specific examples.
+- Before finalizing an aggregate plan, check whether the queries mostly restate the target and predicate. If so, replace them with indirect evidence wording derived from the predicate's event class.
 
 ## Output Format (strict JSON, no code blocks)
 {
+    "reason": "Brief explanation of your planning decision",
     "mode": "answer|action|mixed",
     "semantic_queries": ["query 1", "query 2"],
     "pragmatic_queries": ["query 1"],
-    "depth": 5,
     "is_aggregate_query": false,
     "aggregate_target": "",
     "aggregate_constraints": []
