@@ -11,6 +11,8 @@ import json
 import math
 from typing import Any, Mapping, Sequence
 
+import httpx
+
 
 @dataclass(frozen=True)
 class RerankCandidate:
@@ -206,3 +208,71 @@ class LocalCrossEncoderReranker(SemanticReranker):
         if value <= -50.0:
             return 0.0
         return 1.0 / (1.0 + math.exp(-value))
+
+
+class RemoteHTTPReranker(SemanticReranker):
+    """Call a shared reranker server instead of loading a CrossEncoder locally."""
+
+    def __init__(
+        self,
+        *,
+        api_base: str,
+        model_name: str = "BAAI/bge-reranker-v2-m3",
+        api_key: str | None = None,
+        timeout: float = 600.0,
+    ) -> None:
+        self.api_base = api_base.rstrip("/")
+        self.model_name = model_name
+        self.api_key = api_key or None
+        self.timeout = timeout
+
+    def rerank(
+        self,
+        *,
+        query: str,
+        retrieval_plan: Mapping[str, Any],
+        candidates: Sequence[RerankCandidate],
+    ) -> list[RerankResult]:
+        if not candidates:
+            return []
+        payload = {
+            "model": self.model_name,
+            "query": query,
+            "retrieval_plan": dict(retrieval_plan),
+            "candidates": [
+                {
+                    "id": candidate.id,
+                    "source": candidate.source,
+                    "text": candidate.text,
+                    "metadata": self._jsonable(candidate.metadata or {}),
+                    "retrieval_score": candidate.retrieval_score,
+                }
+                for candidate in candidates
+            ],
+        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        with httpx.Client(timeout=self.timeout) as client:
+            resp = client.post(f"{self.api_base}/v1/rerank", headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+        results: list[RerankResult] = []
+        for item in data.get("data", []):
+            results.append(RerankResult(
+                id=str(item.get("id") or ""),
+                rerank_score=LocalCrossEncoderReranker._normalize_score(
+                    LocalCrossEncoderReranker._to_float(item.get("rerank_score"))
+                ),
+                cross_encoder_score=LocalCrossEncoderReranker._to_float(
+                    item.get("cross_encoder_score")
+                ),
+            ))
+        return [result for result in results if result.id]
+
+    @staticmethod
+    def _jsonable(value: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            return json.loads(json.dumps(dict(value), ensure_ascii=False, default=str))
+        except Exception:
+            return {}

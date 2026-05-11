@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     embedding_dim: int = 0  # 0 = 自动探测（启动时调用一次 API 获取实际维度）
     embedding_api_key: str = ""  # 可选
     embedding_api_base: str = ""  # 可选
+    embedding_backend: str = "litellm"  # litellm / local / http
 
     # ─── 本地 Embedding（sentence-transformers）───
     # 设为 true 时使用本地模型，EMBEDDING_MODEL 填 HuggingFace 模型路径
@@ -54,7 +55,10 @@ class Settings(BaseSettings):
     composite_filter_enabled: bool = False
     adequacy_check_enabled: bool = False
     reranker_enabled: bool = False
+    reranker_backend: str = "local"  # local / http
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    reranker_api_base: str = ""
+    reranker_api_key: str = ""
     reranker_device: str = "auto"
     reranker_batch_size: int = 16
     reranker_max_length: int = 512

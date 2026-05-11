@@ -54,8 +54,18 @@ def _create_llm(settings):
 
 
 def _create_embedder(settings):
+    backend = str(getattr(settings, "embedding_backend", "litellm") or "litellm").lower()
+    if backend == "http":
+        from src.embedder.http_embedder import HTTPEmbeddingServerEmbedder
+
+        return HTTPEmbeddingServerEmbedder(
+            api_base=settings.embedding_api_base,
+            api_key=settings.embedding_api_key or None,
+            model=settings.embedding_model or "local-embed",
+        )
+
     # 本地模式：使用 sentence-transformers，不调用远程 API
-    if getattr(settings, "embedding_local", False):
+    if backend == "local" or getattr(settings, "embedding_local", False):
         from src.embedder.st_embedder import SentenceTransformerEmbedder
 
         return SentenceTransformerEmbedder(

@@ -44,7 +44,11 @@ from src.memory.semantic.prompts import (
     RETRIEVAL_ADEQUACY_CHECK_SYSTEM,
     FEEDBACK_CLASSIFICATION_SYSTEM,
 )
-from src.memory.semantic.reranker import LocalCrossEncoderReranker, RerankCandidate
+from src.memory.semantic.reranker import (
+    LocalCrossEncoderReranker,
+    RemoteHTTPReranker,
+    RerankCandidate,
+)
 from src.memory.semantic.scorer import ScoredCandidate, ScoringWeights
 from src.memory.semantic.sqlite_store import SQLiteSemanticStore
 from src.memory.semantic.synthesizer import RecordFusionEngine
@@ -115,7 +119,10 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         composite_filter_enabled: bool = False,
         adequacy_check_enabled: bool = False,
         reranker_enabled: bool = False,
+        reranker_backend: str = "local",
         reranker_model: str = "BAAI/bge-reranker-v2-m3",
+        reranker_api_base: str = "",
+        reranker_api_key: str = "",
         reranker_device: str = "auto",
         reranker_batch_size: int = 16,
         reranker_max_length: int = 512,
@@ -149,16 +156,22 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         self._reranker_enabled = bool(reranker_enabled)
         self._reranker_composite_limit = max(20, int(reranker_composite_limit or 80))
         self._reranker_fallback_limit = max(20, int(reranker_fallback_limit or 100))
-        self._reranker = (
-            LocalCrossEncoderReranker(
-                model_name=reranker_model,
-                device=reranker_device,
-                batch_size=reranker_batch_size,
-                max_length=reranker_max_length,
-            )
-            if self._reranker_enabled
-            else None
-        )
+        self._reranker = None
+        if self._reranker_enabled:
+            backend = str(reranker_backend or "local").lower()
+            if backend == "http":
+                self._reranker = RemoteHTTPReranker(
+                    api_base=reranker_api_base,
+                    api_key=reranker_api_key or None,
+                    model_name=reranker_model,
+                )
+            else:
+                self._reranker = LocalCrossEncoderReranker(
+                    model_name=reranker_model,
+                    device=reranker_device,
+                    batch_size=reranker_batch_size,
+                    max_length=reranker_max_length,
+                )
 
     @staticmethod
     def _parse_reference_time(reference_time: str | None) -> datetime | None:
