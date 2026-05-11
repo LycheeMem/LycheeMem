@@ -217,8 +217,6 @@ class SynthesizerAgent(BaseAgent):
                 retrieval_score = float(frag.get("retrieval_score", 0.0) or 0.0)
                 text = str(frag.get("display_text") or frag.get("semantic_text") or "").strip()
                 text = text.replace("\r\n", "\n")
-                if len(text) > 800:
-                    text = text[:800] + "…"
 
                 lines.append(
                     f"  Fragment {idx}: source={semantic_source_type}, memory_type={memory_type}, retrieval_score={retrieval_score:.3f}"

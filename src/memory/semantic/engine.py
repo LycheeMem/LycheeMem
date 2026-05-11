@@ -769,8 +769,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         for composite in composites:
             entities_str = ", ".join(composite.entities[:6]) if composite.entities else "-"
             summary = str(composite.normalized_text or composite.semantic_text or "").strip()
-            if len(summary) > 300:
-                summary = summary[:300] + "…"
             lines.append(
                 f"id={composite.composite_id}\n"
                 f"  type: {composite.memory_type}\n"
@@ -2176,16 +2174,16 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             turn_index = ref.get("turn_index")
             role = str(ref.get("role") or "unknown")
             created_at = self._format_time_label(str(ref.get("created_at") or ""))
-            content = self._truncate_text(str(ref.get("content") or ""), max_chars=220)
+            content = self._truncate_text(str(ref.get("content") or ""))
             turn_prefix = f"t{turn_index}" if turn_index is not None else "t?"
             time_prefix = f"[{created_at}]" if created_at else ""
             lines.append(f"{session_prefix}{time_prefix}[{turn_prefix}][{role}] {content}")
         return "\n".join(lines)
 
     @staticmethod
-    def _truncate_text(text: str, *, max_chars: int = 220) -> str:
+    def _truncate_text(text: str, *, max_chars: int = None) -> str:
         cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
-        if len(cleaned) <= max_chars:
+        if max_chars is None or len(cleaned) <= max_chars:
             return cleaned
         return cleaned[: max_chars - 1].rstrip() + "…"
 
