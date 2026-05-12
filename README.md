@@ -19,6 +19,58 @@
   <p>
     <a href="README_zh.md">中文</a> | English
   </p>
+  <p>
+    <strong>Works across agent runtimes that support plugins, MCP, or Python integration.</strong>
+  </p>
+  <table>
+    <tr>
+      <td align="center" width="150">
+        <a href="openclaw-plugin/INSTALL_OPENCLAW.md">
+          <img src="https://img.shields.io/badge/OpenClaw-native%20plugin-FF6B35?style=flat-square" alt="OpenClaw Plugin">
+          <br>
+          <strong>OpenClaw</strong>
+        </a>
+        <br>
+        <sub>Native plugin</sub>
+      </td>
+      <td align="center" width="150">
+        <a href="claude-plugin/lycheemem/INSTALL_CLAUDE.md">
+          <img src="https://img.shields.io/badge/Claude%20Code-plugin-111827?style=flat-square" alt="Claude Code Plugin">
+          <br>
+          <strong>Claude Code</strong>
+        </a>
+        <br>
+        <sub>MCP + hooks</sub>
+      </td>
+      <td align="center" width="150">
+        <a href="hermes-plugin/lycheemem/INSTALL_HERMES.md">
+          <img src="https://img.shields.io/badge/Hermes-plugin-2563EB?style=flat-square" alt="Hermes Plugin">
+          <br>
+          <strong>Hermes</strong>
+        </a>
+        <br>
+        <sub>Runtime plugin</sub>
+      </td>
+      <td align="center" width="150">
+        <a href="https://pypi.org/project/lycheemem/">
+          <img src="https://img.shields.io/badge/PyPI-package-3775A9?style=flat-square&logo=pypi&logoColor=white" alt="PyPI Package">
+          <br>
+          <strong>PyPI Package</strong>
+        </a>
+        <br>
+        <sub>Python API</sub>
+      </td>
+      <td align="center" width="150">
+        <a href="#mcp">
+          <img src="https://img.shields.io/badge/MCP-compatible-10B981?style=flat-square" alt="MCP Compatible">
+          <br>
+          <strong>Any MCP Client</strong>
+        </a>
+        <br>
+        <sub>HTTP MCP server</sub>
+      </td>
+    </tr>
+  </table>
 </div>
 
 
