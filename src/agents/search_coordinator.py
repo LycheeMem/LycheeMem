@@ -60,9 +60,11 @@ class SearchCoordinator(BaseAgent):
             compressed_history=kwargs.get("compressed_history") or [],
         )
         
-        analysis = self._analyze_query_and_context(
-            user_query, recent_context, reference_time=reference_time,
-        )
+        analysis = {}
+        if include_skills:
+            analysis = self._analyze_query_and_context(
+                user_query, recent_context, reference_time=reference_time,
+            )
         
         action_state = self._build_action_state(
             user_query=user_query,

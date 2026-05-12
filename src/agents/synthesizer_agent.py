@@ -21,7 +21,7 @@ from src.llm.base import BaseLLM, set_llm_call_source
 
 
 def _debug_synthesis_enabled() -> bool:
-    return 1
+    return 0
 
 
 def _debug_synthesis(label: str, payload: Any) -> None:

@@ -82,7 +82,7 @@ _SENSITIVE_PATTERNS: list[re.Pattern] = [
 
 
 def _debug_search_enabled() -> bool:
-    return 1
+    return 0
 
 
 def _debug_search(label: str, payload: Any) -> None:
