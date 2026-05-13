@@ -86,9 +86,13 @@ def create_pipeline(
         experimental_transformer_rerank=getattr(
             settings,
             "experimental_transformer_rerank",
-            False,
+            True,
         ),
-        transformer_rerank_model_path=getattr(settings, "transformer_rerank_model_path", ""),
+        transformer_rerank_model_path=getattr(
+            settings,
+            "transformer_rerank_model_path",
+            "LycheeMem/reranker",
+        ),
         transformer_rerank_max_replacements=getattr(
             settings,
             "transformer_rerank_max_replacements",

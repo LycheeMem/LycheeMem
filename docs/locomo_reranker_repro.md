@@ -115,11 +115,14 @@ utility rerank benchmark
 
 Current known limits:
 
-- No external evidence-labeled dataset has been validated yet.
-- The checkpoint is not bundled in the source branch.
+- External zero-shot evidence-selection fixtures have been validated on
+  LongMemEval-S, MSC-MemFuse-MC10, and HotpotQA.
+- The checkpoint is distributed through Hugging Face, not bundled in the source
+  branch.
 - The result measures memory evidence retrieval, not final answer quality.
-- The reranker is default-off and should remain experimental until controlled
-  evaluation confirms the behavior in real usage.
+- The reranker is enabled by default when `lycheemem[rerank]` is installed, but
+  still safely falls back to baseline search when dependencies or checkpoint
+  loading fail.
 
 ## Next Reproduction Cleanup
 

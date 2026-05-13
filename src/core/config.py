@@ -58,8 +58,8 @@ class Settings(BaseSettings):
     compact_dedup_threshold: float = 0.85
     compact_synthesis_min_records: int = 2
     compact_synthesis_similarity: float = 0.75
-    experimental_transformer_rerank: bool = False
-    transformer_rerank_model_path: str = ""
+    experimental_transformer_rerank: bool = True
+    transformer_rerank_model_path: str = "LycheeMem/reranker"
     transformer_rerank_max_replacements: int = 1
     transformer_rerank_merge_margin: float = 0.3
     transformer_rerank_min_engine_score_delta: float = -1.0

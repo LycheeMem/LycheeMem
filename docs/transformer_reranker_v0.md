@@ -1,20 +1,22 @@
 # Transformer Reranker v0
 
-This document describes the optional transformer reranker for semantic memory
-search. The feature is default-off and does not change normal memory search
-unless it is explicitly enabled by configuration.
+This document describes the transformer reranker for semantic memory search. If
+the `lycheemem[rerank]` dependencies are installed, the feature is enabled by
+default and loads the public `LycheeMem/reranker` checkpoint. If dependencies,
+network access, or the checkpoint are unavailable, LycheeMemory safely falls
+back to baseline semantic memory search.
 
 ## Status
 
-This is an optional learned memory-selection feature. It is suitable as a
-default-off release candidate: users must explicitly install rerank
-dependencies, download a local checkpoint, and enable the experiment flag before
-it changes memory search behavior.
+This is a learned memory-selection feature. It is suitable as the default
+reranker for users who install `lycheemem[rerank]`: the base package remains
+lightweight, while the rerank extra provides PyTorch, Transformers, and
+Hugging Face Hub support for automatic checkpoint download.
 
 The source branch provides:
 
-- a default-off runtime hook in semantic memory search
-- local checkpoint loading
+- a default-enabled runtime hook in semantic memory search
+- Hugging Face repo or local checkpoint loading
 - optional `torch` / `transformers` dependencies
 - replacement diagnostics
 - validation notes for the current v0 checkpoint
@@ -28,15 +30,18 @@ The source branch does not bundle:
 
 ## What It Does
 
-The reranker loads a local sequence-classification checkpoint and scores a wider
-memory candidate pool. It may replace a small number of baseline top-k results
-when an outside candidate's transformer score is higher than the weakest
-baseline candidate's transformer score by at least `merge_margin`.
+The reranker loads a sequence-classification checkpoint and scores a wider
+memory candidate pool. The checkpoint may be a Hugging Face repo id
+(`LycheeMem/reranker`) or a local directory. It may replace a small number of
+baseline top-k results when an outside candidate's transformer score is higher
+than the weakest baseline candidate's transformer score by at least
+`merge_margin`.
 
 The current v0 policy is conservative:
 
-- local checkpoint only; no Hugging Face network access at runtime
-- disabled by default
+- default model ref is `LycheeMem/reranker`
+- enabled by default when rerank dependencies are installed
+- safe fallback when dependencies, model download, or model load fail
 - maximum replacements defaults to 1
 - wide candidate pool defaults to 50
 - merge margin defaults to 0.3
@@ -47,14 +52,17 @@ evidence candidate already appears in the wider candidate pool.
 
 ## Install
 
-The base package does not require PyTorch or Transformers. Install the optional
-extra only when using the reranker:
+The base package does not require PyTorch or Transformers. Install the rerank
+extra for the default reranker experience:
 
 ```bash
 pip install "lycheemem[rerank]"
 ```
 
-Download the current v0 checkpoint from Hugging Face to a stable local folder:
+With this extra installed, LycheeMemory automatically downloads the current v0
+checkpoint from Hugging Face on first use.
+
+To pre-download the model into a stable local folder instead:
 
 ```bash
 mkdir -p ~/.cache/lycheemem/models
@@ -64,19 +72,23 @@ huggingface-cli download LycheeMem/reranker \
 
 ## Configure
 
-Set these environment variables, or the equivalent settings values:
+The default configuration is:
 
-```bash
+```env
 EXPERIMENTAL_TRANSFORMER_RERANK=true
-TRANSFORMER_RERANK_MODEL_PATH=~/.cache/lycheemem/models/reranker-v0
+TRANSFORMER_RERANK_MODEL_PATH=LycheeMem/reranker
 TRANSFORMER_RERANK_MAX_REPLACEMENTS=1
 TRANSFORMER_RERANK_MERGE_MARGIN=0.3
 TRANSFORMER_RERANK_WIDE_TOP_K=50
 TRANSFORMER_RERANK_DEVICE=auto
 ```
 
-If the checkpoint is missing or cannot be loaded, the hook disables itself and
-search continues with baseline behavior.
+Set `TRANSFORMER_RERANK_MODEL_PATH` to a local checkpoint directory if you
+pre-downloaded the model. Set `EXPERIMENTAL_TRANSFORMER_RERANK=false` to
+force-disable reranking.
+
+If dependencies, network access, or the checkpoint are missing, the hook
+disables itself for that process and search continues with baseline behavior.
 
 ## Validation Summary
 
@@ -153,14 +165,16 @@ The checkpoint is distributed separately from the source repository:
 https://huggingface.co/LycheeMem/reranker
 ```
 
-Download it locally, then point `TRANSFORMER_RERANK_MODEL_PATH` to the same
-local directory.
+By default, `TRANSFORMER_RERANK_MODEL_PATH=LycheeMem/reranker` resolves this
+repo through Hugging Face Hub. You may also download it locally and point
+`TRANSFORMER_RERANK_MODEL_PATH` to the local directory.
 
 The validated v0 checkpoint used during development was based on
 `prajjwal1/bert-tiny` and trained for LoCoMo memory evidence reranking.
 
 The source tree provides the runtime hook and configuration surface. It does not
-bundle a model checkpoint or enable the reranker by default.
+bundle a model checkpoint; the checkpoint is fetched from Hugging Face or loaded
+from a user-provided local path.
 
 ## Reproduction Notes
 

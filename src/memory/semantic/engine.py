@@ -103,8 +103,8 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         scorer_weights: ScoringWeights | None = None,
         embedding_dim: int = 0,
         max_reflection_rounds: int = 2,
-        experimental_transformer_rerank: bool = False,
-        transformer_rerank_model_path: str = "",
+        experimental_transformer_rerank: bool = True,
+        transformer_rerank_model_path: str = "LycheeMem/reranker",
         transformer_rerank_max_replacements: int = 1,
         transformer_rerank_merge_margin: float = 0.3,
         transformer_rerank_min_engine_score_delta: float = -1.0,
@@ -171,7 +171,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         top_k: int,
         diagnostics: dict[str, Any],
     ) -> None:
-        """Apply the default-off local transformer reranker before top-k truncation."""
+        """Apply the transformer reranker before top-k truncation."""
         diagnostics["transformer_rerank_enabled"] = bool(self._experimental_transformer_rerank)
         diagnostics["transformer_rerank_model_path"] = self._transformer_rerank_model_path
         diagnostics["transformer_rerank_device"] = self._transformer_rerank_device

@@ -103,7 +103,7 @@ LycheeMemory is a compact memory framework for LLM agents. It starts from effici
 <a id="news"></a>
 
 ## 🔥 News
-- **[05/08/2026]** Optional transformer memory reranker v0 is available behind an explicit opt-in flag. It improves evidence retrieval hit@10 on LoCoMo and zero-shot LongMemEval-S / MSC-MemFuse / HotpotQA fixtures. See [Transformer Reranker v0](docs/transformer_reranker_v0.md).
+- **[05/13/2026]** Transformer memory reranker v0 is now enabled by default when `lycheemem[rerank]` is installed. It automatically downloads [`LycheeMem/reranker`](https://huggingface.co/LycheeMem/reranker) and safely falls back to baseline search if dependencies or the checkpoint are unavailable. See [Transformer Reranker v0](docs/transformer_reranker_v0.md).
 - **[04/29/2026]** Hermes and Claude Code plugin integrations are now available, bringing LycheeMemory's automatic recall, turn mirroring, and consolidation workflow to more agent runtimes. Setup guides: [Hermes](hermes-plugin/lycheemem/INSTALL_HERMES.md) · [Claude Code](claude-plugin/lycheemem/INSTALL_CLAUDE.md)
 - **[04/26/2026]** Visual (Multimodal) Memory module added! See [Visual Memory](#visual-memory).
 - **[04/13/2026]** LycheeMem is now LycheeMemory.
@@ -155,6 +155,12 @@ You can install LycheeMemory directly via pip:
 pip install lycheemem
 ```
 
+Recommended install with the default transformer memory reranker:
+
+```bash
+pip install "lycheemem[rerank]"
+```
+
 Once installed, you can start the backend server instantly using the CLI:
 
 ```bash
@@ -190,39 +196,40 @@ EMBEDDING_API_BASE=               # optional
 > **Supported LLM providers** (via [litellm](https://github.com/BerriAI/litellm)):
 > `openai/gpt-4o-mini` · `gemini/gemini-2.0-flash` · `ollama_chat/qwen2.5` · any OpenAI-compatible endpoint
 
-### Optional Transformer Reranker
+### Transformer Reranker
 
-LycheeMemory includes a default-off transformer reranker for semantic memory
-search. It can improve evidence selection when the correct memory is already in
-the wider candidate pool. The base install does not include PyTorch or
-Transformers.
+LycheeMemory includes a transformer reranker for semantic memory search. It can
+improve evidence selection when the correct memory is already in the wider
+candidate pool.
 
-Install the optional dependencies:
+For the smoothest experience, install LycheeMemory with the rerank extra:
 
 ```bash
 pip install "lycheemem[rerank]"
 ```
 
-Download the current v0 checkpoint to a stable local folder:
+With the extra installed, the reranker is enabled by default and downloads the
+current v0 checkpoint automatically from Hugging Face on first use:
+
+```env
+EXPERIMENTAL_TRANSFORMER_RERANK=true
+TRANSFORMER_RERANK_MODEL_PATH=LycheeMem/reranker
+```
+
+If you prefer a pre-downloaded local checkpoint, set the same variable to a
+local directory:
 
 ```bash
 mkdir -p ~/.cache/lycheemem/models
 huggingface-cli download LycheeMem/reranker \
   --local-dir ~/.cache/lycheemem/models/reranker-v0
-```
-
-Enable it with the same local folder path:
-
-```bash
-export EXPERIMENTAL_TRANSFORMER_RERANK=true
 export TRANSFORMER_RERANK_MODEL_PATH=~/.cache/lycheemem/models/reranker-v0
-export TRANSFORMER_RERANK_MAX_REPLACEMENTS=1
-export TRANSFORMER_RERANK_MERGE_MARGIN=0.3
-export TRANSFORMER_RERANK_WIDE_TOP_K=50
 ```
 
-Then start LycheeMemory normally. If the model path or optional dependencies are
-missing, the reranker disables itself and baseline memory search continues. See
+The base install still works without PyTorch or Transformers: if rerank
+dependencies or the checkpoint are unavailable, LycheeMemory logs a warning,
+disables reranking for that process, and baseline memory search continues. Set
+`EXPERIMENTAL_TRANSFORMER_RERANK=false` to force-disable it. See
 [Transformer Reranker v0](docs/transformer_reranker_v0.md) for metrics and
 diagnostics.
 

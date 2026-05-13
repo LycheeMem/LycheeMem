@@ -1,8 +1,9 @@
-"""Runtime transformer reranker for experimental memory search.
+"""Runtime transformer reranker for memory search.
 
-This module is intentionally default-off and local-checkpoint only. It mirrors
-the LoCoMo offline transformer probe: score a wide candidate pool, then make a
-small conservative replacement in the baseline top-k.
+The reranker can load either a local checkpoint directory or a Hugging Face
+model repo id. It mirrors the LoCoMo offline transformer probe: score a wide
+candidate pool, then make a small conservative replacement in the baseline
+top-k.
 """
 
 from __future__ import annotations
@@ -11,6 +12,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+DEFAULT_RERANKER_MODEL = "LycheeMem/reranker"
 
 
 @dataclass(slots=True)
@@ -44,6 +47,30 @@ def resolve_device(device: str) -> str:
         return "cpu"
 
 
+def resolve_model_path(model_ref: str | Path) -> Path:
+    """Resolve a local checkpoint path or download a Hugging Face model repo."""
+
+    ref = str(model_ref or DEFAULT_RERANKER_MODEL).strip()
+    expanded = Path(ref).expanduser()
+    if expanded.exists():
+        return expanded
+
+    # Explicit local paths should fail clearly instead of being interpreted as
+    # Hugging Face repo ids.
+    if ref.startswith(("/", "./", "../", "~")):
+        raise FileNotFoundError(f"transformer reranker checkpoint not found: {expanded}")
+
+    try:
+        from huggingface_hub import snapshot_download
+    except Exception as exc:
+        raise ImportError(
+            "huggingface-hub is required to download the LycheeMem reranker; "
+            'install with: pip install "lycheemem[rerank]"'
+        ) from exc
+
+    return Path(snapshot_download(repo_id=ref))
+
+
 class TransformerReranker:
     """Loaded local transformer checkpoint for search-time reranking."""
 
@@ -55,10 +82,8 @@ class TransformerReranker:
         max_len: int = 192,
         score_batch_size: int = 64,
     ) -> None:
-        self.model_path = str(model_path)
-        path = Path(model_path)
-        if not path.exists():
-            raise FileNotFoundError(f"transformer reranker checkpoint not found: {path}")
+        path = resolve_model_path(model_path)
+        self.model_path = str(path)
         self.device_name = resolve_device(device)
         self.max_len = int(max_len)
         self.score_batch_size = max(1, int(score_batch_size))
