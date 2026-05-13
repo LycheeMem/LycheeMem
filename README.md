@@ -103,7 +103,7 @@ LycheeMemory is a compact memory framework for LLM agents. It starts from effici
 <a id="news"></a>
 
 ## 🔥 News
-- **[05/13/2026]** Transformer memory reranker v0 is now enabled by default when `lycheemem[rerank]` is installed. It automatically downloads [`LycheeMem/reranker`](https://huggingface.co/LycheeMem/reranker) and safely falls back to baseline search if dependencies or the checkpoint are unavailable. See [Transformer Reranker v0](docs/transformer_reranker_v0.md).
+- **[05/08/2026]** Transformer memory reranker v0 improves evidence selection in semantic memory search, with positive hit@10 gains on LoCoMo and zero-shot LongMemEval-S / MSC-MemFuse / HotpotQA fixtures. See [Transformer Reranker v0](docs/transformer_reranker_v0.md).
 - **[04/29/2026]** Hermes and Claude Code plugin integrations are now available, bringing LycheeMemory's automatic recall, turn mirroring, and consolidation workflow to more agent runtimes. Setup guides: [Hermes](hermes-plugin/lycheemem/INSTALL_HERMES.md) · [Claude Code](claude-plugin/lycheemem/INSTALL_CLAUDE.md)
 - **[04/26/2026]** Visual (Multimodal) Memory module added! See [Visual Memory](#visual-memory).
 - **[04/13/2026]** LycheeMem is now LycheeMemory.
@@ -159,6 +159,14 @@ Recommended install with the default transformer memory reranker:
 
 ```bash
 pip install "lycheemem[rerank]"
+```
+
+If your current PyPI package prints `does not provide the extra 'rerank'`, it is
+an older release. Use the latest GitHub version until the next PyPI release is
+published:
+
+```bash
+pip install "lycheemem[rerank] @ git+https://github.com/LycheeMem/LycheeMem.git"
 ```
 
 Once installed, you can start the backend server instantly using the CLI:
