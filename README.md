@@ -149,7 +149,7 @@ We welcome you to explore our related works:
 
 ### Installation
 
-You can install LycheeMemory directly via pip:
+Install the core package:
 
 ```bash
 pip install lycheemem
@@ -161,13 +161,10 @@ Recommended install with the default transformer memory reranker:
 pip install "lycheemem[rerank]"
 ```
 
-If your current PyPI package prints `does not provide the extra 'rerank'`, it is
-an older release. Use the latest GitHub version until the next PyPI release is
-published:
-
-```bash
-pip install "lycheemem[rerank] @ git+https://github.com/LycheeMem/LycheeMem.git"
-```
+The `rerank` extra adds PyTorch / Transformers runtime dependencies. With it
+installed, LycheeMemory enables the hosted `LycheeMem/reranker` checkpoint by
+default. Without the extra, the core memory system still works and reranking
+falls back safely.
 
 Once installed, you can start the backend server instantly using the CLI:
 
@@ -216,16 +213,22 @@ For the smoothest experience, install LycheeMemory with the rerank extra:
 pip install "lycheemem[rerank]"
 ```
 
-With the extra installed, the reranker is enabled by default and downloads the
-current v0 checkpoint automatically from Hugging Face on first use:
+After that, no extra model command is required. The reranker is enabled by
+default and loads the current v0 checkpoint from Hugging Face on first use:
 
 ```env
 EXPERIMENTAL_TRANSFORMER_RERANK=true
 TRANSFORMER_RERANK_MODEL_PATH=LycheeMem/reranker
 ```
 
-If you prefer a pre-downloaded local checkpoint, set the same variable to a
-local directory:
+To disable it explicitly:
+
+```env
+EXPERIMENTAL_TRANSFORMER_RERANK=false
+```
+
+If you prefer to pin the model to a local directory, download it once and point
+the same variable at that path:
 
 ```bash
 mkdir -p ~/.cache/lycheemem/models
@@ -234,12 +237,11 @@ huggingface-cli download LycheeMem/reranker \
 export TRANSFORMER_RERANK_MODEL_PATH=~/.cache/lycheemem/models/reranker-v0
 ```
 
-The base install still works without PyTorch or Transformers: if rerank
+The base install still works without PyTorch or Transformers. If rerank
 dependencies or the checkpoint are unavailable, LycheeMemory logs a warning,
-disables reranking for that process, and baseline memory search continues. Set
-`EXPERIMENTAL_TRANSFORMER_RERANK=false` to force-disable it. See
-[Transformer Reranker v0](docs/transformer_reranker_v0.md) for metrics and
-diagnostics.
+disables reranking for that process, and continues with baseline memory search.
+See [Transformer Reranker v0](docs/transformer_reranker_v0.md) for metrics,
+limitations, and diagnostics.
 
 ### Start the Server
 
