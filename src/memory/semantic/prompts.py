@@ -5,25 +5,21 @@
 # ---------------------------------------------------------------------------
 
 COMPACT_ENCODING_SYSTEM = """\
-Extract durable personal information from the conversation.
+Extract atomic, lossless, user-grounded memory records from the conversation.
 
 Input:
+- <SESSION_DATE>: optional date anchor for resolving relative or incomplete dates.
 - <PREVIOUS_TURNS>: context for resolving names, pronouns, and references.
 - <CURRENT_TURNS>: the only turns to extract from.
 
-What to extract:
-- User facts, preferences, habits, plans, events, constraints, procedures, failure patterns, and tool affordances.
-- Assistant statements only when they are useful later and are clearly assistant-provided or user-acknowledged.
-- Corrections and updates, even when they modify an older fact.
-
-Rules:
-- Prefer complete coverage over missing useful facts.
-- Split unrelated facts into separate records.
-- Make every `semantic_text` self-contained: resolve pronouns, vague references, relative time, and aliases when possible.
-- Preserve exact details: names, titles, object names, quantities, dates, times, places, brands, colors, symbols, frequencies, quoted text, and stated reasons.
-- Do not replace specific objects or events with broad categories.
-- Skip greetings, filler, repeated questions, and low-value chatter.
-- Keep attribution clear: `user` for user-stated facts, `assistant` for assistant-only facts, `both` for confirmed or jointly formed facts.
+Requirements:
+1. **Complete Coverage**: Generate enough records to capture all valuable facts, preferences, plans, events, relationships, constraints, procedures, failures, lessons, task details, corrections, and concrete state changes in <CURRENT_TURNS>.
+2. **Atomic Records**: Each record contains one independent piece of information. Do not merge separate details just because they share a topic.
+3. **Lossless Restatement**: `semantic_text` must be a complete standalone sentence, not a summary. Preserve exact names, objects, quantities, dates, places, reasons, outcomes, and before/after states.
+4. **Force Disambiguation**: Resolve pronouns, aliases, vague references, implicit subjects, and omitted objects when evidence is available. If <SESSION_DATE> is provided, convert relative or incomplete dates to absolute dates in both `semantic_text` and `temporal`.
+5. **User Grounding**: Store user-stated or user-confirmed information. Store assistant content only if it is personalized, accepted, confirmed, or necessary for a jointly established fact; skip generic explanations, templates, lists, and world knowledge.
+6. **Precise Metadata**: `entities` includes people, locations, organizations, products, objects, projects, topics, and other searchable entities. Keep attribution in `source_role`.
+7. **Low-Value Content**: Skip greetings, filler, repeated questions, and chatter with no durable information.
 - `evidence_turns` are 0-based indexes into <CURRENT_TURNS>.
 - If there is no durable information, return `{"records":[]}`.
 
@@ -36,7 +32,8 @@ Memory types:
 - `failure_pattern`: mistakes, failures, pitfalls, or lessons.
 - `tool_affordance`: what a tool/system can or cannot do.
 
-Return raw JSON only:
+
+Output Format, return raw JSON only:
 {
   "records": [
     {
@@ -47,6 +44,39 @@ Return raw JSON only:
       "tags": ["short keyword"],
       "evidence_turns": [0],
       "source_role": "user|assistant|both"
+    }
+  ]
+}
+
+Example:
+Input:
+<SESSION_DATE>2026-04-10</SESSION_DATE>
+<PREVIOUS_TURNS></PREVIOUS_TURNS>
+<CURRENT_TURNS>
+user: I finally mailed the signed lease renewal for my Riverside studio yesterday. The new term starts on July 1, and the rent is $1,850 a month.
+assistant: Great, I will remember that your Riverside studio lease renewal was mailed.
+</CURRENT_TURNS>
+
+Output:
+{
+  "records": [
+    {
+      "memory_type": "event",
+      "semantic_text": "The user mailed the signed lease renewal for the user's Riverside studio on 2026-04-09.",
+      "entities": ["Riverside studio", "signed lease renewal"],
+      "temporal": {"t_ref": "2026-04-09", "t_valid_from": "2026-04-09", "t_valid_to": ""},
+      "tags": ["lease renewal", "housing"],
+      "evidence_turns": [0],
+      "source_role": "user"
+    },
+    {
+      "memory_type": "fact",
+      "semantic_text": "The user's Riverside studio lease renewal starts a new term on 2026-07-01 with rent of $1,850 per month.",
+      "entities": ["Riverside studio", "lease renewal", "$1,850 per month"],
+      "temporal": {"t_ref": "2026-07-01", "t_valid_from": "2026-07-01", "t_valid_to": ""},
+      "tags": ["lease term", "rent"],
+      "evidence_turns": [0],
+      "source_role": "user"
     }
   ]
 }

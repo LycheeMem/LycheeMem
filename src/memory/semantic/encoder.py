@@ -110,8 +110,8 @@ class CompactSemanticEncoder:
         if session_date:
             date_header = (
                 f"<SESSION_DATE>{session_date}</SESSION_DATE>\n"
-                f"Use the SESSION_DATE above as \"today\" to convert all relative time "
-                f"references (yesterday, last week, next month, etc.) to absolute dates.\n\n"
+                # f"Use the SESSION_DATE above as \"today\" to convert all relative time "
+                # f"references (yesterday, last week, next month, etc.) to absolute dates.\n\n"
             )
         else:
             date_header = ""
