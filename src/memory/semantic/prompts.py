@@ -9,7 +9,7 @@ Extract atomic, lossless, user-grounded memory records from the conversation.
 
 Input:
 - <SESSION_DATE>: optional date anchor for resolving relative or incomplete dates.
-- <PREVIOUS_TURNS>: context for resolving names, pronouns, and references.
+- <REFERENCE_CONTEXT>: brief background notes from earlier dialogue, used only to understand references.
 - <CURRENT_TURNS>: the only turns to extract from.
 
 Requirements:
@@ -20,8 +20,10 @@ Requirements:
 5. **User Grounding**: Store user-stated or user-confirmed information. Store assistant content only if it is personalized, accepted, confirmed, or necessary for a jointly established fact; skip generic explanations, templates, lists, and world knowledge.
 6. **Precise Metadata**: `entities` includes people, locations, organizations, products, objects, projects, topics, and other searchable entities. Keep attribution in `source_role`.
 7. **Low-Value Content**: Skip greetings, filler, repeated questions, and chatter with no durable information.
+8. **Reference Boundary**: Use <REFERENCE_CONTEXT> only to understand <CURRENT_TURNS>; do not extract facts from it.
+9. **Disambiguation Note**: Return `disambiguation_context` as a short note with only the resolved names, aliases, objects, dates, or open topics needed to understand later references. Use an empty string if nothing is needed.
 - `evidence_turns` are 0-based indexes into <CURRENT_TURNS>.
-- If there is no durable information, return `{"records":[]}`.
+- If there is no durable information, return `{"records":[], "disambiguation_context": ""}`.
 
 Memory types:
 - `fact`: stable factual information.
@@ -45,13 +47,14 @@ Output Format, return raw JSON only:
       "evidence_turns": [0],
       "source_role": "user|assistant|both"
     }
-  ]
+  ],
+  "disambiguation_context": "short free-text note for later reference resolution, or empty string"
 }
 
 Example:
 Input:
 <SESSION_DATE>2026-04-10</SESSION_DATE>
-<PREVIOUS_TURNS></PREVIOUS_TURNS>
+<REFERENCE_CONTEXT></REFERENCE_CONTEXT>
 <CURRENT_TURNS>
 user: I finally mailed the signed lease renewal for my Riverside studio yesterday. The new term starts on July 1, and the rent is $1,850 a month.
 assistant: Great, I will remember that your Riverside studio lease renewal was mailed.
@@ -78,7 +81,8 @@ Output:
       "evidence_turns": [0],
       "source_role": "user"
     }
-  ]
+  ],
+  "disambiguation_context": "Riverside studio refers to the user's studio. The signed lease renewal is for the Riverside studio; the new term starts on 2026-07-01."
 }
 """
 

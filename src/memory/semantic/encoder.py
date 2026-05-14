@@ -20,12 +20,14 @@ class CompactSemanticEncoder:
 
     def __init__(self, llm: BaseLLM):
         self._llm = llm
+        self.last_disambiguation_context: str = ""
 
     def encode_conversation(
         self,
         current_turns: list[dict[str, Any]],
         *,
         previous_turns: list[dict[str, Any]] | None = None,
+        reference_context: str | None = None,
         session_id: str = "",
         turn_index_offset: int = 0,
         session_date: str | None = None,
@@ -34,7 +36,10 @@ class CompactSemanticEncoder:
 
         Args:
             current_turns: 需要处理的当前对话轮次
-            previous_turns: 最近的上文轮次（供指代消解参考，可选）
+            previous_turns: 兼容旧调用的最近上文轮次（只作只读消歧参考，可选）
+            reference_context: 简短只读消歧上下文，优先于 previous_turns。
+                典型内容是上一窗口输出的 disambiguation_context 和少量已有
+                semantic_text；不能作为新记录的证据来源。
             session_id: 会话 ID
             turn_index_offset: current_turns 在完整 session 中的起始 turn 索引
             session_date: 对话发生的日期（自由文本，如 "May 8, 2023"）。
@@ -45,7 +50,12 @@ class CompactSemanticEncoder:
         Returns:
             编码完成的 MemoryRecord 列表
         """
-        raw_records = self._encode_records(current_turns, previous_turns or [], session_date=session_date)
+        raw_records = self._encode_records(
+            current_turns,
+            previous_turns or [],
+            session_date=session_date,
+            reference_context=reference_context,
+        )
         if not raw_records:
             return []
 
@@ -100,9 +110,16 @@ class CompactSemanticEncoder:
         current_turns: list[dict[str, Any]],
         previous_turns: list[dict[str, Any]],
         session_date: str | None = None,
+        reference_context: str | None = None,
     ) -> list[dict[str, Any]]:
         """单次 LLM 调用：输出包含全部字段的 record 列表。"""
-        prev_text = self._format_section(previous_turns) if previous_turns else "(no previous turns)"
+        self.last_disambiguation_context = ""
+        if reference_context is not None:
+            ref_text = reference_context.strip() or "(none)"
+        elif previous_turns:
+            ref_text = self._format_section(previous_turns)
+        else:
+            ref_text = "(none)"
         curr_text = self._format_section(current_turns)
 
         # session_date 注入 user message 头部，system prompt 保持不变。
@@ -118,7 +135,7 @@ class CompactSemanticEncoder:
 
         user_content = (
             f"{date_header}"
-            f"<PREVIOUS_TURNS>\n{prev_text}\n</PREVIOUS_TURNS>\n\n"
+            f"<REFERENCE_CONTEXT>\n{ref_text}\n</REFERENCE_CONTEXT>\n\n"
             f"<CURRENT_TURNS>\n{curr_text}\n</CURRENT_TURNS>"
         )
 
@@ -130,6 +147,10 @@ class CompactSemanticEncoder:
 
         try:
             parsed = self._parse_json(response)
+            if isinstance(parsed, dict):
+                self.last_disambiguation_context = self._normalize_disambiguation_context(
+                    parsed.get("disambiguation_context", "")
+                )
             records = parsed.get("records", [])
             if isinstance(records, list):
                 return records
@@ -165,6 +186,19 @@ class CompactSemanticEncoder:
             lines = [l for l in lines if not l.strip().startswith("```")]
             text = "\n".join(lines)
         return json.loads(text)
+
+    @staticmethod
+    def _normalize_disambiguation_context(value: Any, *, max_chars: int = 1200) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, list):
+            text = "\n".join(str(item).strip() for item in value if str(item).strip())
+        else:
+            text = str(value).strip()
+        text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
+        if len(text) > max_chars:
+            text = text[:max_chars].rstrip()
+        return text
 
     @staticmethod
     def _normalize_evidence_turns(

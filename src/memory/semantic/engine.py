@@ -1219,14 +1219,18 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
         steps: list[dict[str, Any]] = []
 
-        # Step 2 分桶提前确定，供 Step 1 和 Step 2 共用
-        # 取最近 4 轮作为当前轮（供编码器做指代消解），其余作为上文
-        previous = turns[:-4] if len(turns) > 4 else []
-        current = turns[-4:] if len(turns) > 4 else turns
+        # Step 2 分桶提前确定，供 Step 1 和 Step 2 共用。
+        # `turns` 已经是水位线之后的新增内容；当调用方选择每 2-4 个
+        # exchange 再触发一次固化时，这批新增 turn 都必须被抽取为记忆。
+        # 旧逻辑只把最后 4 条 turn 放入 CURRENT_TURNS，会让更早的新 turn
+        # 仅作为参考上下文而不被抽取。
+        previous: list[dict[str, Any]] = []
+        current = turns
 
         # Step 1: 新颖性检查
-        # 只检查最近一次 user-assistant 交换（最后 2 条），避免历史已固化轮次
-        # 的重复内容干扰判断，导致"本轮新信息"被误判为"已有记忆覆盖"。
+        # 检查整批新增 turns。水位线已经排除了历史已固化内容；如果调用方
+        # 攒了多个 exchange 后再固化，只看最后一对会漏掉前面 exchange 的
+        # 新信息，甚至可能导致整批被跳过。
         if skip_novelty_check:
             has_novelty = True
             steps.append({
@@ -1235,8 +1239,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 "detail": "skip_novelty_check=True，直接进入固化",
             })
         else:
-            last_exchange = turns[-2:] if len(turns) >= 2 else turns
-            has_novelty = self._check_novelty(last_exchange, retrieved_context)
+            has_novelty = self._check_novelty(current, retrieved_context)
             steps.append({
                 "name": "novelty_check",
                 "status": "done",
@@ -1256,7 +1259,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             current,
             previous_turns=previous,
             session_id=session_id,
-            turn_index_offset=turn_index_offset + max(0, len(turns) - len(current)),
+            turn_index_offset=turn_index_offset,
             session_date=reference_timestamp,
         )
 
