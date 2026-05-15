@@ -37,7 +37,7 @@ class CompactSemanticEncoder:
         Args:
             current_turns: 需要处理的当前对话轮次
             previous_turns: 兼容旧调用的最近上文轮次（只作只读消歧参考，可选）
-            reference_context: 简短只读消歧上下文，优先于 previous_turns。
+            reference_context: 同 session 内的简短只读消歧上下文，优先于 previous_turns。
                 典型内容是上一窗口输出的 disambiguation_context 和少量已有
                 semantic_text；不能作为新记录的证据来源。
             session_id: 会话 ID

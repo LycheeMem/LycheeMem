@@ -214,6 +214,13 @@ def create_pipeline(
             model=vlm_model,
             api_key=getattr(global_settings, "vlm_api_key", global_settings.llm_api_key),
             api_base=getattr(global_settings, "vlm_api_base", global_settings.llm_api_base),
+            default_temperature=getattr(global_settings, "vlm_temperature", 0.7),
+            default_max_tokens=(
+                getattr(global_settings, "vlm_max_tokens", 0)
+                if getattr(global_settings, "vlm_max_tokens", 0) > 0
+                else None
+            ),
+            default_top_p=getattr(global_settings, "vlm_top_p", 1.0),
         )
         logger.info("✓ VLM 初始化成功：model=%s", vlm_model)
     else:

@@ -156,6 +156,8 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         self._reranker_enabled = bool(reranker_enabled)
         self._reranker_composite_limit = max(20, int(reranker_composite_limit or 80))
         self._reranker_fallback_limit = max(20, int(reranker_fallback_limit or 100))
+        self._encoder_reference_by_session: dict[str, str] = {}
+        self._encoder_record_texts_by_session: dict[str, list[str]] = {}
         self._reranker = None
         if self._reranker_enabled:
             backend = str(reranker_backend or "local").lower()
@@ -1255,21 +1257,32 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             )
 
         # Step 2: Compact Encoding
+        encoder_reference_context = self._get_encoder_reference_context(session_id)
         new_records = self._encoder.encode_conversation(
             current,
             previous_turns=previous,
+            reference_context=encoder_reference_context,
             session_id=session_id,
             turn_index_offset=turn_index_offset,
             session_date=reference_timestamp,
         )
+        encoder_disambiguation_context = self._encoder.last_disambiguation_context
 
         steps.append({
             "name": "compact_encoding",
             "status": "done",
-            "detail": f"抽取 {len(new_records)} 条 MemoryRecord",
+            "detail": (
+                f"抽取 {len(new_records)} 条 MemoryRecord"
+                + ("；使用同 session 消歧上下文" if encoder_reference_context else "")
+            ),
         })
 
         if not new_records:
+            self._update_encoder_reference_context(
+                session_id=session_id,
+                disambiguation_context=encoder_disambiguation_context,
+                records=[],
+            )
             return ConsolidationResult(
                 records_added=0,
                 records_merged=0,
@@ -1296,6 +1309,12 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 sensitive_skipped += 1
             else:
                 filtered_records.append(record)
+
+        self._update_encoder_reference_context(
+            session_id=session_id,
+            disambiguation_context=encoder_disambiguation_context,
+            records=filtered_records,
+        )
 
         # 3b. Phase A 预备：一次批量 embed 同时覆盖 semantic_text + normalized_text
         #     normalized_text = f"{memory_type}: {semantic_text}"（确定性规则生成）
@@ -1630,6 +1649,54 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             return bool(parsed.get("has_novelty", True))
         except (json.JSONDecodeError, ValueError):
             return True  # 保守策略：解析失败则认为有新信息
+
+    def _get_encoder_reference_context(self, session_id: str) -> str | None:
+        """Return compact reference context for the same session only."""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return None
+        return self._encoder_reference_by_session.get(sid) or None
+
+    def _update_encoder_reference_context(
+        self,
+        *,
+        session_id: str,
+        disambiguation_context: str,
+        records: list[MemoryRecord],
+        max_records: int = 12,
+        max_chars: int = 2400,
+    ) -> None:
+        """Keep only sufficient same-session context for later coreference resolution."""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+
+        parts: list[str] = []
+        note = str(disambiguation_context or "").strip()
+        if note:
+            parts.append(f"Resolved references: {note}")
+
+        stored_texts = list(self._encoder_record_texts_by_session.get(sid, []))
+        seen: set[str] = set(stored_texts)
+        for record in records:
+            text = str(record.semantic_text or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            stored_texts.append(text)
+        stored_texts = stored_texts[-max_records:]
+        if stored_texts:
+            self._encoder_record_texts_by_session[sid] = stored_texts
+            parts.append(
+                "Recent same-session records:\n"
+                + "\n".join(f"- {text}" for text in stored_texts)
+            )
+
+        context = "\n".join(parts).strip()
+        if len(context) > max_chars:
+            context = context[:max_chars].rstrip()
+        if context:
+            self._encoder_reference_by_session[sid] = context
 
     def _dict_to_plan(self, d: dict[str, Any]) -> SearchPlan:
         """dict → SearchPlan。"""

@@ -54,12 +54,18 @@ class LiteLLMLLM(BaseLLM):
         api_key: str | None = None,
         api_base: str | None = None,
         drop_params: bool = True,
+        default_temperature: float = 0.7,
+        default_max_tokens: int | None = None,
+        default_top_p: float = 1.0,
         **extra_kwargs: Any,
     ) -> None:
         self.model = model
         self._api_key = api_key or None
         self._api_base = api_base or None
         self._drop_params = drop_params
+        self._default_temperature = default_temperature
+        self._default_max_tokens = default_max_tokens
+        self._default_top_p = default_top_p
         self._timeout = _DEFAULT_TIMEOUT_SECONDS
         self._retry_attempts = _DEFAULT_RETRY_ATTEMPTS
         self._retry_backoff_seconds = _DEFAULT_RETRY_BACKOFF_SECONDS
@@ -68,7 +74,7 @@ class LiteLLMLLM(BaseLLM):
     def _build_kwargs(
         self,
         *,
-        temperature: float,
+        temperature: float | None,
         max_tokens: int | None,
         response_format: dict[str, Any] | None,
     ) -> dict[str, Any]:
@@ -79,9 +85,12 @@ class LiteLLMLLM(BaseLLM):
             kwargs["api_base"] = self._api_base
         if self._timeout is not None and self._timeout > 0:
             kwargs["timeout"] = self._timeout
-        kwargs["temperature"] = temperature
-        if max_tokens is not None:
-            kwargs["max_tokens"] = max_tokens
+        effective_temperature = self._default_temperature if temperature is None else temperature
+        effective_max_tokens = self._default_max_tokens if max_tokens is None else max_tokens
+        kwargs["temperature"] = effective_temperature
+        kwargs["top_p"] = self._default_top_p
+        if effective_max_tokens is not None:
+            kwargs["max_tokens"] = effective_max_tokens
         if response_format is not None:
             kwargs["response_format"] = response_format
         return kwargs
@@ -112,7 +121,7 @@ class LiteLLMLLM(BaseLLM):
     def generate(
         self,
         messages: list[Message],
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
@@ -159,7 +168,7 @@ class LiteLLMLLM(BaseLLM):
     async def agenerate(
         self,
         messages: list[Message],
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
@@ -206,7 +215,7 @@ class LiteLLMLLM(BaseLLM):
     async def astream_generate(
         self,
         messages: list[Message],
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
         """真实 token 流式生成，逐 chunk yield 字符串。"""

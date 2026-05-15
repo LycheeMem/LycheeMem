@@ -50,6 +50,9 @@ def _create_llm(settings):
         model=settings.llm_model,
         api_key=settings.llm_api_key or None,
         api_base=settings.llm_api_base or None,
+        default_temperature=settings.llm_temperature,
+        default_max_tokens=(settings.llm_max_tokens if settings.llm_max_tokens > 0 else None),
+        default_top_p=settings.llm_top_p,
     )
 
 

@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     llm_model: str = "openai/gpt-4o-mini"
     llm_api_key: str = ""
     llm_api_base: str = ""
+    llm_temperature: float = 0.7
+    llm_max_tokens: int = 0  # 0 = 不限制，交给 provider 默认
+    llm_top_p: float = 0.80
 
 
     embedding_model: str = "openai/text-embedding-3-small"
@@ -75,6 +78,9 @@ class Settings(BaseSettings):
     vlm_model: str = ""  # 例如 openai/qwen-vl-max，留空则复用主 LLM
     vlm_api_key: str = ""
     vlm_api_base: str = ""
+    vlm_temperature: float = 0.7
+    vlm_max_tokens: int = 0  # 0 = 不限制
+    vlm_top_p: float = 1.0
     visual_memory_db_path: str = "data/visual_memory.db"
     visual_vector_db_path: str = "data/visual_vector"
     visual_image_path: str = "data/visual_memory"

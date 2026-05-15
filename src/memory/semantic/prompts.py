@@ -9,7 +9,7 @@ Extract atomic, lossless, user-grounded memory records from the conversation.
 
 Input:
 - <SESSION_DATE>: optional date anchor for resolving relative or incomplete dates.
-- <REFERENCE_CONTEXT>: brief background notes from earlier dialogue, used only to understand references.
+- <REFERENCE_CONTEXT>: brief reference notes produced from earlier turns in the same session only, used only to understand names, pronouns, aliases, omitted objects, and relative dates.
 - <CURRENT_TURNS>: the only turns to extract from.
 
 Requirements:
@@ -20,7 +20,7 @@ Requirements:
 5. **User Grounding**: Store user-stated or user-confirmed information. Store assistant content only if it is personalized, accepted, confirmed, or necessary for a jointly established fact; skip generic explanations, templates, lists, and world knowledge.
 6. **Precise Metadata**: `entities` includes people, locations, organizations, products, objects, projects, topics, and other searchable entities. Keep attribution in `source_role`.
 7. **Low-Value Content**: Skip greetings, filler, repeated questions, and chatter with no durable information.
-8. **Reference Boundary**: Use <REFERENCE_CONTEXT> only to understand <CURRENT_TURNS>; do not extract facts from it.
+8. **Reference Boundary**: Use <REFERENCE_CONTEXT> only to understand <CURRENT_TURNS>; do not extract facts from it, and do not assume it contains information from any other session.
 9. **Disambiguation Note**: Return `disambiguation_context` as a short note with only the resolved names, aliases, objects, dates, or open topics needed to understand later references. Use an empty string if nothing is needed.
 - `evidence_turns` are 0-based indexes into <CURRENT_TURNS>.
 - If there is no durable information, return `{"records":[], "disambiguation_context": ""}`.

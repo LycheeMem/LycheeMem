@@ -161,7 +161,7 @@ class BaseLLM(ABC):
     def generate(
         self,
         messages: list[Message],
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
@@ -171,7 +171,7 @@ class BaseLLM(ABC):
     async def agenerate(
         self,
         messages: list[Message],
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
@@ -180,7 +180,7 @@ class BaseLLM(ABC):
     async def astream_generate(
         self,
         messages: list[dict[str, str]],
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
         """流式异步生成，逐 token yield 字符串。
