@@ -293,6 +293,57 @@ class LanceVectorIndex:
             "normalized_vector": normalized_vector,
         }])
 
+    def upsert_synthesized_batch(
+        self,
+        composites: list[dict[str, Any]],
+    ) -> None:
+        """批量写入 CompositeRecord 向量。
+
+        每条 composite 需要: composite_id, memory_type, semantic_text, normalized_text。
+        可选: semantic_vector, normalized_vector（未提供则自动批量计算）。
+        """
+        if not composites:
+            return
+
+        texts_to_embed: list[str] = []
+        embed_indices: list[tuple[int, str]] = []
+        for i, c in enumerate(composites):
+            if "semantic_vector" not in c or c["semantic_vector"] is None:
+                embed_indices.append((i, "semantic"))
+                texts_to_embed.append(c["semantic_text"])
+            if "normalized_vector" not in c or c["normalized_vector"] is None:
+                embed_indices.append((i, "normalized"))
+                texts_to_embed.append(c["normalized_text"])
+
+        if texts_to_embed:
+            if self._embedder is None:
+                raise RuntimeError("LanceVectorIndex: embedder 未设置且未提供向量")
+            embedded = self._embedder.embed(texts_to_embed)
+            for (idx, kind), vec in zip(embed_indices, embedded):
+                if kind == "semantic":
+                    composites[idx]["semantic_vector"] = vec
+                else:
+                    composites[idx]["normalized_vector"] = vec
+
+        table = self._db.open_table(self.SYNTH_TABLE)
+        for c in composites:
+            cid = self._escape_sql(str(c["composite_id"]))
+            try:
+                table.delete(f"composite_id = '{cid}'")
+            except Exception:
+                pass
+
+        rows = [
+            {
+                "composite_id": c["composite_id"],
+                "memory_type": c["memory_type"],
+                "vector": c["semantic_vector"],
+                "normalized_vector": c["normalized_vector"],
+            }
+            for c in composites
+        ]
+        table.add(rows)
+
     def search_synthesized(
         self,
         query_text: str,

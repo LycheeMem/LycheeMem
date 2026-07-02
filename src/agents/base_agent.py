@@ -61,6 +61,32 @@ class BaseAgent(ABC):
         )
 
     @staticmethod
+    def _parse_reference_time(reference_time: str | None) -> datetime.datetime | None:
+        """Parse an explicit reference time for time-basis injection."""
+        if not reference_time:
+            return None
+        raw = str(reference_time).strip()
+        if not raw:
+            return None
+
+        iso_raw = raw.replace("Z", "+00:00")
+        try:
+            dt = datetime.datetime.fromisoformat(iso_raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.timezone.utc)
+            return dt
+        except ValueError:
+            pass
+
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                dt = datetime.datetime.strptime(raw, fmt)
+                return dt.replace(tzinfo=datetime.timezone.utc)
+            except ValueError:
+                continue
+        return None
+
+    @staticmethod
     def _parse_json(text: str) -> dict[str, Any]:
         """从 LLM 输出中提取 JSON。"""
         # 尝试直接解析

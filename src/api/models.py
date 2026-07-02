@@ -15,6 +15,7 @@ class ChatRequest(BaseModel):
 
     session_id: str = Field(..., min_length=1, max_length=128)
     message: str = Field(..., min_length=1, max_length=100_000)
+    reference_time: str | None = None
     images: list[str] = Field(
         default=[],
         description="Base64 编码的图片列表（可选，支持多模态输入）",
@@ -255,6 +256,7 @@ class MemorySearchRequest(BaseModel):
     session_id: str | None = Field(default=None, min_length=1, max_length=128)
     include_graph: bool = True
     include_skills: bool = True
+    reference_time: str | None = None
 
 
 class MemorySearchResponse(BaseModel):
@@ -275,6 +277,7 @@ class MemorySmartSearchRequest(BaseModel):
     synthesize: bool = True
     mode: str = Field(default="compact", pattern="^(raw|full|compact)$")
     response_level: str = Field(default="full", pattern="^(minimal|compact|full)$")
+    reference_time: str | None = None
 
 
 # ─── Memory Synthesize ───
@@ -290,6 +293,7 @@ class MemorySynthesizeRequest(BaseModel):
     graph_results: list[dict[str, Any]] = Field(default_factory=list)
     semantic_results: list[dict[str, Any]] = Field(default_factory=list)
     skill_results: list[dict[str, Any]] = Field(default_factory=list)
+    reference_time: str | None = None
 
 
 class MemorySynthesizeResponse(BaseModel):
@@ -393,6 +397,8 @@ class MemoryConsolidateRequest(BaseModel):
     force_ingest: bool = False
     # 跳过技能抽取，只写入语义记忆（适合批量摄入场景）
     skip_skills: bool = False
+    # 跳过 LLM 新颖性检查，直接进入语义编码写入（适合离线评测/批量重建）
+    skip_novelty_check: bool = False
     # 对话发生的日期（自由文本，如 "May 8, 2023"），用于将相对时间（yesterday/last week）
     # 解析为绝对日期。由调用方提供，后端透传给 encoder。
     session_date: str | None = None

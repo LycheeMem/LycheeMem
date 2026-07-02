@@ -9,11 +9,13 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
+from src.embedder.base import set_embedding_call_source
 from src.memory.semantic.models import (
     MemoryRecord,
     CompositeRecord,
@@ -64,6 +66,11 @@ class RecordFusionEngine:
             "invalidated_composite_ids": list(self._last_run_stats.get("invalidated_composite_ids", [])),
         }
 
+    @property
+    def _embedder(self):
+        """复用 LanceVectorIndex 持有的 embedder，用于预批量 embed。"""
+        return self._vector._embedder
+
     # ──────────────────────────────────────
     # 主入口
     # ──────────────────────────────────────
@@ -71,23 +78,22 @@ class RecordFusionEngine:
     def synthesize_on_ingest(
         self,
         new_records: list[MemoryRecord],
+        *,
+        pre_computed_vectors: dict[str, list[float]] | None = None,
     ) -> list[CompositeRecord]:
         """在新 records 写入后触发融合流程。
 
-        1. 去重：检测近似重复，过期旧记录
-        2. 聚类：embedding 距离 < synthesis 阈值 → cluster
-        3. 每个 cluster → CompositeRecord（代表记录文本，合并 metadata）
-        4. 层级聚合（可选）：composite 之间再做一轮
-
-        Returns:
-            生成的 CompositeRecord 列表
+        pre_computed_vectors: record_id → semantic_vector，由调用方（engine）预批量计算，
+            传入后 _dedup_on_ingest / _cluster_and_build 直接复用，无需再调用 embed。
         """
         self._last_run_stats = self._empty_run_stats()
         if not new_records:
             return []
 
         # Step 1: 去重
-        surviving_records, expired_ids, invalidated_cids = self._dedup_on_ingest(new_records)
+        surviving_records, expired_ids, invalidated_cids = self._dedup_on_ingest(
+            new_records, pre_computed_vectors=pre_computed_vectors,
+        )
         self._last_run_stats["expired_record_ids"] = sorted(expired_ids)
         self._last_run_stats["invalidated_composite_ids"] = sorted(invalidated_cids)
 
@@ -107,6 +113,7 @@ class RecordFusionEngine:
         composites = self._cluster_and_build(
             surviving_records,
             covered_record_ids=covered_record_ids,
+            pre_computed_vectors=pre_computed_vectors,
         )
 
         if self._max_hierarchy_rounds <= 0 or not composites:
@@ -142,6 +149,8 @@ class RecordFusionEngine:
     def _dedup_on_ingest(
         self,
         new_records: list[MemoryRecord],
+        *,
+        pre_computed_vectors: dict[str, list[float]] | None = None,
     ) -> tuple[list[MemoryRecord], set[str], set[str]]:
         """对每个新 record，检测与已有记录的近似重复。
 
@@ -160,19 +169,38 @@ class RecordFusionEngine:
         }
         now_iso = datetime.now(timezone.utc).isoformat()
 
-        for record in new_records:
-            if record.expired or not record.record_id:
-                continue
+        # Phase A: 预批量 embed + 并行 ANN 搜索（纯读，线程安全）
+        valid_records = [r for r in new_records if not r.expired and r.record_id]
 
-            # ANN 搜索相似的已有记录
-            results = self._vector.search(
-                record.semantic_text,
-                column="vector",
-                limit=10,
-                include_expired=False,
-            )
+        # 优先复用调用方预算的向量，避免重复 embed
+        _vr_vec_map: dict[str, list[float]] = dict(pre_computed_vectors or {})
+        _missing = [r for r in valid_records if r.record_id not in _vr_vec_map]
+        if _missing and self._embedder is not None:
+            set_embedding_call_source("fusion_dedup")
+            _miss_vecs = self._embedder.embed([r.semantic_text for r in _missing])
+            _vr_vec_map.update({r.record_id: v for r, v in zip(_missing, _miss_vecs)})
 
-            for hit in results:
+        def _search_dedup_one(
+            record: MemoryRecord,
+        ) -> tuple[str, list[dict[str, Any]]]:
+            try:
+                return record.record_id, self._vector.search(
+                    record.semantic_text, column="vector", limit=10, include_expired=False,
+                    query_vector=_vr_vec_map.get(record.record_id),
+                )
+            except Exception:
+                return record.record_id, []
+
+        _dedup_search: dict[str, list[dict[str, Any]]] = {}
+        if valid_records:
+            _workers = min(8, len(valid_records))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=_workers) as _pool:
+                for _rid, _hits in _pool.map(_search_dedup_one, valid_records):
+                    _dedup_search[_rid] = _hits
+
+        # Phase B: 串行处理搜索结果（含写操作）
+        for record in valid_records:
+            for hit in _dedup_search.get(record.record_id, []):
                 hit_id = str(hit.get("record_id", "")).strip()
                 dist = float(hit.get("_distance", 999.0))
 
@@ -218,6 +246,7 @@ class RecordFusionEngine:
         new_records: list[MemoryRecord],
         *,
         covered_record_ids: set[str] | None = None,
+        pre_computed_vectors: dict[str, list[float]] | None = None,
     ) -> list[CompositeRecord]:
         """对新记录做 embedding 聚类，构建 CompositeRecord。"""
         covered = covered_record_ids or set()
@@ -232,16 +261,36 @@ class RecordFusionEngine:
         }
         new_ids = set(candidate_map.keys())
 
-        # 用每个新记录做 ANN 搜索，建立相似度边
+        # 预批量 embed + 并行 ANN 搜索建立相似度边
+        # 优先复用调用方预算的向量，避免重复 embed
+        _nr_vec_map: dict[str, list[float]] = dict(pre_computed_vectors or {})
+        _missing_nr = [r for r in new_records if r.record_id not in _nr_vec_map]
+        if _missing_nr and self._embedder is not None:
+            set_embedding_call_source("fusion_cluster")
+            _miss_nr_vecs = self._embedder.embed([r.semantic_text for r in _missing_nr])
+            _nr_vec_map.update({r.record_id: v for r, v in zip(_missing_nr, _miss_nr_vecs)})
+
+        def _search_cluster_one(
+            record: MemoryRecord,
+        ) -> tuple[str, list[dict[str, Any]]]:
+            try:
+                return record.record_id, self._vector.search(
+                    record.semantic_text, column="vector", limit=15, include_expired=False,
+                    query_vector=_nr_vec_map.get(record.record_id),
+                )
+            except Exception:
+                return record.record_id, []
+
+        _cluster_workers = min(8, len(new_records))
+        _cluster_search: dict[str, list[dict[str, Any]]] = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_cluster_workers) as _pool:
+            for _rid, _hits in _pool.map(_search_cluster_one, new_records):
+                _cluster_search[_rid] = _hits
+
+        # 串行建边（含 SQLite 读取）
         edges: list[tuple[str, str]] = []
         for record in new_records:
-            results = self._vector.search(
-                record.semantic_text,
-                column="vector",
-                limit=15,
-                include_expired=False,
-            )
-            for hit in results:
+            for hit in _cluster_search.get(record.record_id, []):
                 hit_id = str(hit.get("record_id", "")).strip()
                 dist = float(hit.get("_distance", 999.0))
 
@@ -279,7 +328,7 @@ class RecordFusionEngine:
         if not valid_clusters:
             return []
 
-        # 构建 CompositeRecord
+        # 构建 CompositeRecord，先写 SQLite，再统一批量 embed 写向量索引
         now_iso = datetime.now(timezone.utc).isoformat()
         composites: list[CompositeRecord] = []
 
@@ -303,8 +352,21 @@ class RecordFusionEngine:
                 now_iso=now_iso,
             )
             if composite:
-                self._persist_composite(composite)
+                self._sqlite.upsert_synthesized(composite)
                 composites.append(composite)
+
+        # 批量 embed 并写入向量索引（1 次 API 调用，不论 composite 数量）
+        if composites:
+            set_embedding_call_source("fusion_persist")
+            self._vector.upsert_synthesized_batch([
+                {
+                    "composite_id": c.composite_id,
+                    "memory_type": c.memory_type,
+                    "semantic_text": c.semantic_text,
+                    "normalized_text": c.normalized_text,
+                }
+                for c in composites
+            ])
 
         return composites
 
@@ -331,16 +393,38 @@ class RecordFusionEngine:
                 continue
             candidate_map[item_id] = item
 
-        # 搜索相关的 root composites
+        # 预批量 embed + 并行搜索相关的 root composites
+        _hier_candidates = list(candidate_map.values())
+
+        _hc_vec_map: dict[str, list[float]] = {}
+        if _hier_candidates and self._embedder is not None:
+            set_embedding_call_source("fusion_hierarchy")
+            _hc_vecs = self._embedder.embed([item.semantic_text for item in _hier_candidates])
+            _hc_vec_map = {self._item_id(item): v for item, v in zip(_hier_candidates, _hc_vecs)}
+
+        def _search_hierarchy_one(
+            item: MemoryRecord | CompositeRecord,
+        ) -> tuple[str, list[dict[str, Any]]]:
+            try:
+                return self._item_id(item), self._vector.search_synthesized(
+                    item.semantic_text, column="vector", limit=10,
+                    query_vector=_hc_vec_map.get(self._item_id(item)),
+                )
+            except Exception:
+                return self._item_id(item), []
+
+        _hier_search: dict[str, list[dict[str, Any]]] = {}
+        if _hier_candidates:
+            _hier_workers = min(8, len(_hier_candidates))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=_hier_workers) as _pool:
+                for _iid, _hits in _pool.map(_search_hierarchy_one, _hier_candidates):
+                    _hier_search[_iid] = _hits
+
+        # 串行建边（含 SQLite 读取和覆盖关系检查）
         edges: list[tuple[str, str]] = []
-        for item in list(candidate_map.values()):
+        for item in _hier_candidates:
             item_id = self._item_id(item)
-            results = self._vector.search_synthesized(
-                item.semantic_text,
-                column="vector",
-                limit=10,
-            )
-            for hit in results:
+            for hit in _hier_search.get(item_id, []):
                 cid = str(hit.get("composite_id", "")).strip()
                 dist = float(hit.get("_distance", 999.0))
 
@@ -410,8 +494,21 @@ class RecordFusionEngine:
                 now_iso=now_iso,
             )
             if composite:
-                self._persist_composite(composite)
+                self._sqlite.upsert_synthesized(composite)
                 composites.append(composite)
+
+        # 批量 embed 并写入向量索引（1 次 API 调用，不论 composite 数量）
+        if composites:
+            set_embedding_call_source("fusion_persist")
+            self._vector.upsert_synthesized_batch([
+                {
+                    "composite_id": c.composite_id,
+                    "memory_type": c.memory_type,
+                    "semantic_text": c.semantic_text,
+                    "normalized_text": c.normalized_text,
+                }
+                for c in composites
+            ])
 
         return composites
 
@@ -557,15 +654,6 @@ class RecordFusionEngine:
         if result not in VALID_SYNTH_TYPES:
             result = "usage_pattern"
         return result
-
-    def _persist_composite(self, composite: CompositeRecord) -> None:
-        self._sqlite.upsert_synthesized(composite)
-        self._vector.upsert_synthesized(
-            composite_id=composite.composite_id,
-            memory_type=composite.memory_type,
-            semantic_text=composite.semantic_text,
-            normalized_text=composite.normalized_text,
-        )
 
     def _is_source_group_already_covered(self, source_record_ids: list[str]) -> bool:
         source_set = {s for s in source_record_ids if s}

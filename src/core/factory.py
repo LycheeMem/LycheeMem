@@ -25,6 +25,34 @@ from src.memory.working.session_store import InMemorySessionStore
 logger = logging.getLogger(__name__)
 
 
+def _resolve_embedding_dim(embedder: BaseEmbedder, settings) -> int:
+    """返回实际 embedding_dim；若配置为 0，则自动探测。
+    
+    本地 SentenceTransformerEmbedder 有 dimension 属性，优先读取；
+    否则通过一次真实 API 调用探测。
+    """
+    dim = getattr(settings, "embedding_dim", 0) or 0
+    if dim > 0:
+        return dim
+    # 本地模型：直接读属性（会触发懒加载，但无网络调用）
+    if hasattr(embedder, "dimension"):
+        try:
+            dim = int(embedder.dimension)
+            logger.info("本地模型 embedding_dim = %d", dim)
+            return dim
+        except Exception:
+            pass
+    logger.info("embedding_dim 未配置，自动探测中…")
+    try:
+        vec = embedder.embed_query("probe")
+        dim = len(vec)
+        logger.info("自动探测 embedding_dim = %d", dim)
+    except Exception as exc:
+        logger.warning("自动探测 embedding_dim 失败，回退到变长模式: %s", exc)
+        dim = 0
+    return dim
+
+
 def _create_session_store(settings=None):
     """根据配置创建会话存储。"""
     backend = getattr(settings, "session_backend", "memory") if settings else "memory"
@@ -56,11 +84,12 @@ def create_pipeline(
     min_recent_turns = settings.min_recent_turns
     skill_top_k = settings.skill_top_k
     session_store = _create_session_store(settings)
+    embedding_dim = _resolve_embedding_dim(embedder, settings)
     skill_store = SQLiteSkillStore(
         db_path=getattr(settings, "skill_db_path", "data/skill_store.db"),
         vector_db_path=getattr(settings, "skill_vector_db_path", "data/skill_vector"),
         embedder=embedder,
-        embedding_dim=getattr(settings, "embedding_dim", 1536),
+        embedding_dim=embedding_dim,
     )
 
     compressor = WorkingMemoryCompressor(
@@ -82,34 +111,19 @@ def create_pipeline(
         dedup_threshold=getattr(settings, "compact_dedup_threshold", 0.85),
         synthesis_min_records=getattr(settings, "compact_synthesis_min_records", 2),
         synthesis_similarity=getattr(settings, "compact_synthesis_similarity", 0.75),
-        embedding_dim=getattr(settings, "embedding_dim", 1536),
-        experimental_transformer_rerank=getattr(
-            settings,
-            "experimental_transformer_rerank",
-            True,
-        ),
-        transformer_rerank_model_path=getattr(
-            settings,
-            "transformer_rerank_model_path",
-            "LycheeMem/reranker",
-        ),
-        transformer_rerank_max_replacements=getattr(
-            settings,
-            "transformer_rerank_max_replacements",
-            1,
-        ),
-        transformer_rerank_merge_margin=getattr(
-            settings,
-            "transformer_rerank_merge_margin",
-            0.3,
-        ),
-        transformer_rerank_min_engine_score_delta=getattr(
-            settings,
-            "transformer_rerank_min_engine_score_delta",
-            -1.0,
-        ),
-        transformer_rerank_wide_top_k=getattr(settings, "transformer_rerank_wide_top_k", 50),
-        transformer_rerank_device=getattr(settings, "transformer_rerank_device", "auto"),
+        embedding_dim=embedding_dim,
+        composite_filter_enabled=getattr(settings, "composite_filter_enabled", False),
+        adequacy_check_enabled=getattr(settings, "adequacy_check_enabled", False),
+        reranker_enabled=getattr(settings, "reranker_enabled", False),
+        reranker_backend=getattr(settings, "reranker_backend", "local"),
+        reranker_model=getattr(settings, "reranker_model", "BAAI/bge-reranker-v2-m3"),
+        reranker_api_base=getattr(settings, "reranker_api_base", ""),
+        reranker_api_key=getattr(settings, "reranker_api_key", ""),
+        reranker_device=getattr(settings, "reranker_device", "auto"),
+        reranker_batch_size=getattr(settings, "reranker_batch_size", 16),
+        reranker_max_length=getattr(settings, "reranker_max_length", 512),
+        reranker_composite_limit=getattr(settings, "reranker_composite_limit", 80),
+        reranker_fallback_limit=getattr(settings, "reranker_fallback_limit", 100),
     )
     # 启动时补全尚未向量化的原始对话 turns（增量，已索引的跳过）
     semantic_engine.index_unvectorized_turns()
@@ -182,7 +196,7 @@ def create_pipeline(
         db_path=getattr(global_settings, "visual_memory_db_path", "data/visual_memory.db"),
         vector_db_path=getattr(global_settings, "visual_vector_db_path", "data/visual_vector"),
         image_storage_path=getattr(global_settings, "visual_image_path", "data/visual_memory"),
-        embedding_dim=getattr(global_settings, "embedding_dim", 1024),
+        embedding_dim=_resolve_embedding_dim(embedder, global_settings),
         embedder=embedder,  # 文本 embedder（向后兼容）
         multimodal_embedder=multimodal_embedder,  # 多模态 embedder（新增）
     )
@@ -200,6 +214,13 @@ def create_pipeline(
             model=vlm_model,
             api_key=getattr(global_settings, "vlm_api_key", global_settings.llm_api_key),
             api_base=getattr(global_settings, "vlm_api_base", global_settings.llm_api_base),
+            default_temperature=getattr(global_settings, "vlm_temperature", 0.7),
+            default_max_tokens=(
+                getattr(global_settings, "vlm_max_tokens", 0)
+                if getattr(global_settings, "vlm_max_tokens", 0) > 0
+                else None
+            ),
+            default_top_p=getattr(global_settings, "vlm_top_p", 1.0),
         )
         logger.info("✓ VLM 初始化成功：model=%s", vlm_model)
     else:

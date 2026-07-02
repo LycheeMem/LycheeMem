@@ -321,6 +321,7 @@ class LycheePipeline:
             raw_recent_turns=state.get("raw_recent_turns", []),
             wm_token_usage=state.get("wm_token_usage", 0),
             tool_calls=state.get("tool_calls", []),
+            reference_time=state.get("reference_time"),
         )
         retrieved_graph_memories = result["retrieved_graph_memories"]
         return {
@@ -367,6 +368,7 @@ class LycheePipeline:
                 user_query=state["user_query"],
                 retrieved_graph_memories=graph_memories,
                 retrieved_skills=state.get("retrieved_skills", []),
+                reference_time=state.get("reference_time"),
             )
 
             bg_context = result.get("background_context", "")
@@ -387,6 +389,7 @@ class LycheePipeline:
                 user_query=state["user_query"],
                 retrieved_graph_memories=state.get("retrieved_graph_memories", []),
                 retrieved_skills=state.get("retrieved_skills", []),
+                reference_time=state.get("reference_time"),
             )
             return {
                 "background_context": result["background_context"],
@@ -401,6 +404,7 @@ class LycheePipeline:
             compressed_history=state.get("compressed_history", []),
             background_context=state.get("background_context", ""),
             skill_reuse_plan=state.get("skill_reuse_plan", []),
+            reference_time=state.get("reference_time"),
         )
 
         # 将 assistant 回复写回会话日志
@@ -525,7 +529,13 @@ class LycheePipeline:
     # Public API
     # ──────────────────────────────────────
 
-    def run(self, user_query: str, session_id: str, input_images: list[str] | None = None) -> dict[str, Any]:
+    def run(
+        self,
+        user_query: str,
+        session_id: str,
+        input_images: list[str] | None = None,
+        reference_time: str | None = None,
+    ) -> dict[str, Any]:
         """同步运行 Pipeline。
 
         Args:
@@ -543,6 +553,7 @@ class LycheePipeline:
                 "user_query": user_query,
                 "session_id": session_id,
                 "input_images": input_images or [],
+                "reference_time": reference_time or "",
             }
             result = self._graph.invoke(initial_state)
         finally:
@@ -559,16 +570,24 @@ class LycheePipeline:
                 session_id,
                 retrieved_context=str(result.get("novelty_retrieved_context") or ""),
                 job_id=job_id,
+                session_date=reference_time,
             )
 
         return result
 
-    async def arun(self, user_query: str, session_id: str, input_images: list[str] | None = None) -> dict[str, Any]:
+    async def arun(
+        self,
+        user_query: str,
+        session_id: str,
+        input_images: list[str] | None = None,
+        reference_time: str | None = None,
+    ) -> dict[str, Any]:
         """异步运行 Pipeline。"""
         initial_state: dict[str, Any] = {
             "user_query": user_query,
             "session_id": session_id,
             "input_images": input_images or [],
+            "reference_time": reference_time or "",
         }
         result = await self._graph.ainvoke(initial_state)
 
@@ -580,13 +599,18 @@ class LycheePipeline:
                     session_id,
                     retrieved_context=str(result.get("novelty_retrieved_context") or ""),
                     job_id=job_id,
+                    session_date=reference_time,
                 )
             )
 
         return result
 
     async def astream_steps(
-        self, user_query: str, session_id: str, input_images: list[str] | None = None
+        self,
+        user_query: str,
+        session_id: str,
+        input_images: list[str] | None = None,
+        reference_time: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """逐节点执行 Pipeline，每步完成后 yield 进度事件。
 
@@ -609,6 +633,7 @@ class LycheePipeline:
                 "user_query": user_query,
                 "session_id": session_id,
                 "input_images": input_images or [],
+                "reference_time": reference_time or "",
             }
 
             patch = await asyncio.to_thread(self._wm_manager_node, state)
@@ -640,6 +665,7 @@ class LycheePipeline:
                 compressed_history=state.get("compressed_history", []),
                 background_context=state.get("background_context", ""),
                 skill_reuse_plan=state.get("skill_reuse_plan", []),
+                reference_time=state.get("reference_time"),
             ):
                 streaming_response += token
                 yield {"type": "token", "content": token}
@@ -677,6 +703,7 @@ class LycheePipeline:
                         session_id,
                         retrieved_context=str(state.get("novelty_retrieved_context") or ""),
                         job_id=job_id,
+                        session_date=reference_time,
                     )
                 )
 
@@ -685,7 +712,7 @@ class LycheePipeline:
             _reset_once()
 
     def consolidate(
-        self, session_id: str, retrieved_context: str = ""
+        self, session_id: str, retrieved_context: str = "", session_date: str | None = None
     ) -> dict[str, Any]:
         """手动触发固化（公共方法，可由 API BackgroundTasks 调用）。
 
@@ -713,6 +740,7 @@ class LycheePipeline:
         result = self.consolidator.run(
             turns=new_turns, session_id=session_id, retrieved_context=retrieved_context,
             turn_index_offset=watermark,
+            session_date=session_date,
         )
         # 固化成功后推进水位线
         store.set_last_consolidated_turn_index(session_id, raw_total)
@@ -723,11 +751,12 @@ class LycheePipeline:
         session_id: str,
         retrieved_context: str = "",
         job_id: int = 0,
+        session_date: str | None = None,
     ) -> None:
         """在守护线程中触发固化（fire-and-forget）。"""
         thread = threading.Thread(
             target=self._safe_consolidate,
-            args=(session_id, retrieved_context, job_id),
+            args=(session_id, retrieved_context, job_id, session_date),
             daemon=True,
         )
         thread.start()
@@ -737,12 +766,15 @@ class LycheePipeline:
         session_id: str,
         retrieved_context: str = "",
         job_id: int = 0,
+        session_date: str | None = None,
     ) -> None:
         """安全执行固化，异常不影响主流程。"""
         graphiti = getattr(self.consolidator, "graphiti_engine", None)
         strict = bool(getattr(graphiti, "strict", False))
         try:
-            result = self.consolidate(session_id, retrieved_context=retrieved_context)
+            result = self.consolidate(
+                session_id, retrieved_context=retrieved_context, session_date=session_date,
+            )
             self._finish_consolidation(
                 session_id=session_id,
                 job_id=job_id,
@@ -763,6 +795,7 @@ class LycheePipeline:
         session_id: str,
         retrieved_context: str = "",
         job_id: int = 0,
+        session_date: str | None = None,
     ) -> None:
         """异步场景下的后台固化（使用水位线，只处理新增 turns）。"""
         graphiti = getattr(self.consolidator, "graphiti_engine", None)
@@ -795,6 +828,7 @@ class LycheePipeline:
                     session_id=session_id,
                     retrieved_context=retrieved_context,
                     turn_index_offset=watermark,
+                    session_date=session_date,
                 ),
             )
             # 固化成功后推进水位线

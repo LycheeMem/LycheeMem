@@ -110,7 +110,7 @@ LycheeMemory is a compact memory framework for LLM agents. It starts from effici
 - **[04/03/2026]** The project now supports installation via `pip install lycheemem`. You can easily start the service from anywhere using `lycheemem-cli`!
 - **[03/30/2026]** We evaluated LycheeMemory on PinchBench with the OpenClaw plugin: compared to OpenClaw's native memory, it achieved an ~6% score improvement, while reducing token consumption by ~71% and cost by ~55%!
 - **[03/28/2026]** Semantic memory has been upgraded to Compact Semantic Memory (SQLite + LanceDB), no Neo4j required. See [/quick-start](#quick-start) for details.
-- **[03/27/2026]** OpenClaw Plugin is now available at [/openclaw-plugin](#openclaw-plugin) ! [Setup guide →](openclaw-plugin/INSTALL_OPENCLAW.md)
+- **[03/27/2026]** **OpenClaw** Plugin is now available at [/openclaw-plugin](#openclaw-plugin) ! [Setup guide →](openclaw-plugin/INSTALL_OPENCLAW.md)
 - **[03/26/2026]** MCP support is available at [/mcp](#mcp) !
 - **[03/23/2026]** LycheeMemory is now open source: [GitHub Repository →](https://github.com/LycheeMem/LycheeMem)
 

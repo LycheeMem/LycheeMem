@@ -54,17 +54,19 @@ class BaseSemanticMemoryEngine(ABC):
         recent_context: str = "",
         action_state: dict[str, Any] | None = None,
         retrieval_plan: dict[str, Any] | None = None,
+        reference_time: str | None = None,
     ) -> SemanticSearchResult:
         """检索与 query 相关的长期记忆。
 
         Args:
             query: 用户查询文本。
             session_id: 当前会话 ID（可选，用于 session-aware 检索）。
-            top_k: 检索返回上限；0 表示由 planner 的 depth 决定。
+            top_k: 检索返回上限；0 表示由检索模式决定。
             query_embedding: 预计算的 query 向量。
             recent_context: 最近几轮对话上下文（用于 state-conditioned retrieval）。
             action_state: 当前决策状态（可选）。
             retrieval_plan: Action-Aware Retrieval Plan 的 dict 表示（可选）。
+            reference_time: 当前查询的参考时间（ISO 格式，可选）。
 
         Returns:
             SemanticSearchResult 包含格式化 context 和 provenance。
@@ -79,6 +81,7 @@ class BaseSemanticMemoryEngine(ABC):
         retrieved_context: str = "",
         turn_index_offset: int = 0,
         reference_timestamp: str | None = None,
+        skip_novelty_check: bool = False,
     ) -> ConsolidationResult:
         """将对话固化为长期记忆。
 
@@ -88,6 +91,7 @@ class BaseSemanticMemoryEngine(ABC):
             retrieved_context: 检索阶段已有的记忆上下文（用于新颖性检查）。
             turn_index_offset: 当前 turns 在完整 session 中的绝对起始索引。
             reference_timestamp: 参考时间戳（ISO 格式）。
+            skip_novelty_check: 跳过 LLM 新颖性检查，直接进入编码写入。
 
         Returns:
             ConsolidationResult 包含写入统计和步骤详情。

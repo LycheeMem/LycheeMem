@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
@@ -30,8 +31,18 @@ def set_llm_call_source(source: str) -> None:
     _llm_call_source.set(source)
 
 # ── 全局 token 统计（进程级单例）────────────────────────────────────────────────
-# 统计文件路径：<项目根>/data/token_stats.json
-_STATS_FILE = Path(__file__).parent.parent.parent / "data" / "token_stats.json"
+def _stats_file_from_env(env_name: str, default_name: str) -> Path:
+    stats_dir = os.getenv("LYCHEE_STATS_DIR")
+    if stats_dir:
+        return Path(stats_dir).expanduser() / default_name
+    raw = os.getenv(env_name)
+    if raw:
+        return Path(raw).expanduser()
+    return Path(__file__).parent.parent.parent / "data" / default_name
+
+
+# 统计文件路径：默认 <项目根>/data/token_stats.json，可用 LYCHEE_STATS_DIR 或 TOKEN_STATS_PATH 覆盖。
+_STATS_FILE = _stats_file_from_env("TOKEN_STATS_PATH", "token_stats.json")
 
 
 class _GlobalTokenStats:
@@ -150,7 +161,7 @@ class BaseLLM(ABC):
     def generate(
         self,
         messages: list[Message],
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
@@ -160,7 +171,7 @@ class BaseLLM(ABC):
     async def agenerate(
         self,
         messages: list[Message],
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
@@ -169,7 +180,7 @@ class BaseLLM(ABC):
     async def astream_generate(
         self,
         messages: list[dict[str, str]],
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
         """流式异步生成，逐 token yield 字符串。

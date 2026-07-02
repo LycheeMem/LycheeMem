@@ -9,7 +9,6 @@ ActionState，让 planner 看到“当前想做什么、最近发生了什么、
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from src.agents.base_agent import BaseAgent
@@ -52,13 +51,20 @@ class SearchCoordinator(BaseAgent):
             session_id = str(session_id)
         top_k = kwargs.get("top_k")
         include_skills = bool(kwargs.get("include_skills", True))
+        reference_time = kwargs.get("reference_time")
+        if reference_time is not None:
+            reference_time = str(reference_time)
 
         recent_context = self._build_recent_context(
             raw_recent_turns=kwargs.get("raw_recent_turns") or [],
             compressed_history=kwargs.get("compressed_history") or [],
         )
         
-        analysis = self._analyze_query_and_context(user_query, recent_context)
+        analysis = {}
+        if include_skills:
+            analysis = self._analyze_query_and_context(
+                user_query, recent_context, reference_time=reference_time,
+            )
         
         action_state = self._build_action_state(
             user_query=user_query,
@@ -86,8 +92,9 @@ class SearchCoordinator(BaseAgent):
             top_k=int(top_k) if top_k is not None else None,
             include_skills=include_skills,
             analysis=analysis,
+            reference_time=reference_time,
             retrieval_plan=self._build_retrieval_plan(
-                user_query, recent_context, action_state,
+                user_query, recent_context, action_state, reference_time=reference_time,
             ),
         )
         result["feedback_update"] = feedback_update
@@ -104,6 +111,7 @@ class SearchCoordinator(BaseAgent):
         include_skills: bool = True,
         analysis: dict[str, Any] | None = None,
         retrieval_plan: dict[str, Any] | None = None,
+        reference_time: str | None = None,
     ) -> dict[str, Any]:
         """Compact 后端路径：semantic_engine.search() + mode-aware 技能检索。"""
         result = self.semantic_engine.search(
@@ -113,6 +121,7 @@ class SearchCoordinator(BaseAgent):
             recent_context=recent_context,
             action_state=self._action_state_to_dict(action_state),
             retrieval_plan=retrieval_plan,
+            reference_time=reference_time,
         )
 
         graph_memories = []
@@ -263,7 +272,13 @@ class SearchCoordinator(BaseAgent):
             recent_context_excerpt=recent_context[:1000],
         )
 
-    def _analyze_query_and_context(self, user_query: str, recent_context: str) -> dict[str, Any]:
+    def _analyze_query_and_context(
+        self,
+        user_query: str,
+        recent_context: str,
+        *,
+        reference_time: str | None = None,
+    ) -> dict[str, Any]:
         user_content = f"<USER_QUERY>\n{user_query}\n</USER_QUERY>"
         if recent_context:
             user_content += f"\n\n<RECENT_CONTEXT>\n{recent_context}\n</RECENT_CONTEXT>"
@@ -273,6 +288,7 @@ class SearchCoordinator(BaseAgent):
             user_content,
             system_content=self.prompt_template,
             add_time_basis=True,
+            now=self._parse_reference_time(reference_time),
         )
         
         try:
@@ -289,6 +305,8 @@ class SearchCoordinator(BaseAgent):
         user_query: str,
         recent_context: str,
         action_state: ActionState | None,
+        *,
+        reference_time: str | None = None,
     ) -> dict[str, Any] | None:
         """调用 RETRIEVAL_PLANNING_SYSTEM LLM 生成结构化 SearchPlan。"""
         user_content = f"<USER_QUERY>\n{user_query}\n</USER_QUERY>"
@@ -304,16 +322,47 @@ class SearchCoordinator(BaseAgent):
                 user_content,
                 system_content=RETRIEVAL_PLANNING_SYSTEM,
                 add_time_basis=True,
+                now=self._parse_reference_time(reference_time),
             )
             raw = response.strip()
             if raw.startswith("```"):
                 parts = raw.split("```")
                 raw = parts[1].lstrip("json").strip() if len(parts) >= 3 else parts[-1].strip()
             plan = json.loads(raw)
-            plan.pop("reasoning", None)
-            return plan
+            return self._normalize_retrieval_plan(plan, user_query)
         except Exception:
             return None
+
+    @classmethod
+    def _normalize_retrieval_plan(cls, plan: dict[str, Any], user_query: str) -> dict[str, Any]:
+        """Normalize the LLM retrieval plan shape without re-planning by rules."""
+        plan = dict(plan or {})
+        is_aggregate = bool(plan.get("is_aggregate_query"))
+        slim = {
+            "reason": str(plan.get("reason") or plan.get("reasoning") or ""),
+            "mode": str(plan.get("mode") or "answer"),
+            "semantic_queries": [str(x) for x in (plan.get("semantic_queries") or []) if str(x or "").strip()],
+            "pragmatic_queries": [str(x) for x in (plan.get("pragmatic_queries") or []) if str(x or "").strip()],
+        }
+        if not is_aggregate:
+            slim["is_aggregate_query"] = False
+            slim["aggregate_target"] = ""
+            slim["aggregate_constraints"] = []
+            return slim
+
+        target = str(plan.get("aggregate_target") or "").strip()
+        constraints = [
+            str(x) for x in (plan.get("aggregate_constraints") or []) if str(x or "").strip()
+        ]
+        semantic_queries = [
+            str(x) for x in (plan.get("semantic_queries") or []) if str(x or "").strip()
+        ]
+
+        slim["is_aggregate_query"] = True
+        slim["aggregate_target"] = target
+        slim["aggregate_constraints"] = constraints
+        slim["semantic_queries"] = semantic_queries or [str(user_query or "").strip()]
+        return slim
 
     def _build_skill_query(
         self,
@@ -332,10 +381,6 @@ class SearchCoordinator(BaseAgent):
         if mode in {"action", "mixed"}:
             for key in (
                 "pragmatic_queries",
-                "tool_hints",
-                "required_constraints",
-                "required_affordances",
-                "missing_slots",
             ):
                 for value in plan.get(key, []) or []:
                     item = str(value or "").strip()

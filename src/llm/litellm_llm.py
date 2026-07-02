@@ -10,6 +10,8 @@ model 格式遵循 litellm 约定（参考 https://docs.litellm.ai/docs/）：
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -17,6 +19,12 @@ from typing import Any
 import litellm
 
 from src.llm.base import BaseLLM, Message
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_TIMEOUT_SECONDS = 600.0
+_DEFAULT_RETRY_ATTEMPTS = 10
+_DEFAULT_RETRY_BACKOFF_SECONDS = 2.0
 
 # ── LiteLLM 全局性能优化（模块首次导入时执行一次）──────────────────────────────
 # 1. telemetry=False：禁用 LiteLLM 在每次 API 调用后向其服务器发送遥测 HTTP 请求。
@@ -46,18 +54,27 @@ class LiteLLMLLM(BaseLLM):
         api_key: str | None = None,
         api_base: str | None = None,
         drop_params: bool = True,
+        default_temperature: float = 0.7,
+        default_max_tokens: int | None = None,
+        default_top_p: float = 1.0,
         **extra_kwargs: Any,
     ) -> None:
         self.model = model
         self._api_key = api_key or None
         self._api_base = api_base or None
         self._drop_params = drop_params
+        self._default_temperature = default_temperature
+        self._default_max_tokens = default_max_tokens
+        self._default_top_p = default_top_p
+        self._timeout = _DEFAULT_TIMEOUT_SECONDS
+        self._retry_attempts = _DEFAULT_RETRY_ATTEMPTS
+        self._retry_backoff_seconds = _DEFAULT_RETRY_BACKOFF_SECONDS
         self._extra = extra_kwargs
 
     def _build_kwargs(
         self,
         *,
-        temperature: float,
+        temperature: float | None,
         max_tokens: int | None,
         response_format: dict[str, Any] | None,
     ) -> dict[str, Any]:
@@ -66,31 +83,78 @@ class LiteLLMLLM(BaseLLM):
             kwargs["api_key"] = self._api_key
         if self._api_base:
             kwargs["api_base"] = self._api_base
-        kwargs["temperature"] = temperature
-        if max_tokens is not None:
-            kwargs["max_tokens"] = max_tokens
+        if self._timeout is not None and self._timeout > 0:
+            kwargs["timeout"] = self._timeout
+        effective_temperature = self._default_temperature if temperature is None else temperature
+        effective_max_tokens = self._default_max_tokens if max_tokens is None else max_tokens
+        kwargs["temperature"] = effective_temperature
+        kwargs["top_p"] = self._default_top_p
+        if effective_max_tokens is not None:
+            kwargs["max_tokens"] = effective_max_tokens
         if response_format is not None:
             kwargs["response_format"] = response_format
         return kwargs
 
+    @staticmethod
+    def _is_retryable_exception(exc: Exception) -> bool:
+        """Return False for client/config errors that retrying will not fix."""
+        status_code = getattr(exc, "status_code", None)
+        if status_code is None:
+            response = getattr(exc, "response", None)
+            status_code = getattr(response, "status_code", None)
+        try:
+            code = int(status_code)
+        except (TypeError, ValueError):
+            return True
+        return code not in {400, 401, 403, 404, 422}
+
+    def _sleep_before_retry(self, attempt: int) -> None:
+        if self._retry_backoff_seconds <= 0:
+            return
+        time.sleep(self._retry_backoff_seconds * (2 ** max(0, attempt - 1)))
+
+    async def _asleep_before_retry(self, attempt: int) -> None:
+        if self._retry_backoff_seconds <= 0:
+            return
+        await asyncio.sleep(self._retry_backoff_seconds * (2 ** max(0, attempt - 1)))
+
     def generate(
         self,
         messages: list[Message],
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
         """同步生成文本。支持多模态消息。"""
-        t0 = time.perf_counter()
-        resp = litellm.completion(
-            model=self.model,
-            messages=messages,
-            **self._build_kwargs(
-                temperature=temperature,
-                max_tokens=max_tokens,
-                response_format=response_format,
-            ),
+        kwargs = self._build_kwargs(
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
         )
+        t0 = time.perf_counter()
+        last_exc: Exception | None = None
+        for attempt in range(1, self._retry_attempts + 1):
+            try:
+                resp = litellm.completion(
+                    model=self.model,
+                    messages=messages,
+                    **kwargs,
+                )
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= self._retry_attempts or not self._is_retryable_exception(exc):
+                    raise
+                logger.warning(
+                    "LLM completion failed; retrying model=%s attempt=%d/%d error=%s",
+                    self.model,
+                    attempt,
+                    self._retry_attempts,
+                    exc,
+                )
+                self._sleep_before_retry(attempt)
+        else:
+            raise last_exc or RuntimeError("LLM completion failed")
         latency_ms = (time.perf_counter() - t0) * 1000
         usage = getattr(resp, "usage", None)
         if usage:
@@ -104,21 +168,40 @@ class LiteLLMLLM(BaseLLM):
     async def agenerate(
         self,
         messages: list[Message],
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> str:
         """异步生成文本。支持多模态消息。"""
-        t0 = time.perf_counter()
-        resp = await litellm.acompletion(
-            model=self.model,
-            messages=messages,
-            **self._build_kwargs(
-                temperature=temperature,
-                max_tokens=max_tokens,
-                response_format=response_format,
-            ),
+        kwargs = self._build_kwargs(
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
         )
+        t0 = time.perf_counter()
+        last_exc: Exception | None = None
+        for attempt in range(1, self._retry_attempts + 1):
+            try:
+                resp = await litellm.acompletion(
+                    model=self.model,
+                    messages=messages,
+                    **kwargs,
+                )
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= self._retry_attempts or not self._is_retryable_exception(exc):
+                    raise
+                logger.warning(
+                    "Async LLM completion failed; retrying model=%s attempt=%d/%d error=%s",
+                    self.model,
+                    attempt,
+                    self._retry_attempts,
+                    exc,
+                )
+                await self._asleep_before_retry(attempt)
+        else:
+            raise last_exc or RuntimeError("Async LLM completion failed")
         latency_ms = (time.perf_counter() - t0) * 1000
         usage = getattr(resp, "usage", None)
         if usage:
@@ -132,7 +215,7 @@ class LiteLLMLLM(BaseLLM):
     async def astream_generate(
         self,
         messages: list[Message],
-        temperature: float = 0.7,
+        temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
         """真实 token 流式生成，逐 chunk yield 字符串。"""
@@ -145,21 +228,37 @@ class LiteLLMLLM(BaseLLM):
         # 部分不支持该参数的 provider 会通过 drop_params=True 自动忽略。
         kwargs["stream_options"] = {"include_usage": True}
         t0 = time.perf_counter()
-        response = await litellm.acompletion(
-            model=self.model,
-            messages=messages,
-            stream=True,
-            **kwargs,
-        )
-        async for chunk in response:
-            # 最后一个含 usage 的 chunk（content 可能为空）
-            usage = getattr(chunk, "usage", None)
-            if usage:
-                pt = getattr(usage, "prompt_tokens", 0) or 0
-                ct = getattr(usage, "completion_tokens", 0) or 0
-                if pt or ct:
-                    latency_ms = (time.perf_counter() - t0) * 1000
-                    self._accumulate_usage(pt, ct, latency_ms)
-            delta = chunk.choices[0].delta
-            if delta and delta.content:
-                yield delta.content
+        emitted_any = False
+        for attempt in range(1, self._retry_attempts + 1):
+            try:
+                response = await litellm.acompletion(
+                    model=self.model,
+                    messages=messages,
+                    stream=True,
+                    **kwargs,
+                )
+                async for chunk in response:
+                    # 最后一个含 usage 的 chunk（content 可能为空）
+                    usage = getattr(chunk, "usage", None)
+                    if usage:
+                        pt = getattr(usage, "prompt_tokens", 0) or 0
+                        ct = getattr(usage, "completion_tokens", 0) or 0
+                        if pt or ct:
+                            latency_ms = (time.perf_counter() - t0) * 1000
+                            self._accumulate_usage(pt, ct, latency_ms)
+                    delta = chunk.choices[0].delta
+                    if delta and delta.content:
+                        emitted_any = True
+                        yield delta.content
+                return
+            except Exception as exc:
+                if emitted_any or attempt >= self._retry_attempts or not self._is_retryable_exception(exc):
+                    raise
+                logger.warning(
+                    "Streaming LLM completion failed before first token; retrying model=%s attempt=%d/%d error=%s",
+                    self.model,
+                    attempt,
+                    self._retry_attempts,
+                    exc,
+                )
+                await self._asleep_before_retry(attempt)

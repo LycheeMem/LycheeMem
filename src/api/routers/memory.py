@@ -449,6 +449,7 @@ def run_memory_search(
         session_id=req.session_id,
         top_k=req.top_k,
         include_skills=req.include_skills,
+        reference_time=req.reference_time,
         **search_runtime,
     )
 
@@ -495,6 +496,7 @@ def run_memory_synthesize(
         user_query=req.user_query,
         retrieved_graph_memories=semantic_results,
         retrieved_skills=req.skill_results,
+        reference_time=req.reference_time,
     )
 
     provenance_raw = result.get("provenance", [])
@@ -556,6 +558,7 @@ def run_memory_smart_search(
             session_id=req.session_id,
             include_graph=req.include_graph,
             include_skills=req.include_skills,
+            reference_time=req.reference_time,
         ),
     )
 
@@ -590,6 +593,7 @@ def run_memory_smart_search(
             graph_results=search_result.graph_results,
             semantic_results=search_result.semantic_results,
             skill_results=search_result.skill_results,
+            reference_time=req.reference_time,
         ),
     )
     payload: dict[str, Any] = {
@@ -671,6 +675,7 @@ def run_memory_consolidate(
                     retrieved_context=req.retrieved_context,
                     turn_index_offset=effective_watermark,
                     skip_skills=req.skip_skills,
+                    skip_novelty_check=req.skip_novelty_check,
                     session_date=req.session_date,
                 )
                 # 后台线程固化成功后推进水位线
@@ -692,6 +697,7 @@ def run_memory_consolidate(
         retrieved_context=req.retrieved_context,
         turn_index_offset=effective_watermark,
         skip_skills=req.skip_skills,
+        skip_novelty_check=req.skip_novelty_check,
         session_date=req.session_date,
     )
     # 同步固化成功后推进水位线

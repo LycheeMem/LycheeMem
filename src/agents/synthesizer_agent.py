@@ -10,12 +10,28 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import sys
 from typing import Any
 
 from src.agents.base_agent import BaseAgent
 from src.agents.prompts import SYNTHESIS_SYSTEM_PROMPT
 from src.llm.base import BaseLLM, set_llm_call_source
+
+
+def _debug_synthesis_enabled() -> bool:
+    return 0
+
+
+def _debug_synthesis(label: str, payload: Any) -> None:
+    if not _debug_synthesis_enabled():
+        return
+    try:
+        text = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+    except Exception:
+        text = str(payload)
+    print(f"\n[LYCHEE_SYNTH_DEBUG] {label}\n{text}", file=sys.stderr, flush=True)
 
 
 class SynthesizerAgent(BaseAgent):
@@ -44,6 +60,7 @@ class SynthesizerAgent(BaseAgent):
         user_query: str,
         retrieved_graph_memories: list[dict[str, Any]] | None = None,
         retrieved_skills: list[dict[str, Any]] | None = None,
+        reference_time: str | None = None,
         **kwargs,
     ) -> dict[str, Any]:
         """将多源检索结果整合为 background_context + 技能复用计划。
@@ -60,6 +77,14 @@ class SynthesizerAgent(BaseAgent):
             retrieved_graph_memories or [],
             skills,
         )
+        _debug_synthesis("synthesis.start", {
+            "user_query": user_query,
+            "reference_time": reference_time,
+            "graph_memory_count": len(retrieved_graph_memories or []),
+            "skill_count": len(skills),
+            "fragment_count": len(fragments),
+            "fragments": self._debug_fragment_payload(fragments),
+        })
 
         # 构建可复用技能执行计划
         skill_reuse_plan = self._build_reuse_plan(skills)
@@ -81,6 +106,7 @@ class SynthesizerAgent(BaseAgent):
             user_content,
             system_content=self.prompt_template,
             add_time_basis=True,
+            now=self._parse_reference_time(reference_time),
         )
 
         try:
@@ -91,6 +117,13 @@ class SynthesizerAgent(BaseAgent):
             )
             kept_count = len(provenance)
             dropped_count = max(0, len(fragments) - kept_count)
+            _debug_synthesis("synthesis.parsed", {
+                "scored_fragments": parsed.get("scored_fragments", []),
+                "kept_count": kept_count,
+                "dropped_count": dropped_count,
+                "background_context": parsed.get("background_context", ""),
+                "provenance": provenance,
+            })
             return {
                 "background_context": parsed.get("background_context", ""),
                 "skill_reuse_plan": skill_reuse_plan,
@@ -101,6 +134,11 @@ class SynthesizerAgent(BaseAgent):
             }
         except (ValueError, KeyError):
             fallback_provenance = self._fallback_provenance(fragments)
+            _debug_synthesis("synthesis.parse_failed", {
+                "raw_response": response,
+                "fallback_kept_count": len(fallback_provenance),
+                "fallback_provenance": fallback_provenance,
+            })
             return {
                 "background_context": response,
                 "skill_reuse_plan": skill_reuse_plan,
@@ -136,6 +174,33 @@ class SynthesizerAgent(BaseAgent):
         return plan
 
     @staticmethod
+    def _debug_fragment_payload(fragments: list[dict[str, Any]], *, max_text: int = 500) -> list[dict[str, Any]]:
+        payload: list[dict[str, Any]] = []
+        for frag in fragments:
+            text = str(
+                frag.get("display_text")
+                or frag.get("semantic_text")
+                or frag.get("doc_markdown")
+                or ""
+            ).strip()
+            if len(text) > max_text:
+                text = text[:max_text] + "..."
+            payload.append({
+                "index": frag.get("index"),
+                "source": frag.get("source"),
+                "semantic_source_type": frag.get("semantic_source_type", ""),
+                "record_id": frag.get("record_id", ""),
+                "memory_type": frag.get("memory_type", ""),
+                "retrieval_score": frag.get("retrieval_score", ""),
+                "created_at": frag.get("created_at", ""),
+                "temporal": frag.get("temporal", {}),
+                "entities": frag.get("entities", []),
+                "episode_refs": frag.get("episode_refs", []),
+                "text": text,
+            })
+        return payload
+
+    @staticmethod
     def _format_fragments(
         fragments: list[dict[str, Any]],
     ) -> str:
@@ -152,8 +217,6 @@ class SynthesizerAgent(BaseAgent):
                 retrieval_score = float(frag.get("retrieval_score", 0.0) or 0.0)
                 text = str(frag.get("display_text") or frag.get("semantic_text") or "").strip()
                 text = text.replace("\r\n", "\n")
-                if len(text) > 800:
-                    text = text[:800] + "…"
 
                 lines.append(
                     f"  Fragment {idx}: source={semantic_source_type}, memory_type={memory_type}, retrieval_score={retrieval_score:.3f}"

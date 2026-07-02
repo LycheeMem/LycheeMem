@@ -24,6 +24,18 @@ dependencies = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "ruff>=0.8.0",
+    "pillow>=9.0.0",
+]
+
+[project.optional-dependencies]
+# 本地 Embedding 支持（sentence-transformers）
+local-embed = [
+    "sentence-transformers>=3.0.0",
+    "torch>=2.0.0",
+]
+rerank = [
+    "sentence-transformers>=3.0.0",
+    "torch>=2.0.0",
 ]
 
 [project.optional-dependencies]
