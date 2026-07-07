@@ -286,6 +286,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             "count": len(query_variants),
             "queries": query_variants,
         })
+        diagnostics: dict[str, Any] = {
+            "requested_top_k": requested_top_k,
+            "effective_top_k": top_k,
+            "query_variant_count": len(query_variants),
+        }
 
         selected_candidates: list[ScoredCandidate] = []
         seen_ids: set[str] = set()
@@ -386,6 +391,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             "per_query": ann_per_query,
             "raw_hits": ann_composite_results,
         })
+        diagnostics["ann_composite_count"] = len(ann_composite_results)
         ann_composites: list[CompositeRecord] = [
             ann_composites_by_id[cid]
             for cid in ann_composite_ids
@@ -412,6 +418,9 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 "selected_ids": sorted(sel_ids),
                 "needs_detail_ids": sorted(det_ids),
             })
+            diagnostics["composite_filter_mode"] = filter_mode
+            diagnostics["selected_composite_count"] = len(sel_ids)
+            diagnostics["needs_detail_count"] = len(det_ids)
             for composite in ann_composites:
                 cid = composite.composite_id
                 if cid in sel_ids and cid not in seen_ids:
@@ -727,6 +736,8 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             "kept": self._debug_scored_payload(top),
             "dropped": self._debug_scored_payload(selected_candidates[top_k:]),
         })
+        diagnostics["selected_total"] = len(selected_candidates)
+        diagnostics["kept_count"] = len(top)
 
         # 记录使用日志
         log_id = self._log_usage(
