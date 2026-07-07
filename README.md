@@ -103,6 +103,7 @@ LycheeMemory is a compact memory framework for LLM agents. It starts from effici
 <a id="news"></a>
 
 ## 🔥 News
+- **[07/07/2026]** OpenAI-compatible Chat Completions endpoints are now available, with request-level consolidation control via `consolidate` or `store`.
 - **[05/08/2026]** Transformer memory reranker v0 improves evidence selection in semantic memory search, with positive hit@10 gains on LoCoMo and zero-shot LongMemEval-S / MSC-MemFuse / HotpotQA fixtures. See [Transformer Reranker v0](docs/transformer_reranker_v0.md).
 - **[04/29/2026]** Hermes and Claude Code plugin integrations are now available, bringing LycheeMemory's automatic recall, turn mirroring, and consolidation workflow to more agent runtimes. Setup guides: [Hermes](hermes-plugin/lycheemem/INSTALL_HERMES.md) · [Claude Code](claude-plugin/lycheemem/INSTALL_CLAUDE.md)
 - **[04/26/2026]** Visual (Multimodal) Memory module added! See [Visual Memory](#visual-memory).
