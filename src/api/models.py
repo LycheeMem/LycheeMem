@@ -312,6 +312,7 @@ class MemoryAppendTurnRequest(BaseModel):
     role: str = Field(..., min_length=1, max_length=32)
     content: str = Field(..., min_length=1, max_length=100_000)
     token_count: int = Field(default=0, ge=0, le=1_000_000)
+    created_at: str | None = None
 
 
 class MemoryAppendTurnResponse(BaseModel):
@@ -336,7 +337,7 @@ class MemoryConsolidateRequest(BaseModel):
     # 跳过技能抽取，只写入语义记忆（适合批量摄入场景）
     skip_skills: bool = False
     # 强制结束当前 session 的 pending 语义 chunk，适合会话结束或批量导入收尾时使用
-    flush_session: bool = False
+    flush_session: bool = True
     # 对话发生的日期（自由文本，如 "May 8, 2023"），用于将相对时间（yesterday/last week）
     # 解析为绝对日期。由调用方提供，后端透传给 encoder。
     session_date: str | None = None

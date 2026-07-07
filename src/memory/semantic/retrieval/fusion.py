@@ -21,13 +21,22 @@ class RetrievalFusionMixin:
             if self._reranker is not None and "rerank_score" in item:
                 final_score = self._final_score_from_rerank(item, source, bonus=0.01)
             else:
-                final_score = min(1.0, self._safe_float(item.get("field_score"), 0.0))
+                field_score = self._safe_float(item.get("field_score"), 0.0)
+                source_weight = self._safe_float(
+                    item.get("source_weight_override"),
+                    self._source_weight(source),
+                )
+                final_score = min(
+                    1.0,
+                    field_score * source_weight + self._retrieval_signal_bonus(item),
+                )
             scored.append(ScoredCandidate(
                 id=candidate_id,
                 source=source,
                 final_score=final_score,
                 score_breakdown={
                     "field_score": item.get("field_score", 0.0),
+                    "source_weight": item.get("source_weight_override", self._source_weight(source)),
                     "matched_channels": item.get("matched_channels", []),
                     "rerank_score": item.get("rerank_score", ""),
                     "cross_encoder_score": item.get("cross_encoder_score", ""),

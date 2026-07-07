@@ -45,9 +45,21 @@ class InMemorySessionStore:
             self._store[session_id] = SessionLog(session_id=session_id)
         return self._store[session_id]
 
-    def append_turn(self, session_id: str, role: str, content: str, token_count: int = 0) -> None:
+    def append_turn(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        token_count: int = 0,
+        created_at: str | None = None,
+    ) -> None:
         log = self.get_or_create(session_id)
-        log.turns.append({"role": role, "content": content, "token_count": token_count, "created_at": _now_iso()})
+        log.turns.append({
+            "role": role,
+            "content": content,
+            "token_count": token_count,
+            "created_at": created_at or _now_iso(),
+        })
         log.updated_at = _now_iso()
 
     def get_turns(self, session_id: str) -> list[dict[str, Any]]:

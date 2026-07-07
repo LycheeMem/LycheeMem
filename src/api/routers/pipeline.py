@@ -80,7 +80,7 @@ async def last_consolidation(
 @router.post("/memory/consolidate/{session_id}", response_model=DeleteResponse)
 async def trigger_consolidation(
     session_id: str,
-    flush_session: bool = Query(default=False),
+    flush_session: bool = Query(default=True),
     pipeline=Depends(get_pipeline),
 ):
     """手动触发指定会话的固化（实体→图谱，技能→技能库）。"""

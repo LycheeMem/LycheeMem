@@ -116,12 +116,25 @@ class SQLiteSessionStore:
         log.last_consolidated_turn_index = last_consolidated_idx
         return log
 
-    def append_turn(self, session_id: str, role: str, content: str, token_count: int = 0) -> None:
+    def append_turn(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        token_count: int = 0,
+        created_at: str | None = None,
+    ) -> None:
         conn = self._get_conn()
-        conn.execute(
-            "INSERT INTO turns (session_id, role, content, token_count) VALUES (?, ?, ?, ?)",
-            (session_id, role, content, token_count),
-        )
+        if created_at:
+            conn.execute(
+                "INSERT INTO turns (session_id, role, content, token_count, created_at) VALUES (?, ?, ?, ?, ?)",
+                (session_id, role, content, token_count, created_at),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO turns (session_id, role, content, token_count) VALUES (?, ?, ?, ?)",
+                (session_id, role, content, token_count),
+            )
         # upsert session_meta 的 updated_at
         conn.execute(
             "INSERT INTO session_meta (session_id) VALUES (?) ON CONFLICT(session_id) DO UPDATE SET updated_at=CURRENT_TIMESTAMP",

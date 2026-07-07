@@ -594,7 +594,7 @@ class LycheePipeline:
         self,
         session_id: str,
         session_date: str | None = None,
-        flush_session: bool = False,
+        flush_session: bool = True,
     ) -> dict[str, Any]:
         """手动触发固化（公共方法，可由 API BackgroundTasks 调用）。
 
@@ -635,11 +635,12 @@ class LycheePipeline:
         session_id: str,
         job_id: int = 0,
         session_date: str | None = None,
+        flush_session: bool = True,
     ) -> None:
         """在守护线程中触发固化（fire-and-forget）。"""
         thread = threading.Thread(
             target=self._safe_consolidate,
-            args=(session_id, job_id, session_date),
+            args=(session_id, job_id, session_date, flush_session),
             daemon=True,
         )
         thread.start()
@@ -649,12 +650,17 @@ class LycheePipeline:
         session_id: str,
         job_id: int = 0,
         session_date: str | None = None,
+        flush_session: bool = True,
     ) -> None:
         """安全执行固化，异常不影响主流程。"""
         graphiti = getattr(self.consolidator, "graphiti_engine", None)
         strict = bool(getattr(graphiti, "strict", False))
         try:
-            result = self.consolidate(session_id, session_date=session_date)
+            result = self.consolidate(
+                session_id,
+                session_date=session_date,
+                flush_session=flush_session,
+            )
             self._finish_consolidation(
                 session_id=session_id,
                 job_id=job_id,
@@ -675,6 +681,7 @@ class LycheePipeline:
         session_id: str,
         job_id: int = 0,
         session_date: str | None = None,
+        flush_session: bool = True,
     ) -> None:
         """异步场景下的后台固化（使用水位线，只处理新增 turns）。"""
         graphiti = getattr(self.consolidator, "graphiti_engine", None)
@@ -684,7 +691,7 @@ class LycheePipeline:
         watermark = log.last_consolidated_turn_index
         raw_total = len(log.turns)
         new_turns = [t for t in log.turns[watermark:] if not t.get("deleted", False)]
-        if not new_turns:
+        if not new_turns and not flush_session:
             self._finish_consolidation(
                 session_id=session_id,
                 job_id=job_id,
@@ -705,6 +712,7 @@ class LycheePipeline:
                     turns=new_turns,
                     session_id=session_id,
                     turn_index_offset=watermark,
+                    flush_session=flush_session,
                     session_date=session_date,
                 ),
             )
