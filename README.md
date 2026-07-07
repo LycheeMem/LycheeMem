@@ -659,6 +659,79 @@ Triggered immediately after `ReasoningAgent` completes, runs in a thread pool an
 
 ## 🔌 API Reference
 
+### OpenAI-Compatible Chat API
+
+LycheeMemory exposes an OpenAI Chat Completions compatible endpoint. Point the
+OpenAI SDK `base_url` to `http://localhost:8000/v1` and call
+`client.chat.completions.create(...)`.
+
+Canonical endpoint:
+
+- `POST /v1/chat/completions`
+
+Compatibility aliases:
+
+- `POST /v1/chat/complete` — non-streaming alias
+- `POST /v1/chat` — accepts the same request body and supports `stream=true`
+
+Non-streaming request:
+
+```json
+{
+  "model": "lycheemem",
+  "messages": [
+    { "role": "user", "content": "What do I usually use for database backups?" }
+  ],
+  "session_id": "my-session"
+}
+```
+
+Streaming request:
+
+```json
+{
+  "model": "lycheemem",
+  "messages": [
+    { "role": "user", "content": "What do I usually use for database backups?" }
+  ],
+  "session_id": "my-session",
+  "stream": true,
+  "stream_options": { "include_usage": true }
+}
+```
+
+Python SDK example:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="lycheemem")
+
+response = client.chat.completions.create(
+    model="lycheemem",
+    messages=[
+        {"role": "user", "content": "What do I usually use for database backups?"}
+    ],
+    extra_body={
+        "session_id": "my-session",
+        "consolidate": False,
+    },
+)
+print(response.choices[0].message.content)
+```
+
+Consolidation control:
+
+- By default, a completed chat turn is appended to the session and background
+  consolidation is triggered.
+- Set `"consolidate": false` to disable automatic consolidation for this
+  request.
+- Set `"store": false` for OpenAI-style storage control; LycheeMemory maps it
+  to the same auto-consolidation switch.
+- If both are provided, `consolidate` takes precedence.
+
+---
+
 ### `POST /memory/search` — Unified Memory Retrieval
 
 Query both the semantic memory channel and the skill store in a single call. New integrations should prefer `semantic_results`; `graph_results` is kept as a backward-compatible alias.
