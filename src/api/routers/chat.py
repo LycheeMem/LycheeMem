@@ -4,13 +4,23 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from src.api.dependencies import get_pipeline
-from src.api.models import ChatRequest, ChatResponse
+from src.api.models import (
+    ChatRequest,
+    ChatResponse,
+    OpenAIChatChoice,
+    OpenAIChatCompletionMessage,
+    OpenAIChatCompletionRequest,
+    OpenAIChatCompletionResponse,
+    OpenAIUsage,
+)
 from src.api.trace_builders import (
     _build_chat_response,
     _build_reasoner_trace,
@@ -27,6 +37,349 @@ router = APIRouter()
 
 def _sse(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _sse_done() -> str:
+    return "data: [DONE]\n\n"
+
+
+def _new_completion_id() -> str:
+    return f"chatcmpl-{uuid.uuid4().hex}"
+
+
+def _openai_session_id(req: OpenAIChatCompletionRequest) -> str:
+    value = (req.session_id or req.user or "").strip()
+    return value[:128] if value else f"openai-{uuid.uuid4().hex[:16]}"
+
+
+def _extract_image_from_data_url(url: str) -> tuple[str, str] | None:
+    if not url.startswith("data:") or "," not in url:
+        return None
+
+    header, payload = url.split(",", 1)
+    if ";base64" not in header:
+        return None
+
+    mime_type = header[5:].split(";", 1)[0] or "image/jpeg"
+    return payload, mime_type
+
+
+def _openai_content_to_text_and_images(content: Any) -> tuple[str, list[str], list[str]]:
+    if content is None:
+        return "", [], []
+
+    if isinstance(content, str):
+        return content, [], []
+
+    if not isinstance(content, list):
+        return str(content), [], []
+
+    texts: list[str] = []
+    images: list[str] = []
+    image_mime_types: list[str] = []
+
+    for part in content:
+        if isinstance(part, str):
+            texts.append(part)
+            continue
+        if not isinstance(part, dict):
+            continue
+
+        part_type = str(part.get("type") or "")
+        if part_type in {"text", "input_text"}:
+            text = part.get("text")
+            if text is not None:
+                texts.append(str(text))
+            continue
+
+        if part_type not in {"image_url", "input_image"}:
+            continue
+
+        image_url = part.get("image_url") or part.get("image")
+        if isinstance(image_url, dict):
+            url = str(image_url.get("url") or "")
+        else:
+            url = str(image_url or part.get("url") or "")
+
+        extracted = _extract_image_from_data_url(url)
+        if extracted is None:
+            continue
+
+        image_b64, mime_type = extracted
+        images.append(image_b64)
+        image_mime_types.append(mime_type)
+
+    return "\n".join(t for t in texts if t), images, image_mime_types
+
+
+def _openai_request_to_chat_input(
+    req: OpenAIChatCompletionRequest,
+) -> tuple[str, str, list[str], list[str], str | None]:
+    last_user_idx = -1
+    extracted: list[tuple[str, str, list[str], list[str]]] = []
+
+    for idx, message in enumerate(req.messages):
+        text, images, image_mime_types = _openai_content_to_text_and_images(message.content)
+        role = (message.role.strip() or "user").lower()
+        extracted.append((role, text.strip(), images, image_mime_types))
+        if role == "user":
+            last_user_idx = idx
+
+    if last_user_idx < 0:
+        raise HTTPException(status_code=400, detail="messages must contain at least one user message")
+
+    images: list[str] = []
+    image_mime_types: list[str] = []
+    for _, _, msg_images, msg_mime_types in extracted:
+        images.extend(msg_images)
+        image_mime_types.extend(msg_mime_types)
+
+    current_text = extracted[last_user_idx][1] or "请根据已提供的上下文继续回答。"
+    context_lines: list[str] = []
+    for role, text, _, _ in extracted[:last_user_idx]:
+        if text:
+            context_lines.append(f"{role}: {text}")
+
+    if context_lines:
+        message = (
+            "以下是本次请求提供的对话上下文：\n"
+            + "\n".join(context_lines)
+            + "\n\n当前用户问题：\n"
+            + current_text
+        )
+    else:
+        message = current_text
+
+    return _openai_session_id(req), message, images, image_mime_types, req.reference_time
+
+
+def _openai_usage_from_result(result: dict[str, Any]) -> OpenAIUsage:
+    prompt_tokens = int(result.get("turn_input_tokens") or 0)
+    completion_tokens = int(result.get("turn_output_tokens") or 0)
+    return OpenAIUsage(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+    )
+
+
+def _openai_response_from_result(
+    *,
+    completion_id: str,
+    created: int,
+    model: str,
+    result: dict[str, Any],
+) -> OpenAIChatCompletionResponse:
+    return OpenAIChatCompletionResponse(
+        id=completion_id,
+        created=created,
+        model=model,
+        choices=[
+            OpenAIChatChoice(
+                index=0,
+                message=OpenAIChatCompletionMessage(
+                    role="assistant",
+                    content=str(result.get("final_response") or ""),
+                ),
+                finish_reason="stop",
+            )
+        ],
+        usage=_openai_usage_from_result(result),
+    )
+
+
+async def _append_openai_visual_context(
+    *,
+    message: str,
+    images: list[str],
+    image_mime_types: list[str],
+    session_id: str,
+    pipeline,
+) -> str:
+    if not images:
+        return message
+
+    try:
+        stored_ids = await _process_images_with_mime(
+            [
+                {"base64": image, "mime_type": image_mime_types[idx]}
+                for idx, image in enumerate(images)
+            ],
+            session_id,
+            pipeline,
+        )
+    except Exception as e:
+        logger.error("Failed to process OpenAI compatible images: %s", e, exc_info=True)
+        return message
+
+    visual_captions: list[str] = []
+    for record_id in stored_ids:
+        try:
+            record = pipeline.visual_store.get_by_id(record_id)
+            if record and record.caption:
+                visual_captions.append(record.caption)
+        except Exception as e:
+            logger.warning("Failed to get caption for %s: %s", record_id, e)
+
+    if not visual_captions:
+        return message
+
+    return message + "\n\n[图片内容]\n" + "\n".join(f"- {caption}" for caption in visual_captions)
+
+
+async def _run_openai_complete(
+    req: OpenAIChatCompletionRequest,
+    pipeline,
+) -> OpenAIChatCompletionResponse:
+    completion_id = _new_completion_id()
+    created = int(time.time())
+    session_id, message, images, image_mime_types, reference_time = _openai_request_to_chat_input(req)
+
+    message = await _append_openai_visual_context(
+        message=message,
+        images=images,
+        image_mime_types=image_mime_types,
+        session_id=session_id,
+        pipeline=pipeline,
+    )
+
+    result = pipeline.run(
+        user_query=message,
+        session_id=session_id,
+        input_images=[],
+        reference_time=reference_time,
+    )
+    return _openai_response_from_result(
+        completion_id=completion_id,
+        created=created,
+        model=req.model,
+        result=result,
+    )
+
+
+@router.post("/v1/chat/complete", response_model=OpenAIChatCompletionResponse)
+async def openai_chat_complete(req: OpenAIChatCompletionRequest, pipeline=Depends(get_pipeline)):
+    """OpenAI Chat Completions 兼容的非流式端点。"""
+    try:
+        return await _run_openai_complete(req, pipeline)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("OpenAI compatible chat complete failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/v1/chat")
+async def openai_chat(req: OpenAIChatCompletionRequest, pipeline=Depends(get_pipeline)):
+    """OpenAI Chat Completions 兼容端点。stream=true 时返回 SSE chunk。"""
+    if not req.stream:
+        return await openai_chat_complete(req, pipeline)
+
+    completion_id = _new_completion_id()
+    created = int(time.time())
+    session_id, message, images, image_mime_types, reference_time = _openai_request_to_chat_input(req)
+    include_usage = bool((req.stream_options or {}).get("include_usage"))
+
+    message = await _append_openai_visual_context(
+        message=message,
+        images=images,
+        image_mime_types=image_mime_types,
+        session_id=session_id,
+        pipeline=pipeline,
+    )
+
+    async def event_stream():
+        try:
+            final_result: dict[str, Any] = {}
+
+            yield _sse(
+                {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": req.model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant"},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            )
+
+            async for evt in pipeline.astream_steps(
+                user_query=message,
+                session_id=session_id,
+                input_images=[],
+                reference_time=reference_time,
+            ):
+                if evt["type"] == "token":
+                    yield _sse(
+                        {
+                            "id": completion_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": req.model,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {"content": evt["content"]},
+                                    "finish_reason": None,
+                                }
+                            ],
+                        }
+                    )
+                elif evt["type"] == "done":
+                    final_result = evt.get("result", {})
+                    break
+
+            yield _sse(
+                {
+                    "id": completion_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": req.model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                }
+            )
+
+            if include_usage:
+                usage = _openai_usage_from_result(final_result).model_dump()
+                yield _sse(
+                    {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": req.model,
+                        "choices": [],
+                        "usage": usage,
+                    }
+                )
+
+            yield _sse_done()
+
+        except Exception as e:
+            logger.error("OpenAI compatible event stream error: %s", e, exc_info=True)
+            yield _sse(
+                {
+                    "error": {
+                        "message": str(e),
+                        "type": "server_error",
+                        "param": None,
+                        "code": None,
+                    }
+                }
+            )
+            yield _sse_done()
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.post("/chat/complete", response_model=ChatResponse)

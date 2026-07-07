@@ -127,6 +127,50 @@ class ChatResponse(BaseModel):
     trace: PipelineTrace | None = None
 
 
+class OpenAIChatMessage(BaseModel):
+    role: str = Field(..., min_length=1, max_length=32)
+    content: str | list[dict[str, Any]] | None = ""
+    name: str | None = None
+
+
+class OpenAIChatCompletionRequest(BaseModel):
+    model: str = "lycheemem"
+    messages: list[OpenAIChatMessage] = Field(..., min_length=1)
+    stream: bool = False
+    user: str | None = Field(default=None, max_length=128)
+    session_id: str | None = Field(default=None, max_length=128)
+    reference_time: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+    stream_options: dict[str, Any] | None = None
+
+
+class OpenAIUsage(BaseModel):
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+class OpenAIChatCompletionMessage(BaseModel):
+    role: str = "assistant"
+    content: str
+
+
+class OpenAIChatChoice(BaseModel):
+    index: int = 0
+    message: OpenAIChatCompletionMessage
+    finish_reason: str = "stop"
+
+
+class OpenAIChatCompletionResponse(BaseModel):
+    id: str
+    object: str = "chat.completion"
+    created: int
+    model: str
+    choices: list[OpenAIChatChoice]
+    usage: OpenAIUsage
+
+
 class GraphNode(BaseModel):
     id: str
     label: str = ""
