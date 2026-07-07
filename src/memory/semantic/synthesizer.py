@@ -1,11 +1,4 @@
-"""Record Fusion Engine — Embedding Similarity Based.
-
-记忆融合流程（纯 embedding 数学，无 LLM 调用）：
-1. 去重：new record vs existing records，距离 < dedup 阈值 → 过期旧记录
-2. 聚类：距离 < synthesis 阈值 → Union-Find 连通分量 → cluster
-3. CompositeRecord：代表记录文本 + 合并 metadata
-4. 层级聚合（可选）：composite 之间再做一轮相似度聚类
-"""
+"""Embedding-based record fusion."""
 
 from __future__ import annotations
 
@@ -71,10 +64,6 @@ class RecordFusionEngine:
         """复用 LanceVectorIndex 持有的 embedder，用于预批量 embed。"""
         return self._vector._embedder
 
-    # ──────────────────────────────────────
-    # 主入口
-    # ──────────────────────────────────────
-
     def synthesize_on_ingest(
         self,
         new_records: list[MemoryRecord],
@@ -90,7 +79,6 @@ class RecordFusionEngine:
         if not new_records:
             return []
 
-        # Step 1: 去重
         surviving_records, expired_ids, invalidated_cids = self._dedup_on_ingest(
             new_records, pre_computed_vectors=pre_computed_vectors,
         )
@@ -100,7 +88,6 @@ class RecordFusionEngine:
         if not surviving_records:
             return []
 
-        # Step 2: 找到已有 composite 覆盖的 record_ids
         existing_composites = self._sqlite.list_synthesized()
         covered_record_ids: set[str] = set()
         for comp in existing_composites:
@@ -109,7 +96,6 @@ class RecordFusionEngine:
                 if rid_s:
                     covered_record_ids.add(rid_s)
 
-        # Step 3: 聚类 + 构建 CompositeRecord
         composites = self._cluster_and_build(
             surviving_records,
             covered_record_ids=covered_record_ids,
@@ -119,7 +105,6 @@ class RecordFusionEngine:
         if self._max_hierarchy_rounds <= 0 or not composites:
             return composites
 
-        # Step 4: 层级聚合
         all_composites = list(composites)
         covered_by_first: set[str] = set()
         for c in composites:
@@ -141,10 +126,6 @@ class RecordFusionEngine:
             seen_ids.update(c.composite_id for c in next_level)
 
         return all_composites
-
-    # ──────────────────────────────────────
-    # Step 1: 去重
-    # ──────────────────────────────────────
 
     def _dedup_on_ingest(
         self,
@@ -169,7 +150,6 @@ class RecordFusionEngine:
         }
         now_iso = datetime.now(timezone.utc).isoformat()
 
-        # Phase A: 预批量 embed + 并行 ANN 搜索（纯读，线程安全）
         valid_records = [r for r in new_records if not r.expired and r.record_id]
 
         # 优先复用调用方预算的向量，避免重复 embed
@@ -198,7 +178,6 @@ class RecordFusionEngine:
                 for _rid, _hits in _pool.map(_search_dedup_one, valid_records):
                     _dedup_search[_rid] = _hits
 
-        # Phase B: 串行处理搜索结果（含写操作）
         for record in valid_records:
             for hit in _dedup_search.get(record.record_id, []):
                 hit_id = str(hit.get("record_id", "")).strip()
@@ -213,7 +192,6 @@ class RecordFusionEngine:
                 if hit.get("memory_type", "") != record.memory_type:
                     continue
 
-                # 近似重复：过期旧记录
                 self._sqlite.expire_record(
                     hit_id,
                     expired_at=now_iso,
@@ -222,7 +200,6 @@ class RecordFusionEngine:
                 self._vector.mark_expired(hit_id)
                 expired_ids.add(hit_id)
 
-                # 使包含该旧记录的 composite 失效
                 stale = self._sqlite.get_synthesized_by_source([hit_id])
                 for comp in stale:
                     cid = str(comp.composite_id or "").strip()
@@ -237,10 +214,6 @@ class RecordFusionEngine:
         ]
         return surviving, expired_ids, invalidated_cids
 
-    # ──────────────────────────────────────
-    # Step 2-3: 聚类 + 构建 CompositeRecord
-    # ──────────────────────────────────────
-
     def _cluster_and_build(
         self,
         new_records: list[MemoryRecord],
@@ -254,14 +227,12 @@ class RecordFusionEngine:
         if len(new_records) < self._min_records:
             return []
 
-        # 收集候选：新记录 + 与其相似的已有记录
         candidate_map: dict[str, MemoryRecord] = {
             r.record_id: r for r in new_records
             if str(r.record_id or "").strip()
         }
         new_ids = set(candidate_map.keys())
 
-        # 预批量 embed + 并行 ANN 搜索建立相似度边
         # 优先复用调用方预算的向量，避免重复 embed
         _nr_vec_map: dict[str, list[float]] = dict(pre_computed_vectors or {})
         _missing_nr = [r for r in new_records if r.record_id not in _nr_vec_map]
@@ -287,7 +258,6 @@ class RecordFusionEngine:
             for _rid, _hits in _pool.map(_search_cluster_one, new_records):
                 _cluster_search[_rid] = _hits
 
-        # 串行建边（含 SQLite 读取）
         edges: list[tuple[str, str]] = []
         for record in new_records:
             for hit in _cluster_search.get(record.record_id, []):
@@ -301,10 +271,8 @@ class RecordFusionEngine:
                 if hit_id in covered:
                     continue
 
-                # 添加边
                 edges.append((record.record_id, hit_id))
 
-                # 如果是已有记录，加入候选
                 if hit_id not in candidate_map:
                     fetched = self._sqlite.get_record(hit_id)
                     if fetched and not fetched.expired:
@@ -313,10 +281,8 @@ class RecordFusionEngine:
         if not edges:
             return []
 
-        # Union-Find 构建连通分量
         clusters = self._union_find_clusters(edges, candidate_map.keys())
 
-        # 过滤：每个 cluster 至少 min_records 个 record，且至少含一个新记录
         valid_clusters: list[list[str]] = []
         for cluster_ids in clusters:
             if len(cluster_ids) < self._min_records:
@@ -328,7 +294,6 @@ class RecordFusionEngine:
         if not valid_clusters:
             return []
 
-        # 构建 CompositeRecord，先写 SQLite，再统一批量 embed 写向量索引
         now_iso = datetime.now(timezone.utc).isoformat()
         composites: list[CompositeRecord] = []
 
@@ -355,7 +320,6 @@ class RecordFusionEngine:
                 self._sqlite.upsert_synthesized(composite)
                 composites.append(composite)
 
-        # 批量 embed 并写入向量索引（1 次 API 调用，不论 composite 数量）
         if composites:
             set_embedding_call_source("fusion_persist")
             self._vector.upsert_synthesized_batch([
@@ -369,10 +333,6 @@ class RecordFusionEngine:
             ])
 
         return composites
-
-    # ──────────────────────────────────────
-    # Step 4: 层级聚合
-    # ──────────────────────────────────────
 
     def _hierarchy_round(
         self,
@@ -393,7 +353,6 @@ class RecordFusionEngine:
                 continue
             candidate_map[item_id] = item
 
-        # 预批量 embed + 并行搜索相关的 root composites
         _hier_candidates = list(candidate_map.values())
 
         _hc_vec_map: dict[str, list[float]] = {}
@@ -420,7 +379,6 @@ class RecordFusionEngine:
                 for _iid, _hits in _pool.map(_search_hierarchy_one, _hier_candidates):
                     _hier_search[_iid] = _hits
 
-        # 串行建边（含 SQLite 读取和覆盖关系检查）
         edges: list[tuple[str, str]] = []
         for item in _hier_candidates:
             item_id = self._item_id(item)
@@ -435,7 +393,6 @@ class RecordFusionEngine:
                 if dist > self._synthesis_max_dist:
                     continue
 
-                # 检查是否有包含关系
                 if cid not in candidate_map:
                     fetched = self._sqlite.get_synthesized(cid)
                     if fetched:
@@ -497,7 +454,6 @@ class RecordFusionEngine:
                 self._sqlite.upsert_synthesized(composite)
                 composites.append(composite)
 
-        # 批量 embed 并写入向量索引（1 次 API 调用，不论 composite 数量）
         if composites:
             set_embedding_call_source("fusion_persist")
             self._vector.upsert_synthesized_batch([
@@ -511,10 +467,6 @@ class RecordFusionEngine:
             ])
 
         return composites
-
-    # ──────────────────────────────────────
-    # CompositeRecord 构建
-    # ──────────────────────────────────────
 
     def _build_composite(
         self,
@@ -532,10 +484,8 @@ class RecordFusionEngine:
         if len(items) < self._min_records:
             return None
 
-        # 选择代表记录
         representative = max(items, key=lambda x: (x.confidence, x.updated_at))
 
-        # 合并 metadata
         all_entities = self._merge_unique(
             [e for item in items for e in (item.entities or [])]
         )
@@ -547,7 +497,6 @@ class RecordFusionEngine:
         )
         avg_confidence = sum(item.confidence for item in items) / len(items)
 
-        # 推断 composite memory_type
         type_counts: dict[str, int] = {}
         for item in items:
             type_counts[item.memory_type] = type_counts.get(item.memory_type, 0) + 1
@@ -571,9 +520,7 @@ class RecordFusionEngine:
             updated_at=now_iso,
         )
 
-    # ──────────────────────────────────────
     # 工具方法
-    # ──────────────────────────────────────
 
     @staticmethod
     def _union_find_clusters(

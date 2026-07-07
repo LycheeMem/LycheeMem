@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-# ── memory_type 枚举值（字符串常量，不用 Enum，方便 JSON 序列化） ──
 MEMORY_TYPE_FACT = "fact"
 MEMORY_TYPE_PREFERENCE = "preference"
 MEMORY_TYPE_EVENT = "event"
@@ -58,16 +57,13 @@ class MemoryRecord:
     record_id: str  # SHA256(semantic_text)，天然幂等
     memory_type: str  # 取值见 VALID_MEMORY_TYPES
 
-    # ── 文本 ──
     semantic_text: str  # 经过指代消解后的完整语义文本
     normalized_text: str  # 由 Python 生成: f"{memory_type}: {semantic_text}"（用于去重 & FTS）
 
-    # ── 结构化元数据 ──
     entities: list[str] = field(default_factory=list)  # 涉及的实体名
     temporal: dict[str, Any] = field(default_factory=dict)  # {t_ref, t_valid_from, t_valid_to}
     tags: list[str] = field(default_factory=list)  # 统一标签（工具/约束/任务/失败/可供性等）
 
-    # ── 置信度 & 来源 ──
     confidence: float = 1.0
     evidence_turn_range: list[int] = field(default_factory=list)  # [start_turn, end_turn]
     source_session: str = ""
@@ -75,14 +71,12 @@ class MemoryRecord:
     created_at: str = ""  # ISO timestamp
     updated_at: str = ""
 
-    # ── 使用统计（为 RL 阶段准备 next-state signal） ──
     retrieval_count: int = 0
     retrieval_hit_count: int = 0  # 被检索且被 synthesizer 保留的次数
     action_success_count: int = 0  # 关联 action 执行成功的次数
     action_fail_count: int = 0
     last_retrieved_at: str = ""
 
-    # ── 软删除 ──
     expired: bool = False
     expired_at: str = ""
     expired_reason: str = ""
@@ -100,15 +94,12 @@ class CompositeRecord:
     composite_id: str
     memory_type: str  # 取值见 VALID_SYNTH_TYPES
 
-    # ── 文本 ──
     semantic_text: str  # cluster 中距质心最近的 record 的 semantic_text
     normalized_text: str
 
-    # ── 聚合来源 ──
     source_record_ids: list[str] = field(default_factory=list)
     child_composite_ids: list[str] = field(default_factory=list)  # 直接子 composite，形成层级树
 
-    # ── 继承自 source records 的聚合元数据 ──
     entities: list[str] = field(default_factory=list)
     temporal: dict[str, Any] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)  # 统一标签
@@ -117,7 +108,6 @@ class CompositeRecord:
     created_at: str = ""
     updated_at: str = ""
 
-    # ── 使用统计 ──
     retrieval_count: int = 0
     retrieval_hit_count: int = 0
     action_success_count: int = 0

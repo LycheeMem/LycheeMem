@@ -1,19 +1,4 @@
-"""视觉记忆提取器 - 高性能版。
-
-使用 VLM（Visual Language Model）对输入图片进行理解，生成：
-- 自然语言描述（caption）
-- 结构化实体列表
-- 场景类型判断
-- 重要性评分
-
-优化策略:
-1. 图片压缩/缩放 - 减小图片尺寸再发送给 VLM
-2. 极简 Prompt - 大幅缩短系统提示
-3. 可选跳过视觉嵌入 - 配置选项
-4. 并行处理 - 所有步骤异步并行
-5. LRU 缓存 - 避免重复处理相同图片
-6. 批量压缩 - 复用 PIL 图片对象
-"""
+"""视觉记忆提取器。"""
 
 from __future__ import annotations
 
@@ -28,19 +13,15 @@ from src.llm.base import BaseLLM
 
 logger = logging.getLogger(__name__)
 
-# ── 支持的图片 MIME 类型 ──
 SUPPORTED_MIME_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
-# ── 场景类型枚举 ──
 SCENE_TYPES = {"screenshot", "chart", "photo", "document", "ui", "code", "other"}
 
-# ── VLM 提取系统 Prompt - 极简版 (减少 token 消耗) ──
 VISUAL_EXTRACTION_PROMPT_FAST = """\
 分析图片并返回 JSON:
 {"caption":"1-2 句描述","scene_type":"screenshot|chart|photo|document|ui|code|other","entities":[{"type":"类型","name":"名称","confidence":0.9}],"structured_data":{},"importance_score":0.5,"importance_reason":"理由"}
 要求：caption 简洁准确，scene_type 必选，只返回 JSON。"""
 
-# ── VLM 提取系统 Prompt - 详细版 (高质量) ──
 VISUAL_EXTRACTION_PROMPT_DETAILED = """\
 你是一个专业的视觉内容分析器。请分析图片并返回 JSON:
 
@@ -91,9 +72,7 @@ class VisualExtractor:
         self._max_tokens = 800 if fast_mode else 1500
         self._temperature = 0.01 if fast_mode else 0.1
         self._cache_size = cache_size
-        # 缓存：image_hash -> extraction_result
         self._result_cache: dict[str, dict[str, Any]] = {}
-        # 缓存压缩后的图片
         self._compressed_cache: dict[str, str] = {}
         logger.info(
             "VisualExtractor initialized: fast_mode=%s, max_image_size=%d, max_tokens=%d, cache_size=%d",
@@ -117,7 +96,6 @@ class VisualExtractor:
             提取结果的字典，包含 caption, entities, scene_type, structured_data,
             importance_score, image_hash 等字段。
         """
-        # 解码原始图片并计算 hash
         image_bytes = base64.b64decode(image_b64)
         image_hash = hashlib.sha256(image_bytes).hexdigest()[:16]
 
@@ -126,14 +104,12 @@ class VisualExtractor:
             image_hash, len(image_bytes), session_id,
         )
 
-        # 检查缓存（避免重复处理相同图片）
         if image_hash in self._result_cache:
             logger.debug("Cache hit for image hash: %s", image_hash)
             cached_result = self._result_cache[image_hash].copy()
             cached_result["from_cache"] = True
             return cached_result
 
-        # 压缩/缩放图片（减少 VLM 处理时间）
         compressed_b64 = self._compress_image(image_bytes, mime_type, image_hash)
         if compressed_b64:
             logger.debug(
@@ -144,19 +120,15 @@ class VisualExtractor:
         else:
             compressed_b64 = image_b64
 
-        # 调用 VLM 进行理解
         result = await self._call_vlm(compressed_b64, mime_type)
 
-        # 合并结果
         result["image_hash"] = image_hash
         result["image_mime_type"] = mime_type
         result["image_size"] = len(image_bytes)
         result["from_cache"] = False
 
-        # 验证和修正结果
         result = self._validate_and_fix(result)
 
-        # 更新缓存
         self._update_cache(image_hash, result, compressed_b64)
 
         logger.info(
@@ -174,7 +146,6 @@ class VisualExtractor:
             result: 提取结果
             compressed_b64: 压缩后的图片
         """
-        # 如果缓存已满，移除最旧的 25%
         if len(self._result_cache) >= self._cache_size:
             remove_count = self._cache_size // 4
             for key in list(self._result_cache.keys())[:remove_count]:
@@ -182,9 +153,7 @@ class VisualExtractor:
                 if key in self._compressed_cache:
                     del self._compressed_cache[key]
 
-        # 更新结果缓存
         self._result_cache[image_hash] = result.copy()
-        # 更新压缩图片缓存
         if compressed_b64:
             self._compressed_cache[image_hash] = compressed_b64
 
@@ -204,7 +173,6 @@ class VisualExtractor:
         Returns:
             Base64 编码的压缩图片，如果压缩失败返回 None。
         """
-        # 先检查压缩缓存
         if image_hash and image_hash in self._compressed_cache:
             logger.debug("Compression cache hit for hash: %s", image_hash)
             return self._compressed_cache[image_hash]
@@ -213,14 +181,11 @@ class VisualExtractor:
             from PIL import Image
             import io
 
-            # 打开图片
             img = Image.open(io.BytesIO(image_bytes))
 
-            # 转换为 RGB（处理 PNG 透明通道等）
             if img.mode in ("RGBA", "P"):
                 img = img.convert("RGB")
 
-            # 计算缩放比例
             width, height = img.size
             max_dim = max(width, height)
 
@@ -231,7 +196,6 @@ class VisualExtractor:
                 img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
                 logger.debug("Image resized: %dx%d -> %dx%d", width, height, new_width, new_height)
 
-            # 压缩为 JPEG
             output = io.BytesIO()
             img.save(output, format="JPEG", quality=self.image_quality, optimize=True)
             output.seek(0)
@@ -259,12 +223,10 @@ class VisualExtractor:
         import json
         import re
 
-        # 验证 MIME 类型
         if mime_type not in SUPPORTED_MIME_TYPES:
             logger.warning("Unsupported MIME type: %s, defaulting to image/jpeg", mime_type)
             mime_type = "image/jpeg"
 
-        # 构建消息（使用极简 Prompt）
         messages = [
             {
                 "role": "system",
@@ -285,7 +247,6 @@ class VisualExtractor:
         ]
 
         try:
-            # 使用 asyncio.wait_for 实现超时控制
             logger.info("Calling VLM with model: %s", getattr(self.llm, 'model', 'unknown'))
             response = await asyncio.wait_for(
                 self.llm.agenerate(
@@ -293,7 +254,7 @@ class VisualExtractor:
                     temperature=self._temperature,
                     max_tokens=self._max_tokens,
                 ),
-                timeout=30,  # 30 秒超时
+                timeout=30,
             )
             logger.info("VLM response received, length: %d chars", len(response))
         except asyncio.TimeoutError:
@@ -303,7 +264,6 @@ class VisualExtractor:
             logger.error("VLM call failed: %s", e, exc_info=True)
             raise RuntimeError(f"VLM API call failed: {e}") from e
 
-        # 解析 JSON 响应
         text = response.strip()
         logger.debug("VLM raw response: %s", text[:500])
 

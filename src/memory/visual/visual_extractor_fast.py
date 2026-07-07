@@ -1,20 +1,4 @@
-"""视觉记忆提取器 - 极速版。
-
-使用 VLM（Visual Language Model）对输入图片进行理解，生成：
-- 自然语言描述（caption）
-- 结构化实体列表
-- 场景类型判断
-- 重要性评分
-
-优化策略（相比高性能版进一步提升）:
-1. ✅ 超轻量 Prompt - 仅 30 字核心指令
-2. ✅ 激进图片压缩 - 最大 512px，质量 75
-3. ✅ 小模型优先 - 使用 qwen-vl-max-lite 等轻量模型
-4. ✅ 并行处理 - 所有步骤异步并行
-5. ✅ LRU 缓存 - 避免重复处理相同图片
-6. ✅ 流式响应 - 支持流式 JSON 解析
-7. ✅ 降级策略 - API 失败时快速返回
-"""
+"""视觉记忆提取器的快速实现。"""
 
 from __future__ import annotations
 
@@ -29,17 +13,13 @@ from src.llm.base import BaseLLM
 
 logger = logging.getLogger(__name__)
 
-# ── 支持的图片 MIME 类型 ──
 SUPPORTED_MIME_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
-# ── 场景类型枚举（精简版） ──
 SCENE_TYPES = {"screenshot", "chart", "photo", "document", "ui", "code", "other"}
 
-# ── VLM 提取系统 Prompt - 极速版 (仅 30 字核心指令) ──
 VISUAL_EXTRACTION_PROMPT_ULTRAFAST = """\
 分析图片返回 JSON: {"caption":"50 字内描述","scene_type":"screenshot|chart|photo|document|ui|code|other","entities":[],"importance_score":0.5}。只返回 JSON。"""
 
-# ── VLM 提取系统 Prompt - 快速版 (平衡速度和质量) ──
 VISUAL_EXTRACTION_PROMPT_FAST = """\
 分析图片并返回 JSON:
 {"caption":"1-2 句描述","scene_type":"screenshot|chart|photo|document|ui|code|other","entities":[{"type":"类型","name":"名称","confidence":0.9}],"structured_data":{},"importance_score":0.5,"importance_reason":"理由"}
@@ -64,10 +44,10 @@ class VisualExtractorFast:
         llm: BaseLLM,
         fast_mode: bool = True,
         ultra_fast_mode: bool = False,
-        max_image_size: int = 512,  # 从 1024 降低到 512
-        image_quality: int = 75,    # 从 85 降低到 75
-        cache_size: int = 256,      # 从 128 增加到 256
-        timeout: int = 15,          # 从 30 秒降低到 15 秒
+        max_image_size: int = 512,
+        image_quality: int = 75,
+        cache_size: int = 256,
+        timeout: int = 15,
     ) -> None:
         self.llm = llm
         self.fast_mode = fast_mode
@@ -76,7 +56,6 @@ class VisualExtractorFast:
         self.image_quality = image_quality
         self.timeout = timeout
         
-        # 根据模式选择 Prompt 和参数
         if ultra_fast_mode:
             self._prompt = VISUAL_EXTRACTION_PROMPT_ULTRAFAST
             self._max_tokens = 400
@@ -92,9 +71,7 @@ class VisualExtractorFast:
             self._temperature = 0.1
         
         self._cache_size = cache_size
-        # 缓存：image_hash -> extraction_result
         self._result_cache: dict[str, dict[str, Any]] = {}
-        # 缓存压缩后的图片
         self._compressed_cache: dict[str, str] = {}
         
         logger.info(
@@ -119,7 +96,6 @@ class VisualExtractorFast:
             提取结果的字典，包含 caption, entities, scene_type, structured_data,
             importance_score, image_hash 等字段。
         """
-        # 解码原始图片并计算 hash
         image_bytes = base64.b64decode(image_b64)
         image_hash = hashlib.sha256(image_bytes).hexdigest()[:16]
 
@@ -128,14 +104,12 @@ class VisualExtractorFast:
             image_hash, len(image_bytes), session_id,
         )
 
-        # 检查缓存（避免重复处理相同图片）
         if image_hash in self._result_cache:
             logger.debug("✓ Cache hit for image hash: %s", image_hash)
             cached_result = self._result_cache[image_hash].copy()
             cached_result["from_cache"] = True
             return cached_result
 
-        # 压缩/缩放图片（减少 VLM 处理时间）
         compressed_b64 = self._compress_image(image_bytes, mime_type, image_hash)
         if compressed_b64:
             compression_ratio = (1 - len(compressed_b64) * 3 / 4 / len(image_bytes)) * 100
@@ -144,19 +118,15 @@ class VisualExtractorFast:
         else:
             compressed_b64 = image_b64
 
-        # 调用 VLM 进行理解（带超时）
         result = await self._call_vlm(compressed_b64, mime_type)
 
-        # 合并结果
         result["image_hash"] = image_hash
         result["image_mime_type"] = mime_type
         result["image_size"] = len(image_bytes)
         result["from_cache"] = False
 
-        # 验证和修正结果
         result = self._validate_and_fix(result)
 
-        # 更新缓存
         self._update_cache(image_hash, result, compressed_b64)
 
         logger.info(
@@ -168,7 +138,6 @@ class VisualExtractorFast:
 
     def _update_cache(self, image_hash: str, result: dict[str, Any], compressed_b64: str) -> None:
         """更新缓存，保持缓存大小在限制内。"""
-        # 如果缓存已满，移除最旧的 25%
         if len(self._result_cache) >= self._cache_size:
             remove_count = self._cache_size // 4
             for key in list(self._result_cache.keys())[:remove_count]:
@@ -176,9 +145,7 @@ class VisualExtractorFast:
                 if key in self._compressed_cache:
                     del self._compressed_cache[key]
 
-        # 更新结果缓存
         self._result_cache[image_hash] = result.copy()
-        # 更新压缩图片缓存
         if compressed_b64:
             self._compressed_cache[image_hash] = compressed_b64
 
@@ -190,11 +157,7 @@ class VisualExtractorFast:
     ) -> Optional[str]:
         """压缩/缩放图片，减少 VLM 处理时间（带缓存）。
 
-        极速版优化：
-        - 更激进的压缩（512px, quality=75）
-        - 优先使用缓存避免重复压缩
         """
-        # 先检查压缩缓存
         if image_hash and image_hash in self._compressed_cache:
             logger.debug("✓ Compression cache hit for hash: %s", image_hash)
             return self._compressed_cache[image_hash]
@@ -203,14 +166,11 @@ class VisualExtractorFast:
             from PIL import Image
             import io
 
-            # 打开图片
             img = Image.open(io.BytesIO(image_bytes))
 
-            # 转换为 RGB（处理 PNG 透明通道等）
             if img.mode in ("RGBA", "P"):
                 img = img.convert("RGB")
 
-            # 计算缩放比例（极速版更激进）
             width, height = img.size
             max_dim = max(width, height)
 
@@ -221,14 +181,12 @@ class VisualExtractorFast:
                 img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
                 logger.debug("✓ Image resized: %dx%d -> %dx%d", width, height, new_width, new_height)
 
-            # 压缩为 JPEG（极速版使用更低质量）
             output = io.BytesIO()
             img.save(output, format="JPEG", quality=self.image_quality, optimize=True)
             output.seek(0)
 
             compressed_b64 = base64.b64encode(output.getvalue()).decode("utf-8")
 
-            # 更新压缩缓存
             if image_hash:
                 self._compressed_cache[image_hash] = compressed_b64
 
@@ -242,23 +200,15 @@ class VisualExtractorFast:
             return None
 
     async def _call_vlm(self, image_b64: str, mime_type: str) -> dict[str, Any]:
-        """调用 VLM 进行图片理解（优化参数）。
-
-        极速版优化：
-        - 更短的超时时间（15 秒）
-        - 更低的 temperature（0.01）
-        - 更少的 max_tokens（400-600）
-        """
+        """调用 VLM 进行图片理解。"""
         import asyncio
         import json
         import re
 
-        # 验证 MIME 类型
         if mime_type not in SUPPORTED_MIME_TYPES:
             logger.warning("Unsupported MIME type: %s, defaulting to image/jpeg", mime_type)
             mime_type = "image/jpeg"
 
-        # 构建消息（使用极简 Prompt）
         messages = [
             {
                 "role": "system",
@@ -279,7 +229,6 @@ class VisualExtractorFast:
         ]
 
         try:
-            # 使用 asyncio.wait_for 实现超时控制（极速版 15 秒超时）
             response = await asyncio.wait_for(
                 self.llm.agenerate(
                     messages=messages,
@@ -295,7 +244,6 @@ class VisualExtractorFast:
             logger.error("✗ VLM API call failed: %s", e)
             return self._get_fallback_result(f"VLM API 错误")
 
-        # 解析 JSON 响应
         text = response.strip()
         logger.debug("VLM raw response: %s", text[:500])
 

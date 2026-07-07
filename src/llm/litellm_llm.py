@@ -26,7 +26,6 @@ _DEFAULT_TIMEOUT_SECONDS = 600.0
 _DEFAULT_RETRY_ATTEMPTS = 10
 _DEFAULT_RETRY_BACKOFF_SECONDS = 2.0
 
-# ── LiteLLM 全局性能优化（模块首次导入时执行一次）──────────────────────────────
 # 1. telemetry=False：禁用 LiteLLM 在每次 API 调用后向其服务器发送遥测 HTTP 请求。
 #    这是迁移到 LiteLLM 后延迟显著上升的主要原因。
 litellm.telemetry = False

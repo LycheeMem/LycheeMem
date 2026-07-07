@@ -643,7 +643,6 @@ def run_memory_consolidate(
     watermark = log.last_consolidated_turn_index
     raw_total = len(log.turns)
 
-    # force_ingest=True 时忽略水位线，从头处理所有 turns
     effective_watermark = 0 if req.force_ingest else watermark
     turns = [t for t in log.turns[effective_watermark:] if not t.get("deleted", False)]
 
@@ -665,7 +664,6 @@ def run_memory_consolidate(
                     skip_skills=req.skip_skills,
                     session_date=req.session_date,
                 )
-                # 后台线程固化成功后推进水位线
                 store.set_last_consolidated_turn_index(req.session_id, raw_total)
             except Exception:
                 logger.exception("background consolidation failed session=%s", req.session_id)
@@ -685,7 +683,6 @@ def run_memory_consolidate(
         skip_skills=req.skip_skills,
         session_date=req.session_date,
     )
-    # 同步固化成功后推进水位线
     store.set_last_consolidated_turn_index(req.session_id, raw_total)
     return MemoryConsolidateResponse(
         status="skipped" if result.get("skipped_reason") else "done",
@@ -705,7 +702,6 @@ def _run_memory_reason(
     wm = pipeline.wm_manager
 
     if req.append_to_session:
-        # 追加用户消息到会话（含 token 计数及双阈值压缩）
         wm_result = wm.run(
             session_id=req.session_id,
             user_query=req.user_query,
@@ -713,7 +709,6 @@ def _run_memory_reason(
         compressed_history = wm_result["compressed_history"]
         wm_token_usage = wm_result["wm_token_usage"]
     else:
-        # 只读历史，不写入会话
         log = wm.session_store.get_or_create(req.session_id)
         compressed_history = wm.compressor.render_context(log.turns, log.summaries)
         wm_token_usage = wm.compressor.count_tokens(compressed_history)
@@ -740,7 +735,6 @@ def _run_memory_reason(
     )
 
 
-# ── Memory: Search ──
 
 
 @router.post("/memory/search", response_model=MemorySearchResponse)
@@ -758,7 +752,6 @@ async def memory_smart_search(
     return await run_in_threadpool(run_memory_smart_search, pipeline, req)
 
 
-# ── Memory: Append Turn ──
 
 
 @router.post("/memory/append-turn", response_model=MemoryAppendTurnResponse)
@@ -770,7 +763,6 @@ async def memory_append_turn(
     return await run_in_threadpool(run_memory_append_turn, pipeline, req)
 
 
-# ── Memory: Reason ──
 
 
 @router.post("/memory/reason", response_model=MemoryReasonResponse)
@@ -789,7 +781,6 @@ async def memory_reason(
     return await run_in_threadpool(_run_memory_reason, pipeline, req)
 
 
-# ── Memory: Consolidate ──
 
 
 @router.post("/memory/consolidate", response_model=MemoryConsolidateResponse)
@@ -806,7 +797,6 @@ async def memory_consolidate(
     return await run_in_threadpool(run_memory_consolidate, pipeline, req)
 
 
-# ── Memory: Graph ──
 
 
 @router.get("/memory/graph", response_model=GraphResponse)
@@ -924,7 +914,6 @@ async def clear_all_graph(
         raise HTTPException(status_code=500, detail=f"Clear failed: {exc}")
 
 
-# ── Memory: Skills ──
 
 
 @router.get("/memory/skills", response_model=SkillsResponse)

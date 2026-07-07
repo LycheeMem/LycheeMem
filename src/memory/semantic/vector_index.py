@@ -79,9 +79,6 @@ class LanceVectorIndex:
     def set_embedder(self, embedder: BaseEmbedder) -> None:
         self._embedder = embedder
 
-    # ──────────────────────────────────────
-    # 表初始化
-    # ──────────────────────────────────────
 
     def _ensure_tables(self) -> None:
         """创建或验证 LanceDB 表。
@@ -117,9 +114,6 @@ class LanceVectorIndex:
                     pass  # 无法检查则保持现有状态
 
 
-    # ──────────────────────────────────────
-    # MemoryRecord 向量写入
-    # ──────────────────────────────────────
 
     def upsert(
         self,
@@ -260,9 +254,6 @@ class LanceVectorIndex:
             for r in results
         ]
 
-    # ──────────────────────────────────────
-    # CompositeRecord 向量写入 / 检索
-    # ──────────────────────────────────────
 
     def upsert_synthesized(
         self,
@@ -379,13 +370,7 @@ class LanceVectorIndex:
             for r in results
         ]
 
-    # ──────────────────────────────────────
-    # 批量删除
-    # ──────────────────────────────────────
 
-    # ──────────────────────────────────────
-    # Episode Turn 向量写入 / 检索
-    # ──────────────────────────────────────
 
     def upsert_turns_batch(self, turns: list[dict[str, Any]]) -> None:
         """批量写入原始对话 turn 的向量。
@@ -486,9 +471,6 @@ class LanceVectorIndex:
         except Exception:
             return set()
 
-    # ──────────────────────────────────────
-    # 批量删除
-    # ──────────────────────────────────────
 
     def delete_all(self) -> None:
         """删除全部向量数据。"""
@@ -518,9 +500,6 @@ class LanceVectorIndex:
         具体过期条目不参与 ANN 召回，靠 sqlite 侧查询）。"""
         self.delete_record(record_id)
 
-    # ──────────────────────────────────────
-    # 工具
-    # ──────────────────────────────────────
 
     @staticmethod
     def _escape_sql(value: str) -> str:

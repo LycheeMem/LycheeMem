@@ -7,9 +7,6 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-# ─── Chat ───
-
-
 class ChatRequest(BaseModel):
     """对话请求。"""
 
@@ -62,16 +59,13 @@ class ProvenanceItem(BaseModel):
     and facts."
     """
 
-    # ── 评分/排名元数据 ──
     source: str = ""          # 来源标识（如 "graphiti_retrieval"）
     index: int = 0            # 在 provenance 列表中的位置（0-based）
     relevance: float = 0.0    # 综合得分（RRF + boosts + cross-encoder）
 
-    # ── Fact 标识 ──
     fact_id: str = ""         # 对应 Fact 节点的 fact_id
     summary: str = ""         # Fact 的 fact_text（人类可读）
 
-    # ── 检索信号细节 ──
     rrf_score: float = 0.0
     bm25_rank: int | None = None
     bfs_rank: int | None = None
@@ -79,7 +73,6 @@ class ProvenanceItem(BaseModel):
     graph_distance: int | None = None
     cross_encoder_score: float | None = None
 
-    # ── 双向 Episode 引用链（Paper §2.1）──
     # 每条条目是一个 Episode 快照，包含 episode_id、session_id、role、
     # content（原始文本）、turn_index、t_ref（参考时间戳）。
     # 通过 EVIDENCE_FOR（Fact 直接证据）或 MENTIONS（实体出现）关系
@@ -134,9 +127,6 @@ class ChatResponse(BaseModel):
     trace: PipelineTrace | None = None
 
 
-# ─── Memory ───
-
-
 class GraphNode(BaseModel):
     id: str
     label: str = ""
@@ -162,7 +152,6 @@ class FactEdge(BaseModel):
     target: str
     relation: str = ""
 
-    # Optional enriched fields (keep defaults to stay backward/forward compatible)
     confidence: float = 1.0
     fact: str = ""
     evidence: str = ""
@@ -194,9 +183,6 @@ class SkillsResponse(BaseModel):
     total: int
 
 
-# ─── Session ───
-
-
 class TurnItem(BaseModel):
     """单个会话轮次的数据模型。"""
 
@@ -220,9 +206,6 @@ class DeleteResponse(BaseModel):
     message: str
 
 
-# ─── Sessions List ───
-
-
 class SessionSummary(BaseModel):
     session_id: str
     turn_count: int
@@ -244,9 +227,6 @@ class SessionUpdateRequest(BaseModel):
 
     topic: str | None = None
     tags: list[str] | None = None
-
-
-# ─── Memory Search ───
 
 
 class MemorySearchRequest(BaseModel):
@@ -293,9 +273,6 @@ class MemorySmartSearchResponse(BaseModel):
     dropped_count: int = 0
 
 
-# ─── Memory Reason ───
-
-
 class MemoryReasonRequest(BaseModel):
     """最终推理请求：基于合成后的上下文生成回答。
 
@@ -325,9 +302,6 @@ class MemoryReasonResponse(BaseModel):
     wm_token_usage: int = 0
 
 
-# ─── Memory Append Turn ───
-
-
 class MemoryAppendTurnRequest(BaseModel):
     """向 LycheeMem session store 追加外部宿主对话轮次。"""
 
@@ -341,9 +315,6 @@ class MemoryAppendTurnResponse(BaseModel):
     status: str = "appended"
     session_id: str
     turn_count: int = 0
-
-
-# ─── Memory Consolidate ───
 
 
 class MemoryConsolidateRequest(BaseModel):
@@ -384,9 +355,6 @@ class MemoryConsolidateResponse(BaseModel):
     steps: list[dict[str, Any]] = []
 
 
-# ─── Graph Manual Operations ───
-
-
 class GraphNodeAddRequest(BaseModel):
     id: str = Field(..., min_length=1)
     label: str = "Entity"
@@ -400,7 +368,6 @@ class GraphEdgeAddRequest(BaseModel):
     properties: dict[str, Any] = {}
 
 
-# ─── Health ───
 
 
 class HealthResponse(BaseModel):
@@ -408,7 +375,6 @@ class HealthResponse(BaseModel):
     version: str
 
 
-# ─── Pipeline Status ───
 
 
 class PipelineStatusResponse(BaseModel):

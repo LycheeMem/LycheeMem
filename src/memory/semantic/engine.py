@@ -56,9 +56,7 @@ from src.memory.semantic.vector_index import LanceVectorIndex
 
 logger = logging.getLogger("src.memory.semantic.engine")
 
-# ──────────────────────────────────────────────────────────────────
 # 敏感信息模式：匹配到任意一项即跳过写入长期记忆
-# ──────────────────────────────────────────────────────────────────
 _SENSITIVE_PATTERNS: list[re.Pattern] = [
     # 明文密码赋值：password = xxx / passwd: xxx
     re.compile(r"(?i)\b(password|passwd|pwd)\s*[=:]\s*\S{4,}"),
@@ -213,9 +211,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             + f"- Current UTC time: {now_utc.isoformat()}\n"
         )
 
-    # ════════════════════════════════════════════════════════════════
-    # 敏感信息过滤
-    # ════════════════════════════════════════════════════════════════
 
     @staticmethod
     def _is_sensitive_text(text: str) -> bool:
@@ -228,9 +223,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 return True
         return False
 
-    # ════════════════════════════════════════════════════════════════
     # search() — 三阶段 LLM 驱动检索管线
-    # ════════════════════════════════════════════════════════════════
 
     def search(
         self,
@@ -294,7 +287,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         selected_candidates: list[ScoredCandidate] = []
         seen_ids: set[str] = set()
 
-        # ─── Phase 1: ANN 预过滤 + LLM 过滤 CompositeRecord ─────
         # 先用向量 ANN 检索相关 composites，再做一次 LLM 过滤。
         # 注意：这里必须让 planner 生成的 semantic/pragmatic queries 真正驱动召回，
         # 否则 multi-query plan 只会停留在日志里，实际仍是单 query ANN。
@@ -458,7 +450,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 if cid in det_ids:
                     needs_detail_ids.add(cid)
 
-        # ─── Phase 2: 下钻叶子 MemoryRecord ──────────────────────
         for composite_id in list(needs_detail_ids):
             leaf_ids = self._collect_leaf_record_ids(composite_id)
             _debug_search("phase2.tree_descent", {
@@ -501,7 +492,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                     data=data,
                 ))
 
-        # ─── Phase 3: 反思循环 ────────────────────────────────────
         reflection_rounds = (
             1
             if not self._adequacy_check_enabled
@@ -1209,10 +1199,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
         return candidates
 
-    # ════════════════════════════════════════════════════════════════
-    # ingest_conversation() — 固化管线
-    # ════════════════════════════════════════════════════════════════
-
     def ingest_conversation(
         self,
         *,
@@ -1232,7 +1218,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
 
         steps: list[dict[str, Any]] = []
 
-        # Step 2 分桶提前确定，供 Step 1 和 Step 2 共用。
         # `turns` 已经是水位线之后的新增内容；当调用方选择每 2-4 个
         # exchange 再触发一次固化时，这批新增 turn 都必须被抽取为记忆。
         # 旧逻辑只把最后 4 条 turn 放入 CURRENT_TURNS，会让更早的新 turn
@@ -1240,7 +1225,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         previous: list[dict[str, Any]] = []
         current = turns
 
-        # Step 1: Compact Encoding
         encoder_reference_context = self._get_encoder_reference_context(session_id)
         new_records = self._encoder.encode_conversation(
             current,
@@ -1274,13 +1258,11 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 steps=steps,
             )
 
-        # Step 3: 去重 + 写入（三阶段：A) 并行搜索，B) 批量向量化判重，C) 批量写入）
         _ingest_log = logging.getLogger("src.memory.semantic.engine")
         actually_added = 0
         sensitive_skipped = 0
         persisted_records: list[MemoryRecord] = []
 
-        # 3a. 敏感信息过滤（纯本地，串行）
         filtered_records: list[MemoryRecord] = []
         for record in new_records:
             check_text = record.semantic_text + " " + record.normalized_text
@@ -1299,7 +1281,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             records=filtered_records,
         )
 
-        # 3b. Phase A 预备：一次批量 embed 同时覆盖 semantic_text + normalized_text
+        # 一次批量 embed 同时覆盖 semantic_text + normalized_text
         #     normalized_text = f"{memory_type}: {semantic_text}"（确定性规则生成）
         #     向量将复用于：① ANN 搜索 query_vector（无需线程内 embed_query）
         #                  ② Phase B 相似度判重（无需逐条 embed）
@@ -1323,7 +1305,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 r.record_id: _all_vecs[_N + i] for i, r in enumerate(filtered_records)
             }
 
-        # 3c. Phase A: 并行 FTS + ANN 候选搜索（纯读，线程安全；query_vector 已预算好，无额外 embed）
         # 返回 (record_id, [(candidate_record, ann_distance)])；FTS-only 候选 distance=999.0，
         # ANN 候选直接携带距离，后续判重无需再 embed。
         def _fetch_dedup_candidates(
@@ -1362,7 +1343,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 for _rid, _cands in _pool.map(_fetch_dedup_candidates, filtered_records):
                     record_candidates[_rid] = _cands
 
-        # 3d. Phase B: 直接使用 ANN 距离判重，无需 embed
         # L2 距离阈值：对归一化向量 L2_dist = 2*(1-cosine_sim)
         _dedup_l2_threshold = 2.0 * (1.0 - self._dedup_threshold)
         survivors: list[MemoryRecord] = []
@@ -1385,7 +1365,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             if not is_duplicate:
                 survivors.append(record)
 
-        # 3d. Phase C: 批量写入 SQLite + 向量索引
         for record in survivors:
             self._sqlite.upsert_record(record)
         if survivors:
@@ -1428,7 +1407,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             "detail": f"去重后写入 {actually_added}/{len(new_records)} 条{sensitive_note}",
         })
 
-        # Step 4: Record Fusion（在线聚合）
         composite_records = []
         fusion_stats: dict[str, Any] = {}
         if actually_added > 0:
@@ -1465,9 +1443,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             steps=steps,
         )
 
-    # ════════════════════════════════════════════════════════════════
-    # delete / export
-    # ════════════════════════════════════════════════════════════════
 
     def delete_all(self) -> dict[str, int]:
         result = self._sqlite.delete_all()
@@ -1537,9 +1512,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             "feedback": feedback["feedback"],
         }
 
-    # ════════════════════════════════════════════════════════════════
-    # 内部工具方法
-    # ════════════════════════════════════════════════════════════════
 
     def _check_adequacy(
         self,

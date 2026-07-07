@@ -20,7 +20,6 @@ logger = logging.getLogger("src.api.visual")
 router = APIRouter(prefix="/visual", tags=["visual-memory"])
 
 
-# ── Pydantic 模型 ──
 
 
 class VisualMemoryItem(BaseModel):
@@ -94,7 +93,6 @@ class VisualStatsResponse(BaseModel):
     by_scene_type: dict[str, int]
 
 
-# ── 端点 ──
 
 
 @router.get("/memories", response_model=VisualMemoryListResponse)

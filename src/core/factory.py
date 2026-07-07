@@ -145,7 +145,6 @@ def create_pipeline(
         semantic_engine=semantic_engine,
     )
 
-    # ── 视觉记忆模块（可选）──
     from src.core.config import settings as global_settings
     from src.memory.visual.visual_extractor import VisualExtractor
     from src.memory.visual.visual_forgetter import VisualForgetter

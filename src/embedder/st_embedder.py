@@ -56,7 +56,6 @@ class SentenceTransformerEmbedder(BaseEmbedder):
         self._model_kwargs = model_kwargs
         self._model = None  # 懒加载
 
-    # ── 懒加载 ──────────────────────────────────────────────────────────────
 
     def _load(self) -> None:
         if self._model is not None:
@@ -111,7 +110,6 @@ class SentenceTransformerEmbedder(BaseEmbedder):
             self._query_prompt_name = "query"
             logger.info("检测到 query prompt，查询侧将自动使用")
 
-    # ── 核心接口 ─────────────────────────────────────────────────────────────
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """批量文档 embedding（文档侧）。"""

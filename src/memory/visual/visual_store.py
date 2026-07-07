@@ -22,7 +22,6 @@ from src.memory.visual.models import VisualMemoryRecord
 logger = logging.getLogger(__name__)
 
 
-# ── SQLite 建表 SQL ──
 _CREATE_VISUAL_MEMORY_TABLE = """\
 CREATE TABLE IF NOT EXISTS visual_memories (
     record_id       TEXT PRIMARY KEY,
@@ -151,9 +150,6 @@ class VisualStore:
             self._lancedb = None
             self._visual_table = None
 
-    # ──────────────────────────────────────────────
-    #  图片文件管理
-    # ──────────────────────────────────────────────
 
     def save_image_file(
         self,
@@ -201,9 +197,6 @@ class VisualStore:
 
         return str(filepath.relative_to(self.image_storage_path.parent.parent))
 
-    # ──────────────────────────────────────────────
-    #  CRUD 操作
-    # ──────────────────────────────────────────────
 
     def store(self, record: VisualMemoryRecord) -> str:
         """存储一条视觉记忆记录。

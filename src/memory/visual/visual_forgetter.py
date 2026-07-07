@@ -16,7 +16,6 @@ from src.memory.visual.visual_store import VisualStore
 
 logger = logging.getLogger(__name__)
 
-# ── 遗忘曲线参数 ──
 # 基础衰减半衰期（小时）
 DEFAULT_HALF_LIFE_HOURS = 168  # 7 天
 # 重要性调节因子：importance_score=1.0 时半衰期延长至 30 天

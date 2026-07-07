@@ -25,9 +25,6 @@ from src.embedder.base import BaseEmbedder
 from src.memory.base import BaseMemoryStore
 
 
-# ──────────────────────────────────────
-# 工具函数
-# ──────────────────────────────────────
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -63,9 +60,6 @@ def _make_skill_vector_schema(dim: int) -> pa.Schema:
     ])
 
 
-# ──────────────────────────────────────
-# 主类
-# ──────────────────────────────────────
 
 class SQLiteSkillStore(BaseMemoryStore):
     """基于 SQLite + FTS5 + LanceDB 的技能库存储。
@@ -121,9 +115,6 @@ class SQLiteSkillStore(BaseMemoryStore):
     def set_embedder(self, embedder: BaseEmbedder) -> None:
         self._embedder = embedder
 
-    # ──────────────────────────────────────
-    # Schema 初始化
-    # ──────────────────────────────────────
 
     def _init_schema(self) -> None:
         """创建 SQLite 表 + FTS5 索引（幂等）。"""
@@ -178,9 +169,6 @@ class SQLiteSkillStore(BaseMemoryStore):
             except Exception:
                 pass
 
-    # ──────────────────────────────────────
-    # BaseMemoryStore API
-    # ──────────────────────────────────────
 
     def add(self, items: list[dict[str, Any]]) -> None:
         """写入一批技能条目（幂等 upsert，以 skill_id 为主键）。
@@ -201,7 +189,6 @@ class SQLiteSkillStore(BaseMemoryStore):
             last_used = item.get("last_used", "")
             created_at = item.get("created_at", now)
 
-            # ── SQLite upsert ──
             with self._lock:
                 self._conn.execute(
                     """
@@ -229,7 +216,6 @@ class SQLiteSkillStore(BaseMemoryStore):
                 )
                 self._conn.commit()
 
-            # ── LanceDB upsert ──
             vec: list[float] | None = item.get("embedding")
             if vec is None and self._embedder is not None:
                 vec = self._embedder.embed_query(intent)
@@ -256,7 +242,6 @@ class SQLiteSkillStore(BaseMemoryStore):
                 return []
             query_embedding = self._embedder.embed_query(query)
 
-        # ── LanceDB 向量检索（cosine metric）──
         try:
             tbl = self._ldb.open_table(self.SKILL_TABLE)
             q = (
@@ -271,7 +256,6 @@ class SQLiteSkillStore(BaseMemoryStore):
         if not hits:
             return []
 
-        # ── 按 skill_id 批量查 SQLite ──
         skill_ids = [h["skill_id"] for h in hits]
         # cosine distance ∈ [0, 1]：0 = 完全相同，1 = 完全不同
         # cosine similarity = 1 - distance
@@ -359,9 +343,6 @@ class SQLiteSkillStore(BaseMemoryStore):
             for row in rows
         ]
 
-    # ──────────────────────────────────────
-    # 额外 API（与 FileSkillStore 兼容）
-    # ──────────────────────────────────────
 
     def record_usage(self, skill_id: str) -> None:
         """递增 success_count 并更新 last_used 时间戳。"""
@@ -414,9 +395,6 @@ class SQLiteSkillStore(BaseMemoryStore):
             })
         return result
 
-    # ──────────────────────────────────────
-    # 内部工具
-    # ──────────────────────────────────────
 
     def _upsert_vector(self, skill_id: str, vector: list[float]) -> None:
         """在 LanceDB 中写入或更新一条技能向量。"""

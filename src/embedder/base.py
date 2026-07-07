@@ -10,7 +10,6 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 
-# ── Embedding 调用来源标签 ─────────────────────────────────────────────────────
 # 各 Embedding 调用点在 embed/embed_query 前设置此标签，用于分来源统计调用消耗。
 _embedding_call_source: ContextVar[str] = ContextVar("_embedding_call_source", default="unknown")
 
@@ -20,7 +19,6 @@ def set_embedding_call_source(source: str) -> None:
     _embedding_call_source.set(source)
 
 
-# ── 全局 Embedding 统计（进程级单例）────────────────────────────────────────────
 def _stats_file_from_env(env_name: str, default_name: str) -> Path:
     stats_dir = os.getenv("LYCHEE_STATS_DIR")
     if stats_dir:

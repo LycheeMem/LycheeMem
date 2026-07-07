@@ -35,7 +35,6 @@ class Settings(BaseSettings):
     embedding_api_base: str = ""  # 可选
     embedding_backend: str = "litellm"  # litellm / local / http
 
-    # ─── 本地 Embedding（sentence-transformers）───
     # 设为 true 时使用本地模型，EMBEDDING_MODEL 填 HuggingFace 模型路径
     # 例如：Qwen/Qwen3-Embedding-0.6B、BAAI/bge-m3、sentence-transformers/all-MiniLM-L6-v2
     embedding_local: bool = False

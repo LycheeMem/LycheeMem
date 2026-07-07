@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# ── Per-turn token 累计器 ──────────────────────────────────────────────────────
 # 每轮 pipeline 调用开始时，由 LycheePipeline 设置一个可变 dict 到此 ContextVar；
 # asyncio.to_thread 会复制 Context（包含对同一 dict 对象的引用），因此子线程中的
 # 累加操作会直接修改该 dict，调用方能看到最新值（不需要线程锁，dict 字段 += 受 GIL 保护）。
@@ -21,7 +20,6 @@ _token_accumulator: ContextVar[dict[str, int] | None] = ContextVar(
     "_token_accumulator", default=None
 )
 
-# ── LLM 调用来源标签 ──────────────────────────────────────────────────────────
 # 各 LLM 调用点在 generate/agenerate 前设置此标签，用于分来源统计 token 消耗。
 _llm_call_source: ContextVar[str] = ContextVar("_llm_call_source", default="unknown")
 
@@ -30,7 +28,6 @@ def set_llm_call_source(source: str) -> None:
     """设置下一次 LLM 调用的来源标签（用于分来源 token 统计）。"""
     _llm_call_source.set(source)
 
-# ── 全局 token 统计（进程级单例）────────────────────────────────────────────────
 def _stats_file_from_env(env_name: str, default_name: str) -> Path:
     stats_dir = os.getenv("LYCHEE_STATS_DIR")
     if stats_dir:
@@ -132,7 +129,6 @@ class _GlobalTokenStats:
 _global_token_stats = _GlobalTokenStats(_STATS_FILE)
 
 
-# ── 多模态消息类型 ───────────────────────────────────────────────────────────
 # 支持文本和多模态内容（图片等）
 # 格式参考：https://docs.litellm.ai/docs/
 TextContent = dict[str, str]  # {"type": "text", "text": "..."}

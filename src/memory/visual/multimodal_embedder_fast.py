@@ -1,19 +1,4 @@
-"""多模态嵌入器 - 极速版。
-
-使用 CLIP 风格的模型实现统一的文本 - 图像嵌入空间。
-支持：
-- 文本嵌入
-- 图像嵌入
-- 跨模态相似度计算
-
-优化策略（相比高性能版进一步提升）:
-1. ✅ 使用更小的模型 - clip-vit-base-patch32 (512 维)
-2. ✅ 批量处理 - 支持 batch 嵌入
-3. ✅ LRU 缓存 - 避免重复计算 (2000 条)
-4. ✅ 图片预加载缓存 - 减少 IO 开销
-5. ✅ 半精度推理 - FP16 加速 (GPU)
-6. ✅ 异步处理 - 非阻塞 I/O
-"""
+"""快速多模态嵌入器。"""
 
 from __future__ import annotations
 
@@ -28,7 +13,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# 尝试导入 sentence-transformers
 try:
     from sentence_transformers import SentenceTransformer
     import torch
@@ -37,7 +21,6 @@ except ImportError:
     SENTENCE_TRANSFORMERS_AVAILABLE = False
     logger.debug("sentence-transformers not installed")
 
-# 尝试导入 DashScope（阿里云）
 try:
     import dashscope
     from dashscope import TextEmbedding
@@ -48,28 +31,8 @@ except ImportError:
 
 
 class MultimodalEmbedderFast:
-    """多模态嵌入器（极速版）。
+    """支持本地 CLIP 模型和 DashScope API 的多模态嵌入器。"""
 
-    支持两种后端：
-    1. sentence-transformers (CLIP 模型，本地 GPU/CPU 运行)
-    2. DashScope API (阿里云，需要网络)
-
-    优化特性：
-    - 小模型优先：使用 clip-vit-base-patch32 (512 维，快速)
-    - 批量处理：支持 batch 嵌入提高效率
-    - LRU 缓存：2000 条缓存避免重复计算
-    - 半精度推理：GPU 上使用 FP16 加速
-    - 异步处理：非阻塞 I/O
-
-    Attributes:
-        model: SentenceTransformer 模型实例（延迟加载）
-        model_name: 模型名称
-        device: 运行设备 (cuda/cpu)
-        embedding_dim: 嵌入维度
-        use_dashscope: 是否使用 DashScope API
-    """
-
-    # 推荐模型列表（按速度排序）
     RECOMMENDED_MODELS = {
         "fastest": "openai/clip-vit-base-patch32",      # 512 维，最快
         "fast": "openai/clip-vit-base-patch16",         # 512 维，较快
@@ -82,11 +45,11 @@ class MultimodalEmbedderFast:
         model_name: Optional[str] = None,
         device: Optional[str] = None,
         lazy_load: bool = True,
-        cache_size: int = 2000,  # 增加到 2000
+        cache_size: int = 2000,
         use_dashscope: bool = False,
         dashscope_api_key: Optional[str] = None,
-        use_fp16: bool = True,  # 新增：半精度推理
-        batch_size: int = 64,   # 新增：批量大小
+        use_fp16: bool = True,
+        batch_size: int = 64,
     ) -> None:
         """初始化多模态嵌入器（极速版）。
 
@@ -104,7 +67,6 @@ class MultimodalEmbedderFast:
             use_fp16: 是否使用 FP16 半精度（默认 True，GPU 加速）
             batch_size: 批量处理大小（默认 64）
         """
-        # 默认使用最快的模型
         if model_name is None:
             model_name = self.RECOMMENDED_MODELS["fastest"]
         
@@ -117,7 +79,7 @@ class MultimodalEmbedderFast:
             logger.info("Using DashScope API for multimodal embedding")
             if dashscope_api_key:
                 dashscope.api_key = dashscope_api_key
-            self._embedding_dim = 1024  # DashScope 默认维度
+            self._embedding_dim = 1024
             return
 
         if not SENTENCE_TRANSFORMERS_AVAILABLE:
@@ -135,15 +97,13 @@ class MultimodalEmbedderFast:
 
         self.device = device
         self.model_name = model_name
-        self._model = None  # 延迟加载
+        self._model = None
         self._embedding_dim = None
         self.lazy_load = lazy_load
         self.cache_size = cache_size
 
-        # LRU 缓存：hash -> embedding
         self._text_cache: dict[str, List[float]] = {}
         self._image_cache: dict[str, List[float]] = {}
-        # 图片预加载缓存：path -> PIL Image
         self._image_cache_pil: dict[str, Image.Image] = {}
 
         if not lazy_load:
@@ -168,7 +128,6 @@ class MultimodalEmbedderFast:
 
         logger.info("Loading multimodal model: %s on %s", self.model_name, self.device)
         
-        # 根据设备选择精度
         if self.use_fp16 and self.device == "cuda":
             logger.info("Using FP16 half-precision for faster inference")
             self._model = SentenceTransformer(
@@ -199,7 +158,6 @@ class MultimodalEmbedderFast:
         Returns:
             嵌入向量（列表形式）
         """
-        # 使用 DashScope API
         if self.use_dashscope:
             cache_key = f"dashscope_text:{text}:{normalize}"
             text_hash = hash(cache_key)
@@ -220,14 +178,12 @@ class MultimodalEmbedderFast:
                 logger.warning("DashScope text embedding failed: %s", e)
                 return [0.0] * self._embedding_dim
 
-        # 使用本地模型
         cache_key = f"{text}:{normalize}"
         text_hash = hash(cache_key)
         if text_hash in self._text_cache:
             logger.debug("✓ Text embedding cache hit")
             return self._text_cache[text_hash].copy()
 
-        # 生成嵌入
         embedding = self.model.encode(
             text,
             convert_to_tensor=True,
@@ -235,7 +191,6 @@ class MultimodalEmbedderFast:
         )
         result = embedding.cpu().tolist()
 
-        # 更新缓存（带大小限制）
         if len(self._text_cache) >= self.cache_size:
             remove_count = self.cache_size // 4
             for key in list(self._text_cache.keys())[:remove_count]:
@@ -258,7 +213,6 @@ class MultimodalEmbedderFast:
         Returns:
             嵌入向量（列表形式）
         """
-        # 使用 DashScope API
         if self.use_dashscope:
             cache_key = f"dashscope_image:{str(image)}:{normalize}"
             image_hash = hash(cache_key)
@@ -295,17 +249,14 @@ class MultimodalEmbedderFast:
                 logger.warning("DashScope image embedding failed: %s", e)
                 return [0.0] * self._embedding_dim
 
-        # 使用本地 CLIP 模型
         if isinstance(image, (str, Path)):
             image_path = str(image)
-            # 检查图片缓存
             if image_path in self._image_cache_pil:
                 logger.debug("✓ Image PIL cache hit: %s", image_path)
                 pil_image = self._image_cache_pil[image_path]
             else:
                 logger.debug("Loading image: %s", image_path)
                 pil_image = Image.open(image_path).convert("RGB")
-                # 更新图片缓存
                 if len(self._image_cache_pil) >= self.cache_size:
                     remove_count = self.cache_size // 4
                     for key in list(self._image_cache_pil.keys())[:remove_count]:
@@ -316,19 +267,16 @@ class MultimodalEmbedderFast:
         else:
             raise ValueError("Image must be a path or PIL Image object")
 
-        # 计算缓存 key
         if isinstance(image, (str, Path)):
             cache_key = f"{image_path}:{normalize}"
         else:
             cache_key = f"id({id(image)}):{normalize}"
         image_hash = hash(cache_key)
 
-        # 检查嵌入缓存
         if image_hash in self._image_cache:
             logger.debug("✓ Image embedding cache hit")
             return self._image_cache[image_hash].copy()
 
-        # 生成嵌入
         embedding = self.model.encode(
             pil_image,
             convert_to_tensor=True,
@@ -336,7 +284,6 @@ class MultimodalEmbedderFast:
         )
         result = embedding.cpu().tolist()
 
-        # 更新缓存
         if len(self._image_cache) >= self.cache_size:
             remove_count = self.cache_size // 4
             for key in list(self._image_cache.keys())[:remove_count]:
@@ -392,7 +339,6 @@ class MultimodalEmbedderFast:
         if batch_size is None:
             batch_size = self.batch_size
             
-        # 加载图像（如果是路径）
         pil_images = []
         for img in images:
             if isinstance(img, (str, Path)):

@@ -1,8 +1,5 @@
 """Agent-level LLM prompt templates."""
 
-# ---------------------------------------------------------------------------
-# SearchCoordinator
-# ---------------------------------------------------------------------------
 
 SEARCH_COORDINATOR_SYSTEM_PROMPT = """\
 Analyze the user query for memory search and skill retrieval.
@@ -27,9 +24,6 @@ Rules:
 """
 
 
-# ---------------------------------------------------------------------------
-# SynthesizerAgent
-# ---------------------------------------------------------------------------
 
 SYNTHESIS_SYSTEM_PROMPT = """\
 Score retrieved memory fragments and fuse the useful ones into compact context.
@@ -61,9 +55,6 @@ Return raw JSON only:
 """
 
 
-# ---------------------------------------------------------------------------
-# ReasoningAgent
-# ---------------------------------------------------------------------------
 
 REASONING_SYSTEM_PROMPT = """\
 You answer using retrieved memory and conversation history.
@@ -91,9 +82,6 @@ Rules:
 """
 
 
-# ---------------------------------------------------------------------------
-# ConsolidatorAgent
-# ---------------------------------------------------------------------------
 
 CONSOLIDATION_SYSTEM_PROMPT = """\
 Extract reusable procedural skills from the conversation.

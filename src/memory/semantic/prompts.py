@@ -1,8 +1,5 @@
 """Prompt templates for compact semantic memory."""
 
-# ---------------------------------------------------------------------------
-# Compact Semantic Encoding
-# ---------------------------------------------------------------------------
 
 COMPACT_ENCODING_SYSTEM = """\
 Extract atomic, lossless, user-grounded memory records from the conversation.
@@ -87,9 +84,6 @@ Output:
 """
 
 
-# ---------------------------------------------------------------------------
-# Retrieval Planning and Reflection
-# ---------------------------------------------------------------------------
 
 FEEDBACK_CLASSIFICATION_SYSTEM = """\
 Classify whether the user is giving explicit feedback about the previous answer or action.

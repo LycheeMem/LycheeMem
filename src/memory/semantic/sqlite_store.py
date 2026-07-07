@@ -178,9 +178,6 @@ class SQLiteSemanticStore:
 
             c.commit()
 
-    # ──────────────────────────────────────
-    # MemoryRecord CRUD
-    # ──────────────────────────────────────
 
     def upsert_record(self, record: MemoryRecord) -> None:
         """写入或更新一个 MemoryRecord（幂等）。"""
@@ -305,9 +302,6 @@ class SQLiteSemanticStore:
             self._conn.commit()
         return {"records_deleted": c1, "composites_deleted": c2}
 
-    # ──────────────────────────────────────
-    # FTS5 全文检索
-    # ──────────────────────────────────────
 
     def fulltext_search(
         self,
@@ -374,9 +368,6 @@ class SQLiteSemanticStore:
         rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
-    # ──────────────────────────────────────
-    # 时间范围查询
-    # ──────────────────────────────────────
 
     def search_by_time(
         self,
@@ -449,9 +440,6 @@ class SQLiteSemanticStore:
         rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
-    # ──────────────────────────────────────
-    # 按 tag 筛选
-    # ──────────────────────────────────────
 
     def search_by_tags(
         self,
@@ -527,9 +515,6 @@ class SQLiteSemanticStore:
         rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
-    # ──────────────────────────────────────
-    # CompositeRecord CRUD
-    # ──────────────────────────────────────
 
     def upsert_synthesized(self, composite: CompositeRecord) -> None:
         """写入或更新 CompositeRecord。"""
@@ -638,9 +623,6 @@ class SQLiteSemanticStore:
         rows = self._conn.execute("SELECT * FROM composite_records").fetchall()
         return [self._row_to_synth(r) for r in rows]
 
-    # ──────────────────────────────────────
-    # 重复检测
-    # ──────────────────────────────────────
 
     def find_similar_by_normalized_text(
         self,
@@ -665,9 +647,6 @@ class SQLiteSemanticStore:
         rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_record(r) for r in rows]
 
-    # ──────────────────────────────────────
-    # Usage Logs
-    # ──────────────────────────────────────
 
     def insert_usage_log(self, log: UsageLog) -> None:
         """插入一条使用日志。"""
@@ -769,9 +748,6 @@ class SQLiteSemanticStore:
             for r in rows
         ]
 
-    # ──────────────────────────────────────
-    # 使用统计批量更新
-    # ──────────────────────────────────────
 
     def increment_retrieval_count(self, record_ids: list[str]) -> None:
         if not record_ids:
@@ -841,9 +817,6 @@ class SQLiteSemanticStore:
             )
             self._conn.commit()
 
-    # ──────────────────────────────────────
-    # 调试导出
-    # ──────────────────────────────────────
 
     def export_all(self) -> dict[str, Any]:
         """导出全部数据用于调试/前端。"""
@@ -866,9 +839,6 @@ class SQLiteSemanticStore:
             "SELECT COUNT(*) FROM composite_records"
         ).fetchone()[0]
 
-    # ──────────────────────────────────────
-    # 内部工具
-    # ──────────────────────────────────────
 
     @staticmethod
     def _escape_fts_query(query: str) -> str:

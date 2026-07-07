@@ -38,7 +38,6 @@ def _build_search_trace(result: dict[str, Any]) -> SearchCoordinatorTrace:
         anchor = mem.get("anchor", mem)
         node_id_str = str(anchor.get("node_id", ""))
 
-        # Compact 后端：将每条 provenance 展开为独立的 GraphMemoryHit
         if node_id_str == "compact_context":
             for pv in mem.get("provenance", []):
                 if not isinstance(pv, dict):
@@ -132,13 +131,10 @@ def _build_synthesizer_trace(result: dict[str, Any]) -> SynthesizerTrace:
         if not isinstance(source_eps, list):
             source_eps = []
         
-        # 优先使用 provenance item 中的 source（compact 为 semantic/record/composite 等）
-        # 兼容旧包装结构：如果存在 items，则展开 nested provenance。
         wrapper_source = str(p.get("source") or "")
         legacy_summary = str(p.get("summary") or "")
         nested_items = p.get("items")
         
-        # 展开 nested items（wrapper 结构下的实际 provenance）
         if isinstance(nested_items, list):
             for sub_idx, sub in enumerate(nested_items):
                 if not isinstance(sub, dict):
@@ -157,9 +153,7 @@ def _build_synthesizer_trace(result: dict[str, Any]) -> SynthesizerTrace:
                 if not isinstance(sub_eps, list):
                     sub_eps = []
                 
-                # 如果 sub 有 source 且不为空，用 sub.source；否则用 wrapper_source；否则用默认
                 final_source = sub_source or wrapper_source or "semantic"
-                # 对于 compact 后端，优先使用 semantic_text；兼容旧 fact_text 字段。
                 summary_text = str(sub.get("fact_text") or sub.get("summary") or sub.get("semantic_text") or "")
                 provenance.append(
                     ProvenanceItem(
@@ -179,9 +173,7 @@ def _build_synthesizer_trace(result: dict[str, Any]) -> SynthesizerTrace:
                 )
             continue
         
-        # 非嵌套项（直接的 provenance item）
         final_source = str(p.get("source") or "semantic")
-        # 对于 compact 后端，优先用 semantic_text；兼容旧 fact_text
         summary_text = legacy_summary or str(p.get("fact_text") or p.get("semantic_text") or "")
         provenance.append(
             ProvenanceItem(

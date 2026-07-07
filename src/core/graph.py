@@ -134,10 +134,6 @@ class LycheePipeline:
             result = self._consolidation_results.get(key)
             return dict(result) if result is not None else None
 
-    # ──────────────────────────────────────
-    # Node functions
-    # ──────────────────────────────────────
-
     def _wm_manager_node(self, state: PipelineState) -> dict[str, Any]:
         """工作记忆管理节点：追加对话、token 预算检查、按需压缩、渲染上下文。"""
         result = self.wm_manager.run(
@@ -159,14 +155,13 @@ class LycheePipeline:
         retrieved_visual = []
         visual_context = ""
 
-        # 如果有图片输入，处理存储
         if input_images and hasattr(self, "visual_extractor"):
             import asyncio
             import hashlib
             from datetime import datetime, timezone
             from src.memory.visual.models import VisualMemoryRecord
 
-            stored_records = []  # 记录本次存储的 record_id
+            stored_records = []
 
             async def _process_images():
                 stored = []
@@ -203,37 +198,29 @@ class LycheePipeline:
                             source_role="user",
                         )
                         
-                        # 生成双嵌入：caption embedding + visual embedding
-                        # 1. Caption embedding（文本嵌入，向后兼容）
                         if self.visual_store.embedder:
                             embedding = self.visual_store.embedder.embed_query(record.caption)
                             if embedding:
                                 record.caption_embedding = embedding
                         
-                        # 2. Visual embedding（CLIP 视觉嵌入，新增，支持跨模态检索）
                         if hasattr(self.visual_store, 'multimodal_embedder') and self.visual_store.multimodal_embedder:
                             try:
-                                # 临时保存图像以生成嵌入
                                 import base64
                                 from pathlib import Path
                                 import tempfile
                                 
-                                # 解码图像
                                 image_bytes = base64.b64decode(img_b64)
                                 
-                                # 使用临时文件生成视觉嵌入
                                 with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
                                     tmp.write(image_bytes)
                                     tmp_path = tmp.name
                                 
                                 try:
-                                    # 生成 CLIP 视觉嵌入（与文本同一空间）
                                     visual_embedding = self.visual_store.multimodal_embedder.embed_image(tmp_path)
                                     if visual_embedding:
                                         record.visual_embedding = visual_embedding
                                         logger.info("Visual embedding generated: dim=%d", len(visual_embedding))
                                 finally:
-                                    # 清理临时文件
                                     Path(tmp_path).unlink(missing_ok=True)
                                     
                             except Exception as e:
@@ -256,13 +243,10 @@ class LycheePipeline:
             except Exception as e:
                 logger.error("Visual processing failed: %s", e)
 
-        # 检索视觉记忆
         if hasattr(self, "visual_retriever"):
             try:
                 if input_images:
-                    # 有图片输入时：优先使用本次存储的记录，否则获取会话的所有视觉记忆
                     if stored_records:
-                        # 直接获取本次存储的记录
                         for rec_id in stored_records:
                             rec = self.visual_store.get_by_id(rec_id)
                             if rec and not rec.expired:
@@ -281,12 +265,10 @@ class LycheePipeline:
                                 })
                         logger.info("Using %d newly stored visual memories", len(retrieved_visual))
                     else:
-                        # 没有新存储的记录，获取会话的所有视觉记忆
                         retrieved_visual = self.visual_retriever.retrieve_by_session(
                             session_id=session_id, top_k=10
                         )
                 elif user_query:
-                    # 纯文本查询时，检索相关视觉记忆
                     retrieved_visual = self.visual_retriever.retrieve_for_context(
                         query=user_query, top_k=3
                     )
@@ -339,7 +321,6 @@ class LycheePipeline:
         # 如果用户上传了新图片，视觉记忆是唯一权威来源
         # 直接忽略图谱记忆中的旧视觉描述
         if visual_context and input_images:
-            # 新图片上传时，视觉记忆直接作为 background_context
             # 不使用 Synthesizer 过滤，避免旧记忆干扰
             logger.info("New image uploaded - using visual memory as authoritative source")
             return {
@@ -348,10 +329,8 @@ class LycheePipeline:
                 "provenance": [{"source": "visual_memory", "index": 0, "relevance": 1.0, "summary": "Newly uploaded image"}],
             }
 
-        # 没有新图片但有视觉记忆（后续追问）
         if visual_context:
             graph_memories = state.get("retrieved_graph_memories", [])[:]
-            # 将视觉记忆放在最前面
             graph_memories.insert(0, {
                 "constructed_context": visual_context,
                 "anchor": {"node_id": "visual_memory", "type": "visual"},
@@ -366,7 +345,6 @@ class LycheePipeline:
             )
 
             bg_context = result.get("background_context", "")
-            # 确保视觉记忆不被 Synthesizer 过滤掉
             visual_key_info = visual_context[:80] if visual_context else ""
             if visual_key_info and visual_key_info not in bg_context[:300]:
                 bg_context = visual_context + "\n\n" + bg_context
@@ -378,7 +356,6 @@ class LycheePipeline:
                 "provenance": result.get("provenance", []),
             }
         else:
-            # 没有视觉记忆，正常合成
             result = self.synthesizer.run(
                 user_query=state["user_query"],
                 retrieved_graph_memories=state.get("retrieved_graph_memories", []),
@@ -401,7 +378,6 @@ class LycheePipeline:
             reference_time=state.get("reference_time"),
         )
 
-        # 将 assistant 回复写回会话日志
         self.wm_manager.append_assistant_turn(
             state["session_id"], result["final_response"],
         )
@@ -417,28 +393,21 @@ class LycheePipeline:
             except Exception:
                 logger.warning("finalize_usage_log failed session=%s", state.get("session_id"), exc_info=True)
 
-        # 标记固化待处理
         return {
             "final_response": result["final_response"],
             "consolidation_pending": True,
         }
 
-    # ──────────────────────────────────────
-    # Graph building
-    # ──────────────────────────────────────
-
     def _build_graph(self):
         """构建并编译 LangGraph StateGraph。"""
         g = StateGraph(PipelineState)
 
-        # 注册节点
         g.add_node("wm_manager", self._wm_manager_node)
         g.add_node("visual_memory", self._visual_memory_node)
         g.add_node("search", self._search_node)
         g.add_node("synthesize", self._synthesize_node)
         g.add_node("reason", self._reason_node)
 
-        # 线性连接: START → wm_manager → visual_memory → search → synthesize → reason → END
         g.add_edge(START, "wm_manager")
         g.add_edge("wm_manager", "visual_memory")
         g.add_edge("visual_memory", "search")
@@ -447,10 +416,6 @@ class LycheePipeline:
         g.add_edge("reason", END)
 
         return g.compile()
-
-    # ──────────────────────────────────────
-    # Public API
-    # ──────────────────────────────────────
 
     def run(
         self,
@@ -486,7 +451,6 @@ class LycheePipeline:
         result["turn_input_tokens"] = in_tok
         result["turn_output_tokens"] = out_tok
 
-        # 后台线程触发固化（fire-and-forget，不阻塞响应返回）
         if result.get("consolidation_pending"):
             job_id = self._begin_consolidation(session_id)
             self._trigger_consolidation_bg(
@@ -513,7 +477,6 @@ class LycheePipeline:
         }
         result = await self._graph.ainvoke(initial_state)
 
-        # 异步触发固化
         if result.get("consolidation_pending"):
             job_id = self._begin_consolidation(session_id)
             asyncio.create_task(
@@ -591,7 +554,6 @@ class LycheePipeline:
                 streaming_response += token
                 yield {"type": "token", "content": token}
 
-            # 写回 assistant turn（保持与同步路径一致）
             await asyncio.to_thread(
                 self.wm_manager.append_assistant_turn,
                 state["session_id"],
@@ -657,7 +619,6 @@ class LycheePipeline:
             turn_index_offset=watermark,
             session_date=session_date,
         )
-        # 固化成功后推进水位线
         store.set_last_consolidated_turn_index(session_id, raw_total)
         return result
 
@@ -739,7 +700,6 @@ class LycheePipeline:
                     session_date=session_date,
                 ),
             )
-            # 固化成功后推进水位线
             store.set_last_consolidated_turn_index(session_id, raw_total)
             self._finish_consolidation(
                 session_id=session_id,

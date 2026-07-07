@@ -101,9 +101,7 @@ class CompactSemanticEncoder:
 
         return results
 
-    # ──────────────────────────────────────
     # 单次 LLM 编码（抽取 + 指代消解 + metadata）
-    # ──────────────────────────────────────
 
     def _encode_records(
         self,
@@ -158,9 +156,7 @@ class CompactSemanticEncoder:
             pass
         return []
 
-    # ──────────────────────────────────────
     # 工具方法
-    # ──────────────────────────────────────
 
     @staticmethod
     def _make_record_id(semantic_text: str) -> str:

@@ -34,5 +34,4 @@ class ScoredCandidate:
     source: str          # "record" 或 "composite"
     final_score: float = 0.0
     score_breakdown: dict[str, float] = field(default_factory=dict)
-    # 原始数据引用
     data: dict[str, Any] = field(default_factory=dict)

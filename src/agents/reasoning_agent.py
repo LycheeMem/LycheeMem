@@ -65,7 +65,6 @@ class ReasoningAgent(BaseAgent):
         reference_time: str | None = None,
     ) -> list[dict[str, str]]:
         """构建发送给 LLM 的消息列表（供 run 和 astream 共用）。"""
-        # ── 从 compressed_history 中分离 system 摘要与对话轮次 ──
         history_summary_parts: list[str] = []
         conversation_turns: list[dict[str, str]] = []
         if compressed_history:
