@@ -26,7 +26,7 @@ For long-horizon recall, use this order:
 
 Treat `lychee_memory_smart_search` as the primary recall tool.
 
-Treat `lychee_memory_search` and `lychee_memory_synthesize` as debugging tools, not the normal path.
+Treat `lychee_memory_search` as a debugging tool, not the normal path.
 
 ## When Smart Search Is Expected
 
@@ -121,6 +121,5 @@ Only during development or debugging:
 
 1. call `lychee_memory_search`
 2. inspect raw retrieval
-3. call `lychee_memory_synthesize` if separate synthesis inspection is needed
 
 Outside debugging, prefer `lychee_memory_smart_search`.

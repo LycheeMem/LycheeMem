@@ -14,14 +14,12 @@ from src.api.models import (
     MemoryConsolidateRequest,
     MemorySearchRequest,
     MemorySmartSearchRequest,
-    MemorySynthesizeRequest,
 )
 from src.api.routers.memory import (
     run_memory_append_turn,
     run_memory_consolidate,
     run_memory_search,
     run_memory_smart_search,
-    run_memory_synthesize,
 )
 from src.mcp.tools_schema import TOOLS_SCHEMA
 
@@ -36,8 +34,7 @@ MCP_INSTRUCTIONS = (
     "instead of verbose retrieval JSON. "
     "Use lychee_memory_search to retrieve relevant historical facts, entity relationships, "
     "project context, and reusable procedural knowledge when you explicitly want the raw retrieval "
-    "payload. Use lychee_memory_synthesize after lychee_memory_search during development, analysis, "
-    "or debugging when you want to inspect search and synthesis as separate stages. "
+    "payload. "
     "Use lychee_memory_append_turn after every completed dialogue turn when your host maintains its "
     "own transcript outside LycheeMem. Mirror the natural-language user turn and natural-language "
     "assistant reply into the same session_id even if you do not consolidate on that turn. Do not "
@@ -91,13 +88,6 @@ def _summarize_arguments(name: str | None, arguments: dict[str, Any]) -> dict[st
         return {
             "session_id": arguments.get("session_id"),
             "background": arguments.get("background"),
-            "retrieved_context_length": len(str(arguments.get("retrieved_context", ""))),
-        }
-    if name == "lychee_memory_synthesize":
-        return {
-            "user_query": arguments.get("user_query"),
-            "graph_results_count": len(arguments.get("graph_results", []) or []),
-            "skill_results_count": len(arguments.get("skill_results", []) or []),
         }
     return {"keys": sorted(arguments.keys())}
 
@@ -183,11 +173,6 @@ class LycheeMCPHandler:
                 result = _serialize_result(run_memory_append_turn(
                     self.pipeline,
                     MemoryAppendTurnRequest.model_validate(arguments),
-                ))
-            elif name == "lychee_memory_synthesize":
-                result = _serialize_result(run_memory_synthesize(
-                    self.pipeline,
-                    MemorySynthesizeRequest.model_validate(arguments),
                 ))
             elif name == "lychee_memory_consolidate":
                 result = _serialize_result(run_memory_consolidate(

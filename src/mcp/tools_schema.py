@@ -130,39 +130,6 @@ TOOLS_SCHEMA = [
         },
     },
     {
-        "name": "lychee_memory_synthesize",
-        "description": (
-            "Developer-facing synthesis tool. Compress and fuse the structured retrieval results "
-            "from lychee_memory_search into a concise background_context when you intentionally want "
-            "to inspect search and synthesis as separate stages."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "user_query": {
-                    "type": "string",
-                    "description": "Current user query used for relevance scoring.",
-                },
-                "graph_results": {
-                    "type": "array",
-                    "items": {},
-                    "description": "Legacy alias for semantic_results returned by lychee_memory_search.",
-                },
-                "semantic_results": {
-                    "type": "array",
-                    "items": {},
-                    "description": "semantic_results returned by lychee_memory_search.",
-                },
-                "skill_results": {
-                    "type": "array",
-                    "items": {},
-                    "description": "skill_results returned by lychee_memory_search.",
-                },
-            },
-            "required": ["user_query", "skill_results"],
-        },
-    },
-    {
         "name": "lychee_memory_consolidate",
         "description": (
             "Persist new long-term memory after a conversation. Call it only after the relevant "
@@ -177,11 +144,6 @@ TOOLS_SCHEMA = [
                 "session_id": {
                     "type": "string",
                     "description": "Existing session ID that already contains persisted turns.",
-                },
-                "retrieved_context": {
-                    "type": "string",
-                    "default": "",
-                    "description": "pre-synthesis raw semantic memory context from the current search step, used for novelty checks; do not pass synthesized background_context here.",
                 },
                 "background": {
                     "type": "boolean",

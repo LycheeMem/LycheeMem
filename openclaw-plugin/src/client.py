@@ -98,29 +98,6 @@ class LycheeMemPluginClient:
         self._raise_for_status(response, "LycheeMem smart_search failed")
         return response.json()
 
-    def synthesize(
-        self,
-        *,
-        user_query: str,
-        graph_results: list[dict[str, Any]],
-        skill_results: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        payload = {
-            "user_query": user_query,
-            "graph_results": graph_results,
-            "skill_results": skill_results,
-        }
-        if self.config.transport == "mcp":
-            return self._call_mcp_tool("lychee_memory_synthesize", payload)
-
-        response = self._http.post(
-            f"{self.config.base_url.rstrip('/')}/memory/synthesize",
-            json=payload,
-            headers=self._headers(),
-        )
-        self._raise_for_status(response, "LycheeMem synthesize failed")
-        return response.json()
-
     def append_turn(
         self,
         *,
@@ -150,12 +127,10 @@ class LycheeMemPluginClient:
         self,
         session_id: str,
         *,
-        retrieved_context: str = "",
         background: bool = True,
     ) -> dict[str, Any]:
         payload = {
             "session_id": session_id,
-            "retrieved_context": retrieved_context,
             "background": background,
         }
         if self.config.transport == "mcp":

@@ -26,7 +26,6 @@ type LifecycleSessionState = {
   openclawSessionId?: string;
   channelId?: string;
   conversationId?: string;
-  lastRetrievedContext: string;
   lastBoundaryAt?: number;
   lastBoundaryKind?: string;
   pendingProactiveConsolidation?: boolean;
@@ -133,26 +132,6 @@ const APPEND_TURN_SCHEMA = {
   required: ["session_id", "role", "content"]
 } as const;
 
-const SYNTHESIZE_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    user_query: {
-      type: "string",
-      description: "The current user request used for relevance scoring."
-    },
-    graph_results: {
-      type: "array",
-      description: "graph_results returned by lychee_memory_search."
-    },
-    skill_results: {
-      type: "array",
-      description: "skill_results returned by lychee_memory_search."
-    }
-  },
-  required: ["user_query", "graph_results", "skill_results"]
-} as const;
-
 const CONSOLIDATE_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -160,11 +139,6 @@ const CONSOLIDATE_SCHEMA = {
     session_id: {
       type: "string",
       description: "LycheeMem session id."
-    },
-    retrieved_context: {
-      type: "string",
-      default: "",
-      description: "Compressed background_context from the current turn for novelty checks."
     },
     background: {
       type: "boolean",
@@ -429,51 +403,6 @@ function registerTool(api: any, spec: {
   });
 }
 
-function extractStructuredPayload(result: unknown): Json | undefined {
-  if (!isObject(result)) {
-    return undefined;
-  }
-
-  if (isObject(result.structuredContent)) {
-    return result.structuredContent;
-  }
-
-  if (isObject(result.result) && isObject(result.result.structuredContent)) {
-    return result.result.structuredContent;
-  }
-
-  return result;
-}
-
-function extractBackgroundContext(result: unknown): string {
-  const payload = extractStructuredPayload(result);
-  const direct = payload ? asString(payload.background_context) : undefined;
-  if (direct) {
-    return direct;
-  }
-
-  if (isObject(result) && Array.isArray(result.content)) {
-    for (const item of result.content) {
-      if (!isObject(item) || typeof item.text !== "string") {
-        continue;
-      }
-      try {
-        const parsed = JSON.parse(item.text);
-        if (isObject(parsed)) {
-          const nested = asString(parsed.background_context);
-          if (nested) {
-            return nested;
-          }
-        }
-      } catch {
-        // Ignore non-JSON tool text output.
-      }
-    }
-  }
-
-  return "";
-}
-
 function extractMessageText(message: unknown): string {
   if (!isObject(message)) {
     return "";
@@ -612,15 +541,6 @@ class OpenClawAdapter {
       });
     });
 
-    this.api.on("after_tool_call", (event: any, ctx: any) => {
-      this.captureRetrievedContext({
-        sessionKey: ctx?.sessionKey,
-        sessionId: ctx?.sessionId,
-        toolName: event?.toolName,
-        result: event?.result
-      });
-    });
-
     this.api.on("before_reset", async (_event: any, ctx: any) => {
       await this.handleBoundaryLifecycle(
         {
@@ -703,33 +623,6 @@ class OpenClawAdapter {
     }
   }
 
-  captureRetrievedContext(params: {
-    sessionKey?: unknown;
-    sessionId?: unknown;
-    toolName?: unknown;
-    result?: unknown;
-  }): void {
-    const toolName = asString(params.toolName);
-    if (toolName !== "lychee_memory_smart_search" && toolName !== "lychee_memory_synthesize") {
-      return;
-    }
-
-    const backgroundContext = extractBackgroundContext(params.result);
-    if (!backgroundContext) {
-      return;
-    }
-
-    const session = this.ensureSession({
-      sessionKey: asString(params.sessionKey),
-      sessionId: asString(params.sessionId)
-    });
-    if (!session) {
-      return;
-    }
-
-    session.lastRetrievedContext = backgroundContext;
-  }
-
   resolveSessionRecord(params: {
     sessionKey?: string;
     sessionId?: string;
@@ -804,7 +697,6 @@ class OpenClawAdapter {
         "/memory/consolidate",
         {
           session_id: session.lycheeSessionId,
-          retrieved_context: session.lastRetrievedContext,
           background: true
         },
         "boundary consolidate"
@@ -826,7 +718,6 @@ class OpenClawAdapter {
     if (behavior.rotateSession) {
       session.generation += 1;
       session.lycheeSessionId = this.buildLycheeSessionId(resolvedKey, session.generation);
-      session.lastRetrievedContext = "";
       session.openclawSessionId = undefined;
       session.forceSkillReminderOnNextPrompt = true;
     }
@@ -887,7 +778,6 @@ class OpenClawAdapter {
       "/memory/consolidate",
       {
         session_id: session.lycheeSessionId,
-        retrieved_context: session.lastRetrievedContext,
         background: true
       },
       "proactive consolidate"
@@ -964,8 +854,7 @@ class OpenClawAdapter {
         lycheeSessionId: this.buildLycheeSessionId(resolvedKey, 0),
         openclawSessionId: params.sessionId,
         channelId: params.channelId,
-        conversationId: params.conversationId,
-        lastRetrievedContext: ""
+        conversationId: params.conversationId
       };
       state.sessions[resolvedKey] = session;
     }
@@ -1082,20 +971,6 @@ export default {
           return callHttpEndpoint(cfg, "/memory/append-turn", params, "LycheeMem append_turn failed");
         }
         return callMcpTool(api, cfg, "lychee_memory_append_turn", params);
-      }
-    });
-
-    registerTool(api, {
-      name: "lychee_memory_synthesize",
-      description:
-        "Developer-facing synthesis tool for cases where you intentionally want to inspect search and synthesis as separate stages.",
-      parameters: SYNTHESIZE_SCHEMA,
-      async execute(_id, params) {
-        const cfg = getPluginConfig(api);
-        if (cfg.transport === "http") {
-          return callHttpEndpoint(cfg, "/memory/synthesize", params, "LycheeMem synthesize failed");
-        }
-        return callMcpTool(api, cfg, "lychee_memory_synthesize", params);
       }
     });
 

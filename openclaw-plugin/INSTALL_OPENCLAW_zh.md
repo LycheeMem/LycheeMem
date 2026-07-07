@@ -89,8 +89,7 @@ python "$LYCHEEMEM_REPO/openclaw-plugin/scripts/setup_openclaw_plugin.py" \
 如果你还想额外加入工具：
 ```bash
 python "$LYCHEEMEM_REPO/openclaw-plugin/scripts/setup_openclaw_plugin.py" \
-  --tool lychee_memory_search \
-  --tool lychee_memory_synthesize
+  --tool lychee_memory_search
 ```
 
 ### 方式 B：OpenClaw 页面人工确认

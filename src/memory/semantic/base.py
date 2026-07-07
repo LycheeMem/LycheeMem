@@ -32,7 +32,6 @@ class ConsolidationResult:
     records_added: int
     records_merged: int
     records_expired: int
-    has_novelty: bool | None = None
     steps: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -78,20 +77,16 @@ class BaseSemanticMemoryEngine(ABC):
         *,
         turns: list[dict[str, Any]],
         session_id: str,
-        retrieved_context: str = "",
         turn_index_offset: int = 0,
         reference_timestamp: str | None = None,
-        skip_novelty_check: bool = False,
     ) -> ConsolidationResult:
         """将对话固化为长期记忆。
 
         Args:
             turns: 完整的对话轮次列表。
             session_id: 会话 ID。
-            retrieved_context: 检索阶段已有的记忆上下文（用于新颖性检查）。
             turn_index_offset: 当前 turns 在完整 session 中的绝对起始索引。
             reference_timestamp: 参考时间戳（ISO 格式）。
-            skip_novelty_check: 跳过 LLM 新颖性检查，直接进入编码写入。
 
         Returns:
             ConsolidationResult 包含写入统计和步骤详情。

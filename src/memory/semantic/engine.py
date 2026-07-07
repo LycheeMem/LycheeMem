@@ -2,7 +2,7 @@
 
 实现 BaseSemanticMemoryEngine，串联所有子模块：
 - search(): 三阶段 LLM 驱动检索（Composite 过滤 → 记忆树下钻 → 反思 + FTS/向量补召回）
-- ingest_conversation(): Novelty Check → Encoder → 去重写入 → Fusion
+- ingest_conversation(): Encoder → 去重写入 → Fusion
 
 这是整个 Compact Semantic Memory 的核心入口。
 """
@@ -40,7 +40,6 @@ from src.memory.semantic.models import (
 )
 from src.memory.semantic.prompts import (
     COMPOSITE_FILTER_SYSTEM,
-    NOVELTY_CHECK_SYSTEM,
     RETRIEVAL_ADEQUACY_CHECK_SYSTEM,
     FEEDBACK_CLASSIFICATION_SYSTEM,
 )
@@ -1219,18 +1218,15 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         *,
         turns: list[dict[str, Any]],
         session_id: str,
-        retrieved_context: str = "",
         turn_index_offset: int = 0,
         reference_timestamp: str | None = None,
-        skip_novelty_check: bool = False,
     ) -> ConsolidationResult:
-        """完整固化流程：新颖性检查 → 编码 → 去重写入 → 合成。"""
+        """完整固化流程：编码 → 去重写入 → 合成。"""
         if not turns:
             return ConsolidationResult(
                 records_added=0,
                 records_merged=0,
                 records_expired=0,
-                has_novelty=False,
                 steps=[],
             )
 
@@ -1244,34 +1240,7 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
         previous: list[dict[str, Any]] = []
         current = turns
 
-        # Step 1: 新颖性检查
-        # 检查整批新增 turns。水位线已经排除了历史已固化内容；如果调用方
-        # 攒了多个 exchange 后再固化，只看最后一对会漏掉前面 exchange 的
-        # 新信息，甚至可能导致整批被跳过。
-        if skip_novelty_check:
-            has_novelty = True
-            steps.append({
-                "name": "novelty_check",
-                "status": "skipped",
-                "detail": "skip_novelty_check=True，直接进入固化",
-            })
-        else:
-            has_novelty = self._check_novelty(current, retrieved_context)
-            steps.append({
-                "name": "novelty_check",
-                "status": "done",
-                "detail": "检测到新信息" if has_novelty else "无新信息，跳过固化",
-            })
-        if not has_novelty:
-            return ConsolidationResult(
-                records_added=0,
-                records_merged=0,
-                records_expired=0,
-                has_novelty=False,
-                steps=steps,
-            )
-
-        # Step 2: Compact Encoding
+        # Step 1: Compact Encoding
         encoder_reference_context = self._get_encoder_reference_context(session_id)
         new_records = self._encoder.encode_conversation(
             current,
@@ -1302,7 +1271,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 records_added=0,
                 records_merged=0,
                 records_expired=0,
-                has_novelty=True,
                 steps=steps,
             )
 
@@ -1494,7 +1462,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             records_added=actually_added,
             records_merged=len(composite_records),
             records_expired=expired_count,
-            has_novelty=True,
             steps=steps,
         )
 
@@ -1642,28 +1609,6 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
                 "needs_failure_avoidance": False,
                 "needs_tool_selection_basis": False,
             }
-
-    def _check_novelty(
-        self, turns: list[dict[str, Any]], retrieved_context: str,
-    ) -> bool:
-        """LLM 判断对话是否有新信息。"""
-        conversation_text = "\n".join(
-            f"{t.get('role', '')}: {t.get('content', '')}" for t in turns
-        )
-        user_content = (
-            f"<EXISTING_MEMORY>\n{retrieved_context or '(no existing memory)'}\n</EXISTING_MEMORY>\n\n"
-            f"<CONVERSATION>\n{conversation_text}\n</CONVERSATION>"
-        )
-        set_llm_call_source("novelty_check")
-        response = self._llm.generate([
-            {"role": "system", "content": NOVELTY_CHECK_SYSTEM},
-            {"role": "user", "content": user_content},
-        ])
-        try:
-            parsed = json.loads(response.strip().lstrip("```json").rstrip("```").strip())
-            return bool(parsed.get("has_novelty", True))
-        except (json.JSONDecodeError, ValueError):
-            return True  # 保守策略：解析失败则认为有新信息
 
     def _get_encoder_reference_context(self, session_id: str) -> str | None:
         """Return compact reference context for the same session only."""

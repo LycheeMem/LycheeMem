@@ -188,7 +188,6 @@ function ReasonerContent({ reasoner }: { reasoner: PipelineTrace["reasoner"] }) 
 
 const STEP_NAME_LABELS: Record<string, string> = {
   // Graphiti 后端步骤
-  novelty_check: "新颖性检查",
   episode_ingest: "Episode 写入",
   semantic_build: "语义构建",
   community_refresh: "社区刷新",
@@ -235,9 +234,7 @@ function ConsolidatorContent({
         <div className="trace-kv">
           <span>原因</span>
           <span>
-            {consolidator.skipped_reason === "no_novelty"
-              ? "未检测到新信息"
-              : consolidator.skipped_reason === "no_new_turns"
+            {consolidator.skipped_reason === "no_new_turns"
               ? "无新增对话轮次"
               : (consolidator.skipped_reason ?? "未知")}
           </span>

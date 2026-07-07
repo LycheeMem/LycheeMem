@@ -312,7 +312,6 @@ export async function fetchConsolidationResult(sessionId: string): Promise<Conso
     skills_added: data.skills_added || 0,
     facts_added: data.facts_added || 0,
     records_expired: data.records_expired || 0,
-    has_novelty: data.has_novelty,
     skipped_reason: data.skipped_reason,
     error: data.error,
     steps: Array.isArray(data.steps) ? data.steps : [],

@@ -15,7 +15,6 @@ Default plugin tool exposure:
 - `lychee_memory_smart_search` (primary recall path, default lean response)
 - `lychee_memory_search` (developer raw retrieval)
 - `lychee_memory_append_turn`
-- `lychee_memory_synthesize` (developer debugging)
 - `lychee_memory_consolidate`
 
 ## Use It For
@@ -50,7 +49,6 @@ Default plugin tool exposure:
 - In that host-integrated mode, do not manually call `lychee_memory_append_turn` from the model during normal operation, because it would duplicate the host-managed transcript mirror.
 - If host lifecycle integration is unavailable, disabled, or you are debugging a non-standard flow, call `lychee_memory_append_turn` manually after each completed dialogue turn so the transcript can later be consolidated.
 - Do not append raw tool invocations, tool arguments, tool outputs, scratchpad text, or other orchestration-only traces unless the user explicitly wants those artifacts stored as memory.
-- Use `lychee_memory_synthesize` only after `lychee_memory_search`, and only for development or debugging when you want to inspect search and synthesis separately.
 - Do not call OpenClaw `memory-core` search and `lychee_memory_search` for the same recall problem in the same turn.
 - When this plugin runs inside OpenClaw with host lifecycle integration enabled, assume `/new`, `/reset`, and `/stop` boundaries may trigger `lychee_memory_consolidate` automatically with `background=true`.
 - Important long-term signals such as explicit memory requests, defaults, stable preferences, rules, and project standards may also trigger proactive background consolidation before the next reset boundary.
@@ -73,6 +71,5 @@ The intended pattern is:
 Developer debugging path:
 1. call `lychee_memory_search`
 2. inspect the raw retrieval payload
-3. call `lychee_memory_synthesize` if you want to inspect compression behavior separately
 
 This keeps OpenClaw in charge of the main reasoning loop while LycheeMem stays focused on long-term structured memory retrieval and persistence.

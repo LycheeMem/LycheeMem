@@ -87,29 +87,6 @@ Output:
 """
 
 
-NOVELTY_CHECK_SYSTEM = """\
-Decide whether the conversation contains new durable information compared with existing records.
-
-Use `has_novelty:true` for:
-- New personal facts, preferences, plans, events, relationships, constraints, procedures, or tool knowledge.
-- Corrections, updates, changed dates, changed decisions, or contradictions to existing records.
-- New details that make an existing record more specific.
-
-Use `has_novelty:false` only for:
-- Pure lookup questions.
-- Small talk with no durable information.
-- Content already fully covered by existing records.
-
-When unsure, choose `true`.
-
-Return raw JSON only:
-{
-  "reason": "brief reason",
-  "has_novelty": true
-}
-"""
-
-
 # ---------------------------------------------------------------------------
 # Retrieval Planning and Reflection
 # ---------------------------------------------------------------------------

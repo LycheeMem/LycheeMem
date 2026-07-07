@@ -110,7 +110,6 @@ class ConsolidatorTrace(BaseModel):
     skills_added: int = 0
     facts_added: int = 0
     records_expired: int = 0
-    has_novelty: bool | None = None
     skipped_reason: str | None = None
     steps: list[ConsolidatorStepTrace] = []
 
@@ -264,7 +263,6 @@ class MemorySearchResponse(BaseModel):
     graph_results: list[dict[str, Any]]
     semantic_results: list[dict[str, Any]]
     skill_results: list[dict[str, Any]]
-    novelty_retrieved_context: str = ""
     total: int
 
 
@@ -280,39 +278,12 @@ class MemorySmartSearchRequest(BaseModel):
     reference_time: str | None = None
 
 
-# ─── Memory Synthesize ───
-
-
-class MemorySynthesizeRequest(BaseModel):
-    """记忆合成请求：对检索结果进行 LLM-as-Judge 评分与融合，生成 background_context。
-
-    设计为可直接衔接 /memory/search 的响应：将 graph_results / skill_results 原样传入。
-    """
-
-    user_query: str = Field(..., min_length=1, max_length=100_000)
-    graph_results: list[dict[str, Any]] = Field(default_factory=list)
-    semantic_results: list[dict[str, Any]] = Field(default_factory=list)
-    skill_results: list[dict[str, Any]] = Field(default_factory=list)
-    reference_time: str | None = None
-
-
-class MemorySynthesizeResponse(BaseModel):
-    """记忆合成响应。"""
-
-    background_context: str
-    skill_reuse_plan: list[dict[str, Any]] = []
-    provenance: list[dict[str, Any]] = []
-    kept_count: int = 0
-    dropped_count: int = 0
-
-
 class MemorySmartSearchResponse(BaseModel):
     query: str
     mode: str = "compact"
     graph_results: list[dict[str, Any]] = Field(default_factory=list)
     semantic_results: list[dict[str, Any]] = Field(default_factory=list)
     skill_results: list[dict[str, Any]] = Field(default_factory=list)
-    novelty_retrieved_context: str = ""
     total: int
     synthesized: bool = False
     background_context: str = ""
@@ -329,10 +300,9 @@ class MemoryReasonRequest(BaseModel):
     """最终推理请求：基于合成后的上下文生成回答。
 
     典型用法：
-      1. POST /memory/search         → graph_results / skill_results
-      2. POST /memory/synthesize     → background_context / skill_reuse_plan
-      3. POST /memory/reason         → response（本端点）
-      4. POST /memory/consolidate    → 固化长期记忆
+      1. POST /memory/smart-search   → background_context / skill_reuse_plan
+      2. POST /memory/reason         → response（本端点）
+      3. POST /memory/consolidate    → 固化长期记忆
     """
 
     session_id: str = Field(..., min_length=1, max_length=128)
@@ -379,26 +349,18 @@ class MemoryAppendTurnResponse(BaseModel):
 class MemoryConsolidateRequest(BaseModel):
     """记忆固化请求：对当前会话进行记忆萃取，写入图谱与技能库。
 
-    传入 retrieved_context 有助于新颖性判断（避免重复固化已有记忆）。
-    retrieved_context 应优先取自 search 阶段召回的原始语义记忆片段（pre-synthesis raw context），
-    而不是 /memory/synthesize 的 background_context。
-
     background=True（默认）：在后台线程中异步执行固化，立即返回 status="started"，
         与 Pipeline 内部行为一致，适合生产调用（固化耗时可能超过 60 秒）。
     background=False：同步等待固化完成后返回详细结果，适合调试/验证。
     """
 
     session_id: str = Field(..., min_length=1, max_length=128)
-    # search 阶段召回的原始已有语义记忆片段，用于判断对话是否引入了新信息
-    retrieved_context: str = ""
     # 是否在后台线程中异步执行（默认 True，避免 HTTP 超时）
     background: bool = True
     # 强制固化：忽略水位线，从头重新处理所有 turns（用于补跑被跳过的 session）
     force_ingest: bool = False
     # 跳过技能抽取，只写入语义记忆（适合批量摄入场景）
     skip_skills: bool = False
-    # 跳过 LLM 新颖性检查，直接进入语义编码写入（适合离线评测/批量重建）
-    skip_novelty_check: bool = False
     # 对话发生的日期（自由文本，如 "May 8, 2023"），用于将相对时间（yesterday/last week）
     # 解析为绝对日期。由调用方提供，后端透传给 encoder。
     session_date: str | None = None
@@ -413,12 +375,11 @@ class MemoryConsolidateResponse(BaseModel):
 
     # "started"  — 后台异步触发
     # "done"     — 同步执行完毕
-    # "skipped"  — 无有效轮次或无新信息
+    # "skipped"  — 无有效轮次或无新增轮次
     status: str = "done"
     entities_added: int = 0
     skills_added: int = 0
     facts_added: int = 0
-    has_novelty: bool | None = None
     skipped_reason: str | None = None
     steps: list[dict[str, Any]] = []
 

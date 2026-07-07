@@ -197,7 +197,6 @@ class LycheeMemClient:
             "/memory/consolidate",
             {
                 "session_id": session_id,
-                "retrieved_context": "",
                 "background": self.config.auto_consolidate_background,
             },
         )
@@ -305,8 +304,6 @@ def handle_session_end(config: Config, client: LycheeMemClient, session_id: str)
 
 def _format_recalled_context(result: dict[str, Any], max_chars: int) -> str:
     context = str(result.get("background_context") or "").strip()
-    if not context:
-        context = str(result.get("novelty_retrieved_context") or "").strip()
     if not context:
         context = _fallback_constructed_context(result)
     if not context:

@@ -316,7 +316,7 @@ See the full setup guide: [openclaw-plugin/INSTALL_OPENCLAW.md](openclaw-plugin/
 
 LycheeMemory also exposes an HTTP MCP endpoint at `http://localhost:8000/mcp`.
 
-- Available tools: `lychee_memory_smart_search`, `lychee_memory_search`, `lychee_memory_append_turn`, `lychee_memory_synthesize`, `lychee_memory_consolidate`
+- Available tools: `lychee_memory_smart_search`, `lychee_memory_search`, `lychee_memory_append_turn`, `lychee_memory_consolidate`
 - `lychee_memory_consolidate` works for sessions that already contain mirrored turns from `/chat`, `/memory/reason`, or `lychee_memory_append_turn`
 
 ### MCP Transport
@@ -400,7 +400,7 @@ curl -X POST http://localhost:8000/mcp \
 
 1. Use `/chat` or `/memory/reason` with a stable `session_id` to write conversation turns, or mirror external host turns with `lychee_memory_append_turn`.
 2. Use `lychee_memory_smart_search` in `compact` mode for the default one-shot recall path.
-3. Use `lychee_memory_search` + `lychee_memory_synthesize` only when you explicitly want search and synthesis as separate stages.
+3. Use `lychee_memory_search` only when you explicitly want raw retrieval results for debugging or custom host-side processing.
 4. After the conversation ends, call `lychee_memory_consolidate` with the same `session_id`.
 
 ---
@@ -634,7 +634,7 @@ Rule-based agent (no LLM prompt). Appends the user turn to the session log, coun
 
 ### Stage 2 — SearchCoordinator
 
-`SearchCoordinator` first builds `recent_context` from compressed summaries and raw recent turns, then derives an `ActionState` from the current query, constraints, recent failure signals, token budget, and recent tool use. Before retrieval, it calls the LLM with `RETRIEVAL_PLANNING_SYSTEM` to produce a structured `SearchPlan` (mode, semantic queries, tool hints, required constraints, tree traversal depth, etc.) conditioned on the query and ActionState. Semantic memory retrieval then proceeds through the Action-Aware hierarchical retrieval pipeline: an ANN pre-filter narrows to the top-20 nearest CompositeRecords, a single LLM call judges their relevance and flags entries requiring tree expansion, the memory tree is recursively traversed to surface the corresponding atomic MemoryRecords, and an adequacy assessment determines whether supplementary FTS, vector, and raw episode turn recall is needed to close any remaining coverage gaps. This stage returns raw semantic fragments, skill hits, retrieval provenance, and a dedicated `novelty_retrieved_context` built from **pre-synthesis** semantic fragments for later novelty checking; it does **not** build the final `background_context` yet. Skill retrieval is mode-aware (`answer` / `action` / `mixed`) and uses HyDE against the skill store only when it is likely to help.
+`SearchCoordinator` first builds `recent_context` from compressed summaries and raw recent turns, then derives an `ActionState` from the current query, constraints, recent failure signals, token budget, and recent tool use. Before retrieval, it calls the LLM with `RETRIEVAL_PLANNING_SYSTEM` to produce a structured `SearchPlan` (mode, semantic queries, tool hints, required constraints, tree traversal depth, etc.) conditioned on the query and ActionState. Semantic memory retrieval then proceeds through the Action-Aware hierarchical retrieval pipeline: an ANN pre-filter narrows to the top-20 nearest CompositeRecords, a single LLM call judges their relevance and flags entries requiring tree expansion, the memory tree is recursively traversed to surface the corresponding atomic MemoryRecords, and an adequacy assessment determines whether supplementary FTS, vector, and raw episode turn recall is needed to close any remaining coverage gaps. This stage returns raw semantic fragments, skill hits, and retrieval provenance; it does **not** build the final `background_context` yet. Skill retrieval is mode-aware (`answer` / `action` / `mixed`) and uses HyDE against the skill store only when it is likely to help.
 
 When a new user turn arrives, `SearchCoordinator` also tries to apply lightweight feedback to the most recent unresolved action/mixed retrieval log, so the next turn can mark the prior memory usage as success / fail / correction.
 
@@ -650,9 +650,8 @@ Receives `compressed_history`, `background_context`, and `skill_reuse_plan` and 
 
 Triggered immediately after `ReasoningAgent` completes, runs in a thread pool and **does not block the response**. It:
 
-1. Performs a **novelty check** — LLM judges whether the conversation introduced new information worth persisting. Skips consolidation for pure retrieval exchanges.
-2. **Compact consolidation** — calls `CompactSemanticEngine.ingest_conversation()`, which runs a single-pass encoder (typed extraction → decontextualization → action metadata annotation), writes `MemoryRecord`s to SQLite + LanceDB, then triggers the embedding-based Record Fusion engine (zero LLM calls: cosine similarity dedup → cluster → build CompositeRecord from representative record → hierarchy rounds). Novelty check uses the search-stage `novelty_retrieved_context` (raw semantic fragments), not the answer-time `background_context`, so query-conditioned synthesis does not suppress valid new-memory ingestion.
-3. **Skill extraction** — identifies successful tool-usage patterns in the conversation and adds skill entries to the skill store. Runs in parallel with compact consolidation (ThreadPoolExecutor).
+1. **Compact consolidation** — calls `CompactSemanticEngine.ingest_conversation()`, which runs a single-pass encoder (typed extraction → decontextualization → action metadata annotation), writes `MemoryRecord`s to SQLite + LanceDB, then triggers the embedding-based Record Fusion engine (zero LLM calls: cosine similarity dedup → cluster → build CompositeRecord from representative record → hierarchy rounds).
+2. **Skill extraction** — identifies successful tool-usage patterns in the conversation and adds skill entries to the skill store.
 
 ---
 
@@ -662,7 +661,7 @@ Triggered immediately after `ReasoningAgent` completes, runs in a thread pool an
 
 ### `POST /memory/search` — Unified Memory Retrieval
 
-Query both the semantic memory channel and the skill store in a single call. New integrations should prefer `semantic_results`; `graph_results` is kept as a backward-compatible alias. The response also includes `novelty_retrieved_context`, which is the correct input for later `/memory/consolidate` calls.
+Query both the semantic memory channel and the skill store in a single call. New integrations should prefer `semantic_results`; `graph_results` is kept as a backward-compatible alias.
 
 ```json
 // Request
@@ -695,7 +694,6 @@ Query both the semantic memory channel and the skill store in a single call. New
       "provenance": [ { "record_id": "...", "source": "record", "semantic_source_type": "record", "score": 0.91, ... } ]
     }
   ],
-  "novelty_retrieved_context": "[1] (procedure, source=record) Use pg_dump with cron ...",
   "skill_results": [ { "id": "...", "intent": "pg_dump backup to S3", "score": 0.87, ... } ],
   "total": 6
 }
@@ -705,7 +703,7 @@ Query both the semantic memory channel and the skill store in a single call. New
 
 ### `POST /memory/smart-search` — One-Shot Recall
 
-Runs search and, optionally, synthesis in one API call. `mode=compact` is the default integration path when you want a concise `background_context` without handling intermediate payloads yourself. Even in compact mode, the response still returns `novelty_retrieved_context` so a host can consolidate against raw retrieved memory instead of answer-time synthesis.
+Runs search and, optionally, synthesis in one API call. `mode=compact` is the default integration path when you want a concise `background_context` without handling intermediate payloads yourself.
 
 ```json
 // Request
@@ -724,7 +722,6 @@ Runs search and, optionally, synthesis in one API call. `mode=compact` is the de
   "background_context": "User regularly uses pg_dump with a cron job...",
   "skill_reuse_plan": [ { "skill_id": "...", "intent": "...", "doc_markdown": "..." } ],
   "provenance": [ { "record_id": "...", "source": "record", "score": 0.91, ... } ],
-  "novelty_retrieved_context": "[1] (procedure, source=record) Use pg_dump with cron ...",
   "kept_count": 4,
   "dropped_count": 2,
   "total": 6
@@ -733,34 +730,9 @@ Runs search and, optionally, synthesis in one API call. `mode=compact` is the de
 
 ---
 
-### `POST /memory/synthesize` — Memory Fusion
-
-Takes raw retrieval results and produces a fused memory context using LLM-as-Judge.
-
-```json
-// Request
-{
-  "user_query": "what tools do I use for database backups",
-  "semantic_results": [...], // preferred from /memory/search
-  "graph_results": [...],    // compatibility alias also accepted
-  "skill_results": [...]
-}
-
-// Response
-{
-  "background_context": "User regularly uses pg_dump with a cron job...",
-  "skill_reuse_plan": [ { "skill_id": "...", "intent": "...", "doc_markdown": "..." } ],
-  "provenance": [ { "record_id": "...", "source": "semantic", "semantic_source_type": "record", "score": 0.91, ... } ],
-  "kept_count": 4,
-  "dropped_count": 2
-}
-```
-
----
-
 ### `POST /memory/reason` — Grounded Reasoning
 
-Runs the ReasoningAgent given pre-synthesized context. Can be chained after `/memory/synthesize` for full pipeline control.
+Runs the ReasoningAgent given a prepared `background_context`, commonly produced by `/memory/smart-search`.
 
 ```json
 // Request
@@ -808,13 +780,10 @@ Appends one user or assistant turn into LycheeMemory's session store so it can b
 
 Manually trigger memory consolidation for a session. This is the primary consolidation endpoint and supports both background and synchronous modes.
 
-`retrieved_context` should preferably be the `novelty_retrieved_context` returned by `/memory/search` or `/memory/smart-search`, i.e. the **search-stage raw semantic fragments**, not `/memory/synthesize`'s `background_context`.
-
 ```json
 // Request
 {
   "session_id": "my-session",
-  "retrieved_context": "[1] (procedure, source=record) Use pg_dump with cron ...",
   "background": true
 }
 

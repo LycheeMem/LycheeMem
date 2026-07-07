@@ -260,7 +260,7 @@ openclaw gateway restart
 
 LycheeMemory 还通过 `http://localhost:8000/mcp` 暴露了 MCP 端点。
 
-- 可用工具：`lychee_memory_smart_search`, `lychee_memory_search`, `lychee_memory_append_turn`, `lychee_memory_synthesize`, `lychee_memory_consolidate`
+- 可用工具：`lychee_memory_smart_search`, `lychee_memory_search`, `lychee_memory_append_turn`, `lychee_memory_consolidate`
 - `lychee_memory_consolidate` 适用于已经通过 `/chat`、`/memory/reason` 或 `lychee_memory_append_turn` 写入/镜像过轮次的会话
 
 ### MCP 传输
@@ -344,7 +344,7 @@ curl -X POST http://localhost:8000/mcp \
 
 1. 使用 `/chat` 或 `/memory/reason` 配合稳定的 `session_id` 写入对话轮次；如果是外部宿主，也可以用 `lychee_memory_append_turn` 镜像轮次。
 2. 默认推荐使用 `lychee_memory_smart_search` 的 `compact` 模式完成一体化检索。
-3. 只有在你明确需要把检索和合成拆开控制时，再使用 `lychee_memory_search` + `lychee_memory_synthesize`。
+3. 只有在你明确需要原始检索结果做调试或宿主侧自定义处理时，再单独使用 `lychee_memory_search`。
 4. 对话结束后，使用相同的 `session_id` 调用 `lychee_memory_consolidate`。
 
 ---
@@ -577,7 +577,7 @@ $$\text{decay} = 0.5^{\,t \;/\; t_{1/2}^{\text{eff}}}$$
 
 ### 阶段 2 —— SearchCoordinator
 
-`SearchCoordinator` 先从压缩摘要与最近原始轮次构造 `recent_context`，并从当前查询、约束条件、近期失败信号、token 预算和近期工具使用中推导 `ActionState`。在正式检索前，先调用 LLM（`RETRIEVAL_PLANNING_SYSTEM`）生成结构化 `SearchPlan`（含 mode、语义查询词、工具提示、约束条件、树遍历深度等字段），以查询和 ActionState 为条件。语义记忆检索随后基于 Action-Aware 层级化检索管线展开：ANN 预过滤取 top-20 最近 CompositeRecord 候选，一次 LLM 调用判断相关性并标记需展开的条目；随后沿记忆树递归取出对应原子 MemoryRecord；最后经充分性评估，在存在信息缺口时激活 FTS + 向量 + 原始对话 turns 的补充召回。此阶段输出原始语义片段、技能结果、检索 provenance，以及专供新颖性检查使用的 `novelty_retrieved_context`（**pre-synthesis** 的原始语义片段）；本阶段不构造最终的 `background_context`。技能检索 mode-aware，依 `answer / action / mixed` 模式按需启用 HyDE 查询技能库。
+`SearchCoordinator` 先从压缩摘要与最近原始轮次构造 `recent_context`，并从当前查询、约束条件、近期失败信号、token 预算和近期工具使用中推导 `ActionState`。在正式检索前，先调用 LLM（`RETRIEVAL_PLANNING_SYSTEM`）生成结构化 `SearchPlan`（含 mode、语义查询词、工具提示、约束条件、树遍历深度等字段），以查询和 ActionState 为条件。语义记忆检索随后基于 Action-Aware 层级化检索管线展开：ANN 预过滤取 top-20 最近 CompositeRecord 候选，一次 LLM 调用判断相关性并标记需展开的条目；随后沿记忆树递归取出对应原子 MemoryRecord；最后经充分性评估，在存在信息缺口时激活 FTS + 向量 + 原始对话 turns 的补充召回。此阶段输出原始语义片段、技能结果和检索 provenance；本阶段不构造最终的 `background_context`。技能检索 mode-aware，依 `answer / action / mixed` 模式按需启用 HyDE 查询技能库。
 
 当新一轮用户输入到来时，`SearchCoordinator` 还会尝试把它解释为上一轮 action/mixed 检索的轻量 outcome feedback，用于将之前的记忆使用标记为 success / fail / correction。
 
@@ -593,9 +593,8 @@ $$\text{decay} = 0.5^{\,t \;/\; t_{1/2}^{\text{eff}}}$$
 
 在 `ReasoningAgent` 完成后立即触发，在线程池中运行且**不阻塞响应**。它执行：
 
-1. **新颖性检查** —— LLM 判断对话是否引入值得持久化的新信息。跳过纯检索交互的固化。
-2. **Compact 编码固化** —— 调用 `CompactSemanticEngine.ingest_conversation()`，经单次编码（类型化提取 → 指代消解 → 行动元数据标注）将对话内容提取为 `MemoryRecord` 并写入 SQLite + LanceDB；随后触发基于 embedding 的 Record Fusion（零 LLM 调用：余弦相似度去重 → 聚类 → 从代表记录构建 CompositeRecord → 层级轮次）。新颖性检查使用的是 search 阶段的 `novelty_retrieved_context`（原始语义片段），而不是回答期的 `background_context`，从而避免 query-conditioned 融合文本误伤真正的新记忆。
-3. **技能提取** —— 从对话中识别成功的工具使用模式，提取技能条目并添加到技能库；与 Compact 固化并行执行（ThreadPoolExecutor）。
+1. **Compact 编码固化** —— 调用 `CompactSemanticEngine.ingest_conversation()`，经单次编码（类型化提取 → 指代消解 → 行动元数据标注）将对话内容提取为 `MemoryRecord` 并写入 SQLite + LanceDB；随后触发基于 embedding 的 Record Fusion（零 LLM 调用：余弦相似度去重 → 聚类 → 从代表记录构建 CompositeRecord → 层级轮次）。
+2. **技能提取** —— 从对话中识别成功的工具使用模式，提取技能条目并添加到技能库。
 
 ---
 
@@ -605,7 +604,7 @@ $$\text{decay} = 0.5^{\,t \;/\; t_{1/2}^{\text{eff}}}$$
 
 ### `POST /memory/search` —— 统一记忆检索
 
-在一次调用中同时查询语义记忆通道和技能库。新的接入方式应优先使用 `semantic_results`；`graph_results` 仅作为兼容别名保留。响应里还会返回 `novelty_retrieved_context`，用于后续 `/memory/consolidate` 的新颖性检查。
+在一次调用中同时查询语义记忆通道和技能库。新的接入方式应优先使用 `semantic_results`；`graph_results` 仅作为兼容别名保留。
 
 ```json
 // 请求
@@ -638,7 +637,6 @@ $$\text{decay} = 0.5^{\,t \;/\; t_{1/2}^{\text{eff}}}$$
       "provenance": [ { "record_id": "...", "source": "record", "semantic_source_type": "record", "score": 0.91, ... } ]
     }
   ],
-  "novelty_retrieved_context": "[1] (procedure, source=record) 使用 pg_dump 配合 cron ...",
   "skill_results": [ { "id": "...", "intent": "pg_dump 备份到 S3", "score": 0.87, ... } ],
   "total": 6
 }
@@ -648,7 +646,7 @@ $$\text{decay} = 0.5^{\,t \;/\; t_{1/2}^{\text{eff}}}$$
 
 ### `POST /memory/smart-search` —— 一体化检索
 
-在一个 API 调用中完成 search，并可按需自动执行 synthesize。`mode=compact` 是默认推荐集成方式，适合直接拿到简洁的 `background_context`。即使在 compact 模式下，响应仍会返回 `novelty_retrieved_context`，便于宿主在固化时使用“原始召回记忆”而不是回答期融合上下文。
+在一个 API 调用中完成 search，并可按需自动执行 synthesize。`mode=compact` 是默认推荐集成方式，适合直接拿到简洁的 `background_context`。
 
 ```json
 // 请求
@@ -667,7 +665,6 @@ $$\text{decay} = 0.5^{\,t \;/\; t_{1/2}^{\text{eff}}}$$
   "background_context": "用户通常使用 pg_dump 配合 cron 任务...",
   "skill_reuse_plan": [ { "skill_id": "...", "intent": "...", "doc_markdown": "..." } ],
   "provenance": [ { "record_id": "...", "source": "record", "score": 0.91, ... } ],
-  "novelty_retrieved_context": "[1] (procedure, source=record) 使用 pg_dump 配合 cron ...",
   "kept_count": 4,
   "dropped_count": 2,
   "total": 6
@@ -676,34 +673,9 @@ $$\text{decay} = 0.5^{\,t \;/\; t_{1/2}^{\text{eff}}}$$
 
 ---
 
-### `POST /memory/synthesize` —— 记忆融合
-
-使用 LLM-as-Judge 将原始检索结果融合成精炼记忆上下文。
-
-```json
-// 请求
-{
-  "user_query": "我用什么工具做数据库备份",
-  "semantic_results": [...], // 优先使用 /memory/search 的该字段
-  "graph_results": [...],    // 兼容别名也可接受
-  "skill_results": [...]
-}
-
-// 响应
-{
-  "background_context": "用户通常使用 pg_dump 配合 cron 任务...",
-  "skill_reuse_plan": [ { "skill_id": "...", "intent": "...", "doc_markdown": "..." } ],
-  "provenance": [ { "record_id": "...", "source": "semantic", "semantic_source_type": "record", "score": 0.91, ... } ],
-  "kept_count": 4,
-  "dropped_count": 2
-}
-```
-
----
-
 ### `POST /memory/reason` —— 基础推理
 
-给定预合成上下文运行 ReasoningAgent。可在 `/memory/synthesize` 之后链式调用以获得完整管道控制。
+给定准备好的 `background_context` 运行 ReasoningAgent；通常由 `/memory/smart-search` 产生该上下文。
 
 ```json
 // 请求
@@ -751,13 +723,10 @@ $$\text{decay} = 0.5^{\,t \;/\; t_{1/2}^{\text{eff}}}$$
 
 手动为会话触发记忆固化。这是当前的主固化接口，支持后台异步和同步等待两种模式。
 
-`retrieved_context` 建议直接使用 `/memory/search` 或 `/memory/smart-search` 返回的 `novelty_retrieved_context`，也就是 **search 阶段的原始语义记忆片段**，而不是 `/memory/synthesize` 的 `background_context`。
-
 ```json
 // 请求
 {
   "session_id": "my-session",
-  "retrieved_context": "[1] (procedure, source=record) 使用 pg_dump 配合 cron ...",
   "background": true
 }
 

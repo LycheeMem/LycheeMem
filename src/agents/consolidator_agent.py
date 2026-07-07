@@ -2,8 +2,8 @@
 记忆固化 Agent (Memory Consolidation Agent)。
 
 异步后台进程，在每次交互结束后：
-1. 调用语义记忆引擎执行新颖性检查与语义固化
-2. 仅在检测到新信息时，再提取成功的工具调用链并写入技能库
+1. 调用语义记忆引擎执行语义固化
+2. 再提取成功的工具调用链并写入技能库
 """
 
 from __future__ import annotations
@@ -37,10 +37,8 @@ class ConsolidatorAgent(BaseAgent):
         self,
         turns: list[dict[str, Any]],
         session_id: str | None = None,
-        retrieved_context: str = "",
         turn_index_offset: int = 0,
         skip_skills: bool = False,
-        skip_novelty_check: bool = False,
         session_date: str | None = None,
         **kwargs,
     ) -> dict[str, Any]:
@@ -49,9 +47,6 @@ class ConsolidatorAgent(BaseAgent):
         Args:
             turns: 完整的对话轮次列表。
             session_id: 会话 ID。
-            retrieved_context: search 阶段召回的原始已有语义记忆片段，
-                用于与本轮对话比对，判断是否有新信息需要固化；
-                应优先传 pre-synthesis raw context，而不是回答期的 background_context。
 
         Returns:
             dict 包含：entities_added (int), skills_added (int), facts_added (int)
@@ -65,10 +60,8 @@ class ConsolidatorAgent(BaseAgent):
         return self._run_compact(
             turns=turns,
             session_id=session_id,
-            retrieved_context=retrieved_context,
             turn_index_offset=turn_index_offset,
             skip_skills=skip_skills,
-            skip_novelty_check=skip_novelty_check,
             session_date=session_date,
         )
 
@@ -77,42 +70,36 @@ class ConsolidatorAgent(BaseAgent):
         *,
         turns: list[dict[str, Any]],
         session_id: str,
-        retrieved_context: str = "",
         turn_index_offset: int = 0,
         skip_skills: bool = False,
-        skip_novelty_check: bool = False,
         session_date: str | None = None,
     ) -> dict[str, Any]:
-        """Compact 后端路径：语义固化 → 按新颖性门控技能抽取。
+        """Compact 后端路径：语义固化 → 技能抽取。
 
         流程：
-        1. 先执行 semantic_engine.ingest_conversation()；其中已包含新颖性检查。
-        2. 仅当语义引擎确认存在新信息时，再执行技能提取（skip_skills=True 时跳过）。
+        1. 先执行 semantic_engine.ingest_conversation()。
+        2. 再执行技能提取（skip_skills=True 时跳过）。
         """
         ingest_result = self.semantic_engine.ingest_conversation(
             turns=turns,
             session_id=session_id,
-            retrieved_context=retrieved_context,
             turn_index_offset=turn_index_offset,
             reference_timestamp=session_date,
-            skip_novelty_check=skip_novelty_check,
         )
 
         steps: list[dict[str, Any]] = list(ingest_result.steps)
-        has_novelty = bool(ingest_result.has_novelty)
 
-        if not has_novelty or skip_skills:
+        if skip_skills:
             steps.append({
                 "name": "skill_extraction",
                 "status": "skipped",
-                "detail": "无新信息，跳过技能提取" if not has_novelty else "skip_skills=True，跳过技能提取",
+                "detail": "skip_skills=True，跳过技能提取",
             })
             return {
                 "entities_added": ingest_result.records_added,
                 "skills_added": 0,
                 "facts_added": ingest_result.records_merged,
                 "records_expired": ingest_result.records_expired,
-                "has_novelty": has_novelty,
                 "steps": steps,
             }
 
@@ -183,7 +170,6 @@ class ConsolidatorAgent(BaseAgent):
             "skills_added": skills_added,
             "facts_added": ingest_result.records_merged,
             "records_expired": ingest_result.records_expired,
-            "has_novelty": has_novelty,
             "steps": steps,
         }
 

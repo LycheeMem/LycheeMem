@@ -22,8 +22,6 @@ from src.api.models import (
     MemorySearchResponse,
     MemorySmartSearchRequest,
     MemorySmartSearchResponse,
-    MemorySynthesizeRequest,
-    MemorySynthesizeResponse,
     SkillsResponse,
 )
 
@@ -471,32 +469,29 @@ def run_memory_search(
             graph_total += 1
 
     total = graph_total + len(skill_results)
-    novelty_retrieved_context = ""
-    build_novelty_context = getattr(pipeline, "_build_novelty_retrieved_context", None)
-    if callable(build_novelty_context):
-        novelty_retrieved_context = str(build_novelty_context(semantic_results) or "")
-
     return MemorySearchResponse(
         query=req.query,
         graph_results=graph_results,
         semantic_results=semantic_results,
         skill_results=skill_results,
-        novelty_retrieved_context=novelty_retrieved_context,
         total=total,
     )
 
 
-def run_memory_synthesize(
+def _synthesize_memory_results(
     pipeline,
-    req: MemorySynthesizeRequest,
-) -> MemorySynthesizeResponse:
-    """执行检索结果压缩，供 HTTP Router 与 MCP 共享。"""
-    semantic_results = req.semantic_results or req.graph_results
+    *,
+    user_query: str,
+    semantic_results: list[dict[str, Any]],
+    skill_results: list[dict[str, Any]],
+    reference_time: str | None = None,
+) -> dict[str, Any]:
+    """Internal synthesis helper used by smart-search and chat pipeline code."""
     result = pipeline.synthesizer.run(
-        user_query=req.user_query,
+        user_query=user_query,
         retrieved_graph_memories=semantic_results,
-        retrieved_skills=req.skill_results,
-        reference_time=req.reference_time,
+        retrieved_skills=skill_results,
+        reference_time=reference_time,
     )
 
     provenance_raw = result.get("provenance", [])
@@ -507,17 +502,17 @@ def run_memory_synthesize(
         elif isinstance(item, dict):
             provenance_flat.append(item)
 
-    input_count = int(result.get("input_fragment_count") or (len(semantic_results) + len(req.skill_results)))
+    input_count = int(result.get("input_fragment_count") or (len(semantic_results) + len(skill_results)))
     kept_count = int(result.get("kept_count") or len(provenance_flat))
     dropped_count = int(result.get("dropped_count") or max(0, input_count - kept_count))
 
-    return MemorySynthesizeResponse(
-        background_context=result.get("background_context", ""),
-        skill_reuse_plan=result.get("skill_reuse_plan", []),
-        provenance=provenance_flat,
-        kept_count=kept_count,
-        dropped_count=dropped_count,
-    )
+    return {
+        "background_context": result.get("background_context", ""),
+        "skill_reuse_plan": result.get("skill_reuse_plan", []),
+        "provenance": provenance_flat,
+        "kept_count": kept_count,
+        "dropped_count": dropped_count,
+    }
 
 
 def run_memory_smart_search(
@@ -569,7 +564,6 @@ def run_memory_smart_search(
             "graph_results": search_result.graph_results,
             "semantic_results": search_result.semantic_results,
             "skill_results": search_result.skill_results,
-            "novelty_retrieved_context": search_result.novelty_retrieved_context,
             "total": search_result.total,
             "synthesized": False,
         })
@@ -581,20 +575,16 @@ def run_memory_smart_search(
             "graph_results": search_result.graph_results,
             "semantic_results": search_result.semantic_results,
             "skill_results": search_result.skill_results,
-            "novelty_retrieved_context": search_result.novelty_retrieved_context,
             "total": search_result.total,
             "synthesized": False,
         })
 
-    synth_result = run_memory_synthesize(
+    synth_result = _synthesize_memory_results(
         pipeline,
-        MemorySynthesizeRequest(
-            user_query=req.query,
-            graph_results=search_result.graph_results,
-            semantic_results=search_result.semantic_results,
-            skill_results=search_result.skill_results,
-            reference_time=req.reference_time,
-        ),
+        user_query=req.query,
+        semantic_results=search_result.semantic_results or search_result.graph_results,
+        skill_results=search_result.skill_results,
+        reference_time=req.reference_time,
     )
     payload: dict[str, Any] = {
         "query": search_result.query,
@@ -602,14 +592,13 @@ def run_memory_smart_search(
         "graph_results": search_result.graph_results,
         "semantic_results": search_result.semantic_results,
         "skill_results": search_result.skill_results,
-        "novelty_retrieved_context": search_result.novelty_retrieved_context,
         "total": search_result.total,
         "synthesized": True,
-        "background_context": synth_result.background_context,
-        "skill_reuse_plan": synth_result.skill_reuse_plan,
-        "provenance": synth_result.provenance,
-        "kept_count": synth_result.kept_count,
-        "dropped_count": synth_result.dropped_count,
+        "background_context": synth_result["background_context"],
+        "skill_reuse_plan": synth_result["skill_reuse_plan"],
+        "provenance": synth_result["provenance"],
+        "kept_count": synth_result["kept_count"],
+        "dropped_count": synth_result["dropped_count"],
     }
     if req.mode == "compact":
         payload["graph_results"] = []
@@ -672,10 +661,8 @@ def run_memory_consolidate(
                 pipeline.consolidator.run(
                     turns=turns,
                     session_id=req.session_id,
-                    retrieved_context=req.retrieved_context,
                     turn_index_offset=effective_watermark,
                     skip_skills=req.skip_skills,
-                    skip_novelty_check=req.skip_novelty_check,
                     session_date=req.session_date,
                 )
                 # 后台线程固化成功后推进水位线
@@ -694,10 +681,8 @@ def run_memory_consolidate(
     result = pipeline.consolidator.run(
         turns=turns,
         session_id=req.session_id,
-        retrieved_context=req.retrieved_context,
         turn_index_offset=effective_watermark,
         skip_skills=req.skip_skills,
-        skip_novelty_check=req.skip_novelty_check,
         session_date=req.session_date,
     )
     # 同步固化成功后推进水位线
@@ -707,7 +692,6 @@ def run_memory_consolidate(
         entities_added=result.get("entities_added", 0),
         skills_added=result.get("skills_added", 0),
         facts_added=result.get("facts_added", 0),
-        has_novelty=result.get("has_novelty"),
         skipped_reason=result.get("skipped_reason"),
         steps=result.get("steps", []),
     )
@@ -774,22 +758,6 @@ async def memory_smart_search(
     return await run_in_threadpool(run_memory_smart_search, pipeline, req)
 
 
-# ── Memory: Synthesize ──
-
-
-@router.post("/memory/synthesize", response_model=MemorySynthesizeResponse)
-async def memory_synthesize(
-    req: MemorySynthesizeRequest,
-    pipeline=Depends(get_pipeline),
-):
-    """对多源检索结果进行 LLM-as-Judge 评分与融合，生成 background_context。
-
-    典型用法：衔接 POST /memory/search 的响应，将 graph_results / skill_results 传入。
-    输出的 background_context 和 skill_reuse_plan 可直接传给 POST /memory/reason。
-    """
-    return await run_in_threadpool(run_memory_synthesize, pipeline, req)
-
-
 # ── Memory: Append Turn ──
 
 
@@ -830,10 +798,6 @@ async def memory_consolidate(
     pipeline=Depends(get_pipeline),
 ):
     """对当前会话进行记忆萃取固化，提取实体/事实写入图谱，提取技能写入技能库。
-
-    retrieved_context 建议传入 search 阶段召回的原始语义记忆片段（pre-synthesis raw context），
-    而不是 /memory/synthesize 的 background_context；
-    这样 novelty check 判断的是“原始已知记忆 vs 本轮对话”，而不是“回答期融合改写后的上下文 vs 本轮对话”。
 
     background=True（默认）：在后台线程中异步执行，立即返回 status="started"；
         与 Pipeline 内部行为一致，适合生产调用（固化耗时通常超过 60 秒）。

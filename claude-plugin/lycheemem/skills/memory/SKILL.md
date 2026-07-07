@@ -6,7 +6,6 @@ allowed-tools:
   - mcp__lycheemem__lychee_memory_append_turn
   - mcp__lycheemem__lychee_memory_consolidate
   - mcp__lycheemem__lychee_memory_search
-  - mcp__lycheemem__lychee_memory_synthesize
 ---
 
 # LycheeMem Memory
@@ -27,7 +26,7 @@ Use this order for long-horizon recall:
 
 Treat `lychee_memory_smart_search` as the normal recall path.
 
-Treat `lychee_memory_search` and `lychee_memory_synthesize` as debugging tools, not the normal path.
+Treat `lychee_memory_search` as a debugging tool, not the normal path.
 
 ## When Smart Search Is Expected
 

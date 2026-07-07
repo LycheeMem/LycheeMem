@@ -2,10 +2,9 @@
 LycheeMem — 纯 API Pipeline 流程示例脚本
 ==========================================
 
-    Step 1: POST /memory/search     → 从图谱和技能库检索相关记忆
-    Step 2: POST /memory/synthesize → LLM-as-Judge 评分融合，生成 background_context
-    Step 3: POST /memory/reason     → 基于上下文推理，生成最终回答（写入会话）
-    Step 4: POST /memory/consolidate→ 萃取本轮对话，固化到图谱/技能库
+    Step 1: POST /memory/smart-search → 检索并生成 background_context
+    Step 2: POST /memory/reason       → 基于上下文推理，生成最终回答（写入会话）
+    Step 3: POST /memory/consolidate  → 萃取本轮对话，固化到图谱/技能库
 
 前置条件：
     - 服务已启动：python main.py
@@ -169,19 +168,22 @@ def step_search(
     return result
 
 
-def step_synthesize(
+def step_smart_search(
     client: APIClient,
     user_query: str,
-    search_result: dict,
+    top_k: int = 5,
 ) -> dict:
-    """Step 2: POST /memory/synthesize"""
-    _hdr("Step 2 · 记忆合成 /memory/synthesize")
+    """Step 1: POST /memory/smart-search"""
+    _hdr("Step 1 · 一体化检索 /memory/smart-search")
 
     t0 = time.perf_counter()
-    result = client.post("/memory/synthesize", {
-        "user_query": user_query,
-        "graph_results": search_result.get("graph_results", []),
-        "skill_results": search_result.get("skill_results", []),
+    result = client.post("/memory/smart-search", {
+        "query": user_query,
+        "top_k": top_k,
+        "include_graph": True,
+        "include_skills": True,
+        "synthesize": True,
+        "mode": "compact",
     })
     elapsed = time.perf_counter() - t0
 
@@ -204,19 +206,19 @@ def step_reason(
     client: APIClient,
     session_id: str,
     user_query: str,
-    synthesize_result: dict,
+    recall_result: dict,
     append_to_session: bool = True,
 ) -> dict:
-    """Step 3: POST /memory/reason"""
-    _hdr("Step 3 · 最终推理 /memory/reason")
+    """Step 2: POST /memory/reason"""
+    _hdr("Step 2 · 最终推理 /memory/reason")
 
     t0 = time.perf_counter()
     result = client.post("/memory/reason", {
         "session_id": session_id,
         "user_query": user_query,
-        "background_context": synthesize_result.get("background_context", ""),
-        "skill_reuse_plan":   synthesize_result.get("skill_reuse_plan", []),
-        "retrieved_skills":   [],   # 已由 synthesize 处理过，无需重复传
+        "background_context": recall_result.get("background_context", ""),
+        "skill_reuse_plan":   recall_result.get("skill_reuse_plan", []),
+        "retrieved_skills":   [],
         "append_to_session":  append_to_session,
     })
     elapsed = time.perf_counter() - t0
@@ -238,15 +240,14 @@ def step_reason(
 def step_consolidate(
     client: APIClient,
     session_id: str,
-    retrieved_context: str,
     background: bool = True,
 ) -> dict:
-    """Step 4: POST /memory/consolidate
+    """Step 3: POST /memory/consolidate
 
     background=True（默认）：立即返回，固化在服务端后台线程中异步执行。
     background=False：同步等待完成，适合调试（可能耗时数分钟）。
     """
-    _hdr("Step 4 · 记忆固化 /memory/consolidate")
+    _hdr("Step 3 · 记忆固化 /memory/consolidate")
     _info("模式", "后台异步" if background else "同步等待")
 
     timeout = 30 if background else 600  # 后台模式只需等待触发确认
@@ -256,7 +257,6 @@ def step_consolidate(
         url,
         json={
             "session_id": session_id,
-            "retrieved_context": retrieved_context,
             "background": background,
         },
         timeout=timeout,
@@ -276,7 +276,6 @@ def step_consolidate(
         _info("entities_added",  result.get("entities_added", 0))
         _info("facts_added",     result.get("facts_added", 0))
         _info("skills_added",    result.get("skills_added", 0))
-        _info("has_novelty",     result.get("has_novelty"))
 
         if result.get("skipped_reason"):
             _warn(f"跳过原因：{result['skipped_reason']}")
@@ -304,27 +303,22 @@ MULTI_TURN_DIALOGUE = [
 
 
 def run_multi_turn(client: APIClient, session_id: str) -> None:
-    """演示多轮对话的完整 Pipeline——每轮均执行 search→synthesize→reason。"""
+    """演示多轮对话的完整 Pipeline——每轮均执行 smart-search→reason。"""
     _hdr("多轮对话演示（3 轮）")
     print(f"  session_id: {BOLD}{session_id}{RESET}\n")
 
-    last_context = ""
     for turn_idx, query in enumerate(MULTI_TURN_DIALOGUE, start=1):
         print(f"\n{BOLD}【第 {turn_idx} 轮】{RESET} {query}")
 
-        # Search
-        search_res = step_search(client, query, top_k=3)
-
-        # Synthesize
-        synth_res = step_synthesize(client, query, search_res)
-        last_context = synth_res.get("background_context", "")
+        # Recall
+        recall_res = step_smart_search(client, query, top_k=3)
 
         # Reason（写入会话）
-        step_reason(client, session_id, query, synth_res, append_to_session=True)
+        step_reason(client, session_id, query, recall_res, append_to_session=True)
 
     # 最后一轮结束后统一固化（后台异步）
     _hdr("多轮对话结束 · 统一固化")
-    step_consolidate(client, session_id, last_context, background=True)
+    step_consolidate(client, session_id, background=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -374,28 +368,24 @@ def main() -> None:
     else:
         user_query = args.query
 
-        # Step 1: 搜索
-        search_res = step_search(client, user_query, top_k=args.top_k)
+        # Step 1: 一体化检索
+        recall_res = step_smart_search(client, user_query, top_k=args.top_k)
 
-        # Step 2: 合成
-        synth_res = step_synthesize(client, user_query, search_res)
-
-        # Step 3: 推理
+        # Step 2: 推理
         reason_res = step_reason(
-            client, session_id, user_query, synth_res, append_to_session=True
+            client, session_id, user_query, recall_res, append_to_session=True
         )
         _ = reason_res  # 供后续扩展使用
 
-        # Step 4: 固化
+        # Step 3: 固化
         if not args.no_consolidate:
             step_consolidate(
                 client,
                 session_id,
-                retrieved_context=synth_res.get("background_context", ""),
                 background=not args.sync_consolidate,
             )
         else:
-            _hdr("Step 4 · 记忆固化（已跳过）")
+            _hdr("Step 3 · 记忆固化（已跳过）")
             _warn("使用 --no-consolidate 跳过了固化步骤")
 
     # ── 总结 ──────────────────────────────────────────────────────────────────

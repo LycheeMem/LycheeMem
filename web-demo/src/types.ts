@@ -206,7 +206,6 @@ export interface ConsolidatorTrace {
   skills_added: number;
   facts_added: number;
   records_expired: number;
-  has_novelty?: boolean;
   skipped_reason?: string;
   error?: string;
   steps: ConsolidatorStepTrace[];
