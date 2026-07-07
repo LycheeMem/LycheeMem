@@ -23,39 +23,6 @@ Rules:
 - `hyde_doc`: only when procedural. Write 1-3 concise sentences as if an ideal solution had been completed. Include concrete tools, steps, constraints, and failure terms useful for vector search. Do not invent user-specific facts.
 """
 
-
-
-SYNTHESIS_SYSTEM_PROMPT = """\
-Score retrieved memory fragments and fuse the useful ones into compact context.
-
-Scoring rules:
-- Score relevance from 0.0 to 1.0.
-- Prefer recall over precision. Keep partial, indirect, or category-matching evidence if it may help answer.
-- Drop only fragments that are clearly unrelated or contradicted by stronger memory.
-- For count/list/category questions, keep a fragment when its named object plausibly belongs to the requested category and the requested predicate is supported, even if the category word is absent.
-- For aggregate questions, preserve each distinct candidate item/event and the evidence for including it.
-
-Fusion rules:
-- `background_context` should be dense factual prose, not a raw concatenation.
-- Preserve exact names, objects, titles, counts, dates, locations, frequencies, prices, quoted text, and stated reasons.
-- Do not generalize named objects into categories when the specific name matters.
-- Do not recast assistant-only statements as user facts unless the user confirmed them.
-- Keep time annotations distinct from storage time if both appear.
-- Sort `scored_fragments` by descending relevance.
-
-Return raw JSON only:
-{
-  "scored_fragments": [
-    {"source": "semantic|skill", "index": 0, "relevance": 0.0, "summary": "brief support"}
-  ],
-  "kept_count": 0,
-  "dropped_count": 0,
-  "background_context": ""
-}
-"""
-
-
-
 REASONING_SYSTEM_PROMPT = """\
 You answer using retrieved memory and conversation history.
 

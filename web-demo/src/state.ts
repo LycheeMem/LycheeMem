@@ -57,7 +57,7 @@ export interface AppState {
   // Partial trace fragments accumulated during streaming (step name → trace piece)
   partialTrace: Partial<PipelineTrace> | null;
 
-  // Streaming step progress ("wm_manager" | "search" | "synthesize" | "reason")
+  // Streaming step progress ("wm_manager" | "search" | "reason")
   completedSteps: string[];
 
   // 流式输出中的临时文本（token by token 累积）

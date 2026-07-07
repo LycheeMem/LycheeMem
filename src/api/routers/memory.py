@@ -435,7 +435,7 @@ def run_memory_search(
     pipeline,
     req: MemorySearchRequest,
 ) -> MemorySearchResponse:
-    """执行统一记忆检索，返回可直接供 Synthesizer 消费的 richer 结构。"""
+    """执行统一记忆检索。"""
     sc = pipeline.search_coordinator
 
     search_runtime = _build_memory_search_context(
@@ -478,48 +478,40 @@ def run_memory_search(
     )
 
 
-def _synthesize_memory_results(
-    pipeline,
-    *,
-    user_query: str,
-    semantic_results: list[dict[str, Any]],
-    skill_results: list[dict[str, Any]],
-    reference_time: str | None = None,
-) -> dict[str, Any]:
-    """Internal synthesis helper used by smart-search and chat pipeline code."""
-    result = pipeline.synthesizer.run(
-        user_query=user_query,
-        retrieved_graph_memories=semantic_results,
-        retrieved_skills=skill_results,
-        reference_time=reference_time,
-    )
+def _build_memory_background_context(semantic_results: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    seen: set[str] = set()
+    for item in semantic_results:
+        context = str(item.get("constructed_context") or "").strip()
+        if not context:
+            provenance = item.get("provenance")
+            if isinstance(provenance, list):
+                lines: list[str] = []
+                for pv in provenance[:20]:
+                    if not isinstance(pv, dict):
+                        continue
+                    text = str(
+                        pv.get("semantic_text")
+                        or pv.get("fact_text")
+                        or pv.get("summary")
+                        or ""
+                    ).strip()
+                    if text:
+                        lines.append(f"- {text}")
+                context = "\n".join(lines)
 
-    provenance_raw = result.get("provenance", [])
-    provenance_flat: list[dict] = []
-    for item in provenance_raw:
-        if isinstance(item, dict) and isinstance(item.get("items"), list):
-            provenance_flat.extend(item["items"])
-        elif isinstance(item, dict):
-            provenance_flat.append(item)
+        if context and context not in seen:
+            seen.add(context)
+            parts.append(context)
 
-    input_count = int(result.get("input_fragment_count") or (len(semantic_results) + len(skill_results)))
-    kept_count = int(result.get("kept_count") or len(provenance_flat))
-    dropped_count = int(result.get("dropped_count") or max(0, input_count - kept_count))
-
-    return {
-        "background_context": result.get("background_context", ""),
-        "skill_reuse_plan": result.get("skill_reuse_plan", []),
-        "provenance": provenance_flat,
-        "kept_count": kept_count,
-        "dropped_count": dropped_count,
-    }
+    return "\n\n".join(parts)
 
 
 def run_memory_smart_search(
     pipeline,
     req: MemorySmartSearchRequest,
 ) -> dict[str, Any]:
-    """执行 one-shot 检索；可选自动 synthesize，便于宿主快速试验效果。"""
+    """执行 one-shot 检索。"""
     def _trim_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if req.response_level == "full":
             return payload
@@ -537,12 +529,7 @@ def run_memory_smart_search(
             "mode": payload["mode"],
             "background_context": payload.get("background_context", ""),
             "total": payload["total"],
-            "kept_count": payload.get("kept_count", 0),
-            "dropped_count": payload.get("dropped_count", 0),
         }
-        skill_reuse_plan = payload.get("skill_reuse_plan")
-        if skill_reuse_plan:
-            compact_payload["skill_reuse_plan"] = skill_reuse_plan
         return compact_payload
 
     search_result = run_memory_search(
@@ -557,35 +544,6 @@ def run_memory_smart_search(
         ),
     )
 
-    if not req.synthesize:
-        return _trim_payload({
-            "query": search_result.query,
-            "mode": req.mode,
-            "graph_results": search_result.graph_results,
-            "semantic_results": search_result.semantic_results,
-            "skill_results": search_result.skill_results,
-            "total": search_result.total,
-            "synthesized": False,
-        })
-
-    if req.mode == "raw":
-        return _trim_payload({
-            "query": search_result.query,
-            "mode": req.mode,
-            "graph_results": search_result.graph_results,
-            "semantic_results": search_result.semantic_results,
-            "skill_results": search_result.skill_results,
-            "total": search_result.total,
-            "synthesized": False,
-        })
-
-    synth_result = _synthesize_memory_results(
-        pipeline,
-        user_query=req.query,
-        semantic_results=search_result.semantic_results or search_result.graph_results,
-        skill_results=search_result.skill_results,
-        reference_time=req.reference_time,
-    )
     payload: dict[str, Any] = {
         "query": search_result.query,
         "mode": req.mode,
@@ -593,12 +551,7 @@ def run_memory_smart_search(
         "semantic_results": search_result.semantic_results,
         "skill_results": search_result.skill_results,
         "total": search_result.total,
-        "synthesized": True,
-        "background_context": synth_result["background_context"],
-        "skill_reuse_plan": synth_result["skill_reuse_plan"],
-        "provenance": synth_result["provenance"],
-        "kept_count": synth_result["kept_count"],
-        "dropped_count": synth_result["dropped_count"],
+        "background_context": _build_memory_background_context(search_result.semantic_results),
     }
     if req.mode == "compact":
         payload["graph_results"] = []
@@ -748,7 +701,7 @@ async def memory_smart_search(
     req: MemorySmartSearchRequest,
     pipeline=Depends(get_pipeline),
 ):
-    """执行 one-shot 检索，可选自动 synthesize。"""
+    """执行 one-shot 检索。"""
     return await run_in_threadpool(run_memory_smart_search, pipeline, req)
 
 
@@ -770,7 +723,7 @@ async def memory_reason(
     req: MemoryReasonRequest,
     pipeline=Depends(get_pipeline),
 ):
-    """基于合成上下文对用户查询进行最终推理，生成 assistant 回答。
+    """基于检索上下文对用户查询进行最终推理，生成 assistant 回答。
 
     当 append_to_session=True（默认）时：
     - 将用户问题追加到会话（含 token 预算检查与按需压缩），作为下一轮历史

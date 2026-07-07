@@ -25,7 +25,6 @@ from src.api.trace_builders import (
     _build_chat_response,
     _build_reasoner_trace,
     _build_search_trace,
-    _build_synthesizer_trace,
     _build_trace,
     _build_wm_trace,
 )
@@ -257,6 +256,7 @@ async def _run_openai_complete(
     )
 
 
+@router.post("/v1/chat/completions", response_model=OpenAIChatCompletionResponse)
 @router.post("/v1/chat/complete", response_model=OpenAIChatCompletionResponse)
 async def openai_chat_complete(req: OpenAIChatCompletionRequest, pipeline=Depends(get_pipeline)):
     """OpenAI Chat Completions 兼容的非流式端点。"""
@@ -426,7 +426,6 @@ async def chat_stream(req: ChatRequest, pipeline=Depends(get_pipeline)):
     流式 chunk 格式 (Server-Sent Events):
       data: {"type": "step", "step": "wm_manager", "status": "done", "trace_fragment": {...}}
       data: {"type": "step", "step": "search",     "status": "done", "trace_fragment": {...}}
-      data: {"type": "step", "step": "synthesize",  "status": "done", "trace_fragment": {...}}
       data: {"type": "step", "step": "reason",      "status": "done", "trace_fragment": {...}}
       data: {"type": "answer", "content": "最终回答文本"}
       data: {"type": "done", "session_id": "...", "memories_retrieved": N, "trace": {...}}
@@ -487,8 +486,6 @@ async def chat_stream(req: ChatRequest, pipeline=Depends(get_pipeline)):
                         fragment["wm_manager"] = _build_wm_trace(accumulated).model_dump()
                     elif step_name == "search":
                         fragment["search_coordinator"] = _build_search_trace(accumulated).model_dump()
-                    elif step_name == "synthesize":
-                        fragment["synthesizer"] = _build_synthesizer_trace(accumulated).model_dump()
                     elif step_name == "reason":
                         fragment["reasoner"] = _build_reasoner_trace(accumulated).model_dump()
 

@@ -9,11 +9,9 @@ from src.api.models import (
     ConsolidatorTrace,
     GraphMemoryHit,
     PipelineTrace,
-    ProvenanceItem,
     ReasonerTrace,
     SearchCoordinatorTrace,
     SkillHit,
-    SynthesizerTrace,
     WMManagerTrace,
 )
 
@@ -47,7 +45,6 @@ def _build_search_trace(result: dict[str, Any]) -> SearchCoordinatorTrace:
                 memory_type = str(pv.get("memory_type") or "")
                 score = float(pv.get("score") or 0.0)
                 entities = pv.get("entities") or []
-                entity_summary = ", ".join(str(e) for e in entities[:3]) if entities else ""
                 display_name = semantic_text[:120] if semantic_text else record_id
                 graph_hits.append(
                     GraphMemoryHit(
@@ -112,93 +109,6 @@ def _build_search_trace(result: dict[str, Any]) -> SearchCoordinatorTrace:
     )
 
 
-def _build_synthesizer_trace(result: dict[str, Any]) -> SynthesizerTrace:
-    provenance_raw = result.get("provenance", [])
-    provenance: list[ProvenanceItem] = []
-    for idx, p in enumerate(provenance_raw):
-        if not isinstance(p, dict):
-            continue
-        fact_id = str(p.get("fact_id") or "").strip()
-        rrf = float(p.get("rrf") or p.get("relevance") or 0.0)
-        bm25_rank_val = p.get("bm25_rank")
-        bfs_rank_val = p.get("bfs_rank")
-        mention_count = int(p.get("mentions") or 0)
-        dist = p.get("distance") or p.get("gds_distance")
-        graph_distance_val = int(dist) if dist is not None else None
-        cross_enc = p.get("cross_encoder_score")
-        cross_enc_val = float(cross_enc) if cross_enc is not None else None
-        source_eps = p.get("source_episodes") or []
-        if not isinstance(source_eps, list):
-            source_eps = []
-        
-        wrapper_source = str(p.get("source") or "")
-        legacy_summary = str(p.get("summary") or "")
-        nested_items = p.get("items")
-        
-        if isinstance(nested_items, list):
-            for sub_idx, sub in enumerate(nested_items):
-                if not isinstance(sub, dict):
-                    continue
-                sub_fact_id = str(sub.get("fact_id") or "").strip()
-                sub_source = str(sub.get("source") or "").strip()
-                sub_rrf = float(sub.get("rrf") or sub.get("relevance") or 0.0)
-                sub_bm25 = sub.get("bm25_rank")
-                sub_bfs = sub.get("bfs_rank")
-                sub_mentions = int(sub.get("mentions") or 0)
-                sub_dist = sub.get("distance") or sub.get("gds_distance")
-                sub_gd = int(sub_dist) if sub_dist is not None else None
-                sub_ce = sub.get("cross_encoder_score")
-                sub_ce_val = float(sub_ce) if sub_ce is not None else None
-                sub_eps = sub.get("source_episodes") or []
-                if not isinstance(sub_eps, list):
-                    sub_eps = []
-                
-                final_source = sub_source or wrapper_source or "semantic"
-                summary_text = str(sub.get("fact_text") or sub.get("summary") or sub.get("semantic_text") or "")
-                provenance.append(
-                    ProvenanceItem(
-                        source=final_source,
-                        index=idx * 1000 + sub_idx,
-                        relevance=sub_rrf,
-                        fact_id=sub_fact_id,
-                        summary=summary_text,
-                        rrf_score=sub_rrf,
-                        bm25_rank=int(sub_bm25) if sub_bm25 is not None else None,
-                        bfs_rank=int(sub_bfs) if sub_bfs is not None else None,
-                        mention_count=sub_mentions,
-                        graph_distance=sub_gd,
-                        cross_encoder_score=sub_ce_val,
-                        source_episodes=sub_eps,
-                    )
-                )
-            continue
-        
-        final_source = str(p.get("source") or "semantic")
-        summary_text = legacy_summary or str(p.get("fact_text") or p.get("semantic_text") or "")
-        provenance.append(
-            ProvenanceItem(
-                source=final_source,
-                index=int(p.get("index") or idx),
-                relevance=rrf,
-                fact_id=fact_id,
-                summary=summary_text,
-                rrf_score=rrf,
-                bm25_rank=int(bm25_rank_val) if bm25_rank_val is not None else None,
-                bfs_rank=int(bfs_rank_val) if bfs_rank_val is not None else None,
-                mention_count=mention_count,
-                graph_distance=graph_distance_val,
-                cross_encoder_score=cross_enc_val,
-                source_episodes=source_eps,
-            )
-        )
-    return SynthesizerTrace(
-        background_context=str(result.get("background_context", "")),
-        provenance=provenance,
-        skill_reuse_plan=result.get("skill_reuse_plan", []),
-        kept_count=len(provenance),
-    )
-
-
 def _build_reasoner_trace(result: dict[str, Any]) -> ReasonerTrace:
     return ReasonerTrace(response_length=len(result.get("final_response", "")))
 
@@ -208,7 +118,6 @@ def _build_trace(result: dict[str, Any]) -> PipelineTrace:
     return PipelineTrace(
         wm_manager=_build_wm_trace(result),
         search_coordinator=_build_search_trace(result),
-        synthesizer=_build_synthesizer_trace(result),
         reasoner=_build_reasoner_trace(result),
         consolidator=ConsolidatorTrace(status="pending"),
     )

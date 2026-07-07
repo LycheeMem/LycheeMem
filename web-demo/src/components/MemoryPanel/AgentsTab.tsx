@@ -4,7 +4,6 @@ import {
     CheckCircleOutlined,
     ClockCircleOutlined,
     DownOutlined,
-    ExperimentOutlined,
     InboxOutlined,
     RightOutlined,
     SearchOutlined,
@@ -123,56 +122,6 @@ function SearchContent({ search }: { search: PipelineTrace["search_coordinator"]
   );
 }
 
-function SynthContent({ synth }: { synth: PipelineTrace["synthesizer"] }) {
-  // 将 provenance source 翻译为中文
-  const sourceLabel: Record<string, string> = {
-    "semantic": "语义记忆",
-    "record": "语义记录",
-    "composite": "融合记忆",
-    "synth": "融合记忆",
-    "compact_semantic": "语义记忆",
-    "semantic_retrieval": "语义检索",
-    "graphiti_retrieval": "语义检索（旧）",
-    "graphiti_context": "图谱上下文（旧）",
-    "graphiti_community": "图谱社群（旧）",
-  };
-  
-  return (
-    <div className="trace-detail">
-      {synth.provenance.length > 0 && (
-        <>
-          <div className="trace-section-title">溯源 (Provenance) - {synth.provenance.length} 条</div>
-          {synth.provenance.map((pv, i) => {
-            const label = sourceLabel[pv.source] || pv.source;
-            const displayText = pv.summary || (pv.fact_id ? `Fact#${pv.fact_id}` : "（无文本）");
-            return (
-              <div key={i} className="trace-prov-item">
-                <div className="trace-prov-header">
-                  <span className={`trace-tag ${pv.source}`}>{label}</span>
-                  {/* <span className="trace-relevance-bar">
-                    <span style={{ width: `${pv.relevance * 100}%` }} />
-                  </span>
-                  <span className="trace-score">{(pv.relevance * 100).toFixed(0)}%</span> */}
-                </div>
-                <div className="trace-prov-summary">{displayText}</div>
-              </div>
-            );
-          })}
-        </>
-      )}
-      {synth.background_context && (
-        <>
-          <div className="trace-section-title">背景上下文</div>
-          <div className="trace-context-preview">{synth.background_context}</div>
-        </>
-      )}
-      {synth.provenance.length === 0 && !synth.background_context && (
-        <div className="trace-empty">无合成内容</div>
-      )}
-    </div>
-  );
-}
-
 function ReasonerContent({ reasoner }: { reasoner: PipelineTrace["reasoner"] }) {
   return (
     <div className="trace-detail">
@@ -197,7 +146,7 @@ const STEP_NAME_LABELS: Record<string, string> = {
   // Compact 后端步骤
   compact_encoding: "紧凑编码",
   dedup_and_store: "去重与存储",
-  pragmatic_synthesis: "实用合成",
+  pragmatic_synthesis: "实用聚合",
   record_fusion: "记录融合",
   semantic_ingest: "语义摄入",
   // 旧的或备用步骤名
@@ -296,7 +245,6 @@ function TraceContent({ trace }: { trace: PipelineTrace }) {
   const {
     wm_manager: wm,
     search_coordinator: search,
-    synthesizer: synth,
     reasoner,
     consolidator,
   } = trace;
@@ -322,17 +270,6 @@ function TraceContent({ trace }: { trace: PipelineTrace }) {
         defaultOpen={search.total_retrieved > 0}
       >
         <SearchContent search={search} />
-      </TraceStep>
-
-      {/* Synthesizer */}
-      <TraceStep
-        icon={<ExperimentOutlined />}
-        label="合成"
-        summary={`${synth.kept_count} 条保留${synth.skill_reuse_plan.length > 0 ? ` | ${synth.skill_reuse_plan.length} 技能计划` : ""}`}
-        status="done"
-        defaultOpen={synth.provenance.length > 0}
-      >
-        <SynthContent synth={synth} />
       </TraceStep>
 
       {/* Reasoner */}
@@ -376,7 +313,6 @@ function TraceContent({ trace }: { trace: PipelineTrace }) {
 const RUNNING_STEPS = [
   { key: "wm_manager",  traceKey: "wm_manager",        icon: <ApiOutlined />,        label: "工作记忆" },
   { key: "search",      traceKey: "search_coordinator", icon: <SearchOutlined />,     label: "检索" },
-  { key: "synthesize",  traceKey: "synthesizer",        icon: <ExperimentOutlined />, label: "合成" },
   { key: "reason",      traceKey: "reasoner",           icon: <BulbOutlined />,       label: "推理" },
 ];
 
@@ -483,11 +419,6 @@ export default function AgentsTab() {
               summary = `${search.graph_memories.length} 语义记忆 | ${search.skills.length} 技能`;
               content = <SearchContent search={search} />;
               autoOpen = search.total_retrieved > 0;
-            } else if (step.traceKey === "synthesizer") {
-              const synth = stepData as PipelineTrace["synthesizer"];
-              summary = `${synth.kept_count} 条保留${synth.skill_reuse_plan.length > 0 ? ` | ${synth.skill_reuse_plan.length} 技能计划` : ""}`;
-              content = <SynthContent synth={synth} />;
-              autoOpen = synth.provenance.length > 0;
             } else if (step.traceKey === "reasoner") {
               const reasoner = stepData as PipelineTrace["reasoner"];
               summary = `${reasoner.response_length} 字符`;

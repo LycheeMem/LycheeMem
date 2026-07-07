@@ -4,9 +4,9 @@ TOOLS_SCHEMA = [
     {
         "name": "lychee_memory_smart_search",
         "description": (
-            "Primary recall path for agents. Performs LycheeMem search with optional automatic "
-            "synthesis in one tool call. Prefer response_level=minimal for normal agent use to "
-            "reduce token-heavy JSON payloads, and switch to full only for debugging."
+            "Primary recall path for agents. Performs LycheeMem search and can return a compact "
+            "background_context built directly from retrieved memory. Prefer response_level=minimal "
+            "for normal agent use, and switch to full only for debugging."
         ),
         "inputSchema": {
             "type": "object",
@@ -34,20 +34,10 @@ TOOLS_SCHEMA = [
                     "default": True,
                     "description": "是否检索技能库（程序性工作流）。",
                 },
-                "synthesize": {
-                    "type": "boolean",
-                    "default": True,
-                    "description": "是否在检索后自动执行 synthesize，生成 background_context。",
-                },
-                "include_provenance": {
-                    "type": "boolean",
-                    "default": False,
-                    "description": "是否返回 provenance 溯源细节。默认关闭，以减少返回体积。",
-                },
                 "mode": {
                     "type": "string",
                     "default": "full",
-                    "description": "返回模式：raw 仅返回原始检索结果；full 返回原始结果和 synthesize 结果；compact 仅返回压缩后的结果。",
+                    "description": "返回模式：raw/full 返回检索结果；compact 仅返回轻量上下文。",
                 },
                 "response_level": {
                     "type": "string",
@@ -62,7 +52,7 @@ TOOLS_SCHEMA = [
         "name": "lychee_memory_search",
         "description": (
             "Developer-facing raw retrieval tool. Retrieve relevant information from LycheeMem "
-            "structured long-term memory when you explicitly want the unsynthesized semantic_results "
+            "structured long-term memory when you explicitly want the raw semantic_results "
             "(legacy alias: graph_results) and skill_results payload. For normal agent use, prefer lychee_memory_smart_search."
         ),
         "inputSchema": {

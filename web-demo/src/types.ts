@@ -60,7 +60,6 @@ export type AgentStatusValue = "idle" | "running" | "done";
 export const AGENT_NAMES = [
   "wm_manager",
   "search_coordinator",
-  "synthesizer",
   "reasoner",
   "consolidator",
 ] as const;
@@ -76,7 +75,6 @@ export interface AgentInfo {
 export const AGENTS: AgentInfo[] = [
   { key: "wm_manager", icon: "\u{1F9E9}", label: "WM Manager" },
   { key: "search_coordinator", icon: "\u{1F50D}", label: "Search" },
-  { key: "synthesizer", icon: "\u{1F52C}", label: "Synthesizer" },
   { key: "reasoner", icon: "\u{1F4A1}", label: "Reasoner" },
   { key: "consolidator", icon: "\u{1F4E6}", label: "Consolidator" },
 ];
@@ -103,14 +101,12 @@ export interface SessionInfo {
 export const PIPELINE_STEPS = [
   "wm_manager",
   "search_coordinator",
-  "synthesizer",
   "reasoner",
 ] as const;
 
 export const STEP_LABELS: Record<string, string> = {
   wm_manager: "\u5DE5\u4F5C\u8BB0\u5FC6",
   search_coordinator: "\u68C0\u7D22",
-  synthesizer: "\u5408\u6210",
   reasoner: "\u63A8\u7406",
 };
 
@@ -173,22 +169,6 @@ export interface SearchCoordinatorTrace {
   total_retrieved: number;
 }
 
-export interface ProvenanceItem {
-  source: string;
-  index: number;
-  relevance: number;
-  summary: string;
-  fact_id?: string;
-}
-
-export interface SynthesizerTrace {
-  background_context: string;
-  provenance: ProvenanceItem[];
-  skill_reuse_plan: Record<string, unknown>[];
-  kept_count: number;
-  dropped_count: number;
-}
-
 export interface ReasonerTrace {
   response_length: number;
 }
@@ -214,7 +194,6 @@ export interface ConsolidatorTrace {
 export interface PipelineTrace {
   wm_manager: WMManagerTrace;
   search_coordinator: SearchCoordinatorTrace;
-  synthesizer: SynthesizerTrace;
   reasoner: ReasonerTrace;
   consolidator: ConsolidatorTrace;
 }

@@ -4,7 +4,7 @@ LangGraph Pipeline 构建。
 定义节点和边，编译为可执行的状态图。
 
 流水线拓扑：
-  __start__ → wm_manager → search → synthesize → reason → __end__
+  __start__ → wm_manager → visual_memory → search → reason → __end__
 
 固化 Agent 不在主图中，在 reason 节点完成后通过 asyncio.create_task 异步触发。
 """
@@ -21,7 +21,6 @@ from langgraph.graph import StateGraph, START, END
 from src.agents.consolidator_agent import ConsolidatorAgent
 from src.agents.reasoning_agent import ReasoningAgent
 from src.agents.search_coordinator import SearchCoordinator
-from src.agents.synthesizer_agent import SynthesizerAgent
 from src.agents.wm_manager import WMManager
 from src.core.state import PipelineState
 from src.llm.base import _token_accumulator
@@ -40,13 +39,11 @@ class LycheePipeline:
         self,
         wm_manager: WMManager,
         search_coordinator: SearchCoordinator,
-        synthesizer: SynthesizerAgent,
         reasoner: ReasoningAgent,
         consolidator: ConsolidatorAgent,
     ):
         self.wm_manager = wm_manager
         self.search_coordinator = search_coordinator
-        self.synthesizer = synthesizer
         self.reasoner = reasoner
         self.consolidator = consolidator
 
@@ -291,6 +288,55 @@ class LycheePipeline:
             "visual_context": visual_context,
         }
 
+    @staticmethod
+    def _memory_context_from_hit(mem: dict[str, Any]) -> str:
+        context = str(mem.get("constructed_context") or "").strip()
+        if context:
+            return context
+
+        provenance = mem.get("provenance")
+        if isinstance(provenance, list):
+            lines: list[str] = []
+            for item in provenance[:20]:
+                if not isinstance(item, dict):
+                    continue
+                text = str(
+                    item.get("semantic_text")
+                    or item.get("fact_text")
+                    or item.get("summary")
+                    or ""
+                ).strip()
+                if text:
+                    lines.append(text)
+            if lines:
+                return "\n".join(f"- {line}" for line in lines)
+
+        anchor = mem.get("anchor") if isinstance(mem.get("anchor"), dict) else mem
+        props = anchor.get("properties", {}) if isinstance(anchor, dict) else {}
+        text = str(
+            props.get("name")
+            or anchor.get("name", "")
+            or anchor.get("label", "")
+            or ""
+        ).strip()
+        return text
+
+    def _build_background_context(self, state: PipelineState, graph_memories: list[dict[str, Any]]) -> str:
+        parts: list[str] = []
+        visual_context = str(state.get("visual_context") or "").strip()
+        if visual_context:
+            parts.append(visual_context)
+
+        seen: set[str] = set()
+        for mem in graph_memories:
+            text = self._memory_context_from_hit(mem)
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            parts.append(text)
+
+        return "\n\n".join(parts)
+
     def _search_node(self, state: PipelineState) -> dict[str, Any]:
         """检索协调节点：从图谱和技能库检索相关记忆。"""
         result = self.search_coordinator.run(
@@ -306,67 +352,13 @@ class LycheePipeline:
         return {
             "retrieved_graph_memories": retrieved_graph_memories,
             "retrieved_skills": result["retrieved_skills"],
+            "background_context": self._build_background_context(state, retrieved_graph_memories),
             "retrieval_plan": result.get("retrieval_plan", {}),
             "action_state": result.get("action_state", {}),
             "search_mode": result.get("search_mode", "answer"),
             "semantic_usage_log_id": result.get("semantic_usage_log_id", ""),
             "feedback_update": result.get("feedback_update", {}),
         }
-
-    def _synthesize_node(self, state: PipelineState) -> dict[str, Any]:
-        """整合排序节点：融合多源检索结果为 background_context + skill_reuse_plan。"""
-        visual_context = state.get("visual_context", "")
-        input_images = state.get("input_images") or []
-
-        # 如果用户上传了新图片，视觉记忆是唯一权威来源
-        # 直接忽略图谱记忆中的旧视觉描述
-        if visual_context and input_images:
-            # 不使用 Synthesizer 过滤，避免旧记忆干扰
-            logger.info("New image uploaded - using visual memory as authoritative source")
-            return {
-                "background_context": visual_context,
-                "skill_reuse_plan": [],
-                "provenance": [{"source": "visual_memory", "index": 0, "relevance": 1.0, "summary": "Newly uploaded image"}],
-            }
-
-        if visual_context:
-            graph_memories = state.get("retrieved_graph_memories", [])[:]
-            graph_memories.insert(0, {
-                "constructed_context": visual_context,
-                "anchor": {"node_id": "visual_memory", "type": "visual"},
-            })
-            logger.info("Visual context injected as first memory source")
-
-            result = self.synthesizer.run(
-                user_query=state["user_query"],
-                retrieved_graph_memories=graph_memories,
-                retrieved_skills=state.get("retrieved_skills", []),
-                reference_time=state.get("reference_time"),
-            )
-
-            bg_context = result.get("background_context", "")
-            visual_key_info = visual_context[:80] if visual_context else ""
-            if visual_key_info and visual_key_info not in bg_context[:300]:
-                bg_context = visual_context + "\n\n" + bg_context
-                logger.info("Visual context was filtered out, prepending manually")
-
-            return {
-                "background_context": bg_context,
-                "skill_reuse_plan": result.get("skill_reuse_plan", []),
-                "provenance": result.get("provenance", []),
-            }
-        else:
-            result = self.synthesizer.run(
-                user_query=state["user_query"],
-                retrieved_graph_memories=state.get("retrieved_graph_memories", []),
-                retrieved_skills=state.get("retrieved_skills", []),
-                reference_time=state.get("reference_time"),
-            )
-            return {
-                "background_context": result["background_context"],
-                "skill_reuse_plan": result.get("skill_reuse_plan", []),
-                "provenance": result.get("provenance", []),
-            }
 
     def _reason_node(self, state: PipelineState) -> dict[str, Any]:
         """推理节点：生成最终回答（含技能复用计划）。"""
@@ -375,6 +367,7 @@ class LycheePipeline:
             compressed_history=state.get("compressed_history", []),
             background_context=state.get("background_context", ""),
             skill_reuse_plan=state.get("skill_reuse_plan", []),
+            retrieved_skills=state.get("retrieved_skills", []),
             reference_time=state.get("reference_time"),
         )
 
@@ -405,14 +398,12 @@ class LycheePipeline:
         g.add_node("wm_manager", self._wm_manager_node)
         g.add_node("visual_memory", self._visual_memory_node)
         g.add_node("search", self._search_node)
-        g.add_node("synthesize", self._synthesize_node)
         g.add_node("reason", self._reason_node)
 
         g.add_edge(START, "wm_manager")
         g.add_edge("wm_manager", "visual_memory")
         g.add_edge("visual_memory", "search")
-        g.add_edge("search", "synthesize")
-        g.add_edge("synthesize", "reason")
+        g.add_edge("search", "reason")
         g.add_edge("reason", END)
 
         return g.compile()
@@ -538,10 +529,6 @@ class LycheePipeline:
             state.update(patch)
             yield {"type": "step", "step": "search", "status": "done", "patch": patch}
 
-            patch = await asyncio.to_thread(self._synthesize_node, state)
-            state.update(patch)
-            yield {"type": "step", "step": "synthesize", "status": "done", "patch": patch}
-
             # reason 阶段：流式生成，逐 token yield，最后再发 step:reason 完成事件
             streaming_response = ""
             async for token in self.reasoner.astream(
@@ -549,6 +536,7 @@ class LycheePipeline:
                 compressed_history=state.get("compressed_history", []),
                 background_context=state.get("background_context", ""),
                 skill_reuse_plan=state.get("skill_reuse_plan", []),
+                retrieved_skills=state.get("retrieved_skills", []),
                 reference_time=state.get("reference_time"),
             ):
                 streaming_response += token

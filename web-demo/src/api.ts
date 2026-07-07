@@ -116,7 +116,7 @@ export type StreamEvent = StreamStepEvent | StreamTokenEvent | StreamAnswerEvent
 
 /**
  * SSE 流式对话。通过回调实时接收每个 pipeline 步骤的进度。
- * 后端依次发送 step 事件（wm_manager / search / synthesize），
+ * 后端依次发送 step 事件（wm_manager / search），
  * 然后在 reason 阶段发送多个 token 事件，最后发送 step:reason / answer / done。
  */
 export async function streamChatMessage(

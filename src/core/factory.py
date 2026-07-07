@@ -13,7 +13,6 @@ import logging
 from src.agents.consolidator_agent import ConsolidatorAgent
 from src.agents.reasoning_agent import ReasoningAgent
 from src.agents.search_coordinator import SearchCoordinator
-from src.agents.synthesizer_agent import SynthesizerAgent
 from src.agents.wm_manager import WMManager
 from src.core.graph import LycheePipeline
 from src.embedder.base import BaseEmbedder
@@ -136,7 +135,6 @@ def create_pipeline(
         semantic_engine=semantic_engine,
         skill_top_k=skill_top_k,
     )
-    synthesizer = SynthesizerAgent(llm=llm)
     reasoner = ReasoningAgent(llm=llm)
     consolidator = ConsolidatorAgent(
         llm=llm,
@@ -236,7 +234,6 @@ def create_pipeline(
     pipeline = LycheePipeline(
         wm_manager=wm_manager,
         search_coordinator=search_coordinator,
-        synthesizer=synthesizer,
         reasoner=reasoner,
         consolidator=consolidator,
     )

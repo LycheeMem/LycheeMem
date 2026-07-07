@@ -51,42 +51,6 @@ class SearchCoordinatorTrace(BaseModel):
     total_retrieved: int = 0
 
 
-class ProvenanceItem(BaseModel):
-    """溯源条目：携带一条 Fact 的检索评分元数据以及回溯到原始 Episode 的完整引用链。
-
-    Paper §2.1: "Semantic artifacts can be traced to their sources for citation
-    or quotation, while episodes can quickly retrieve their relevant entities
-    and facts."
-    """
-
-    source: str = ""          # 来源标识（如 "graphiti_retrieval"）
-    index: int = 0            # 在 provenance 列表中的位置（0-based）
-    relevance: float = 0.0    # 综合得分（RRF + boosts + cross-encoder）
-
-    fact_id: str = ""         # 对应 Fact 节点的 fact_id
-    summary: str = ""         # Fact 的 fact_text（人类可读）
-
-    rrf_score: float = 0.0
-    bm25_rank: int | None = None
-    bfs_rank: int | None = None
-    mention_count: int = 0
-    graph_distance: int | None = None
-    cross_encoder_score: float | None = None
-
-    # 每条条目是一个 Episode 快照，包含 episode_id、session_id、role、
-    # content（原始文本）、turn_index、t_ref（参考时间戳）。
-    # 通过 EVIDENCE_FOR（Fact 直接证据）或 MENTIONS（实体出现）关系
-    source_episodes: list[dict[str, Any]] = []
-
-
-class SynthesizerTrace(BaseModel):
-    background_context: str = ""
-    provenance: list[ProvenanceItem] = []
-    skill_reuse_plan: list[dict[str, Any]] = []
-    kept_count: int = 0
-    dropped_count: int = 0
-
-
 class ReasonerTrace(BaseModel):
     response_length: int = 0
 
@@ -110,7 +74,6 @@ class ConsolidatorTrace(BaseModel):
 class PipelineTrace(BaseModel):
     wm_manager: WMManagerTrace = WMManagerTrace()
     search_coordinator: SearchCoordinatorTrace = SearchCoordinatorTrace()
-    synthesizer: SynthesizerTrace = SynthesizerTrace()
     reasoner: ReasonerTrace = ReasonerTrace()
     consolidator: ConsolidatorTrace = ConsolidatorTrace()
 
@@ -296,7 +259,6 @@ class MemorySmartSearchRequest(BaseModel):
     session_id: str | None = Field(default=None, min_length=1, max_length=128)
     include_graph: bool = True
     include_skills: bool = True
-    synthesize: bool = True
     mode: str = Field(default="compact", pattern="^(raw|full|compact)$")
     response_level: str = Field(default="full", pattern="^(minimal|compact|full)$")
     reference_time: str | None = None
@@ -309,16 +271,11 @@ class MemorySmartSearchResponse(BaseModel):
     semantic_results: list[dict[str, Any]] = Field(default_factory=list)
     skill_results: list[dict[str, Any]] = Field(default_factory=list)
     total: int
-    synthesized: bool = False
     background_context: str = ""
-    skill_reuse_plan: list[dict[str, Any]] = []
-    provenance: list[dict[str, Any]] = []
-    kept_count: int = 0
-    dropped_count: int = 0
 
 
 class MemoryReasonRequest(BaseModel):
-    """最终推理请求：基于合成后的上下文生成回答。
+    """最终推理请求：基于检索上下文生成回答。
 
     典型用法：
       1. POST /memory/smart-search   → background_context / skill_reuse_plan
