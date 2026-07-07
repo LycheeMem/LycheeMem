@@ -191,6 +191,8 @@ class SemanticIngestionMixin:
         exact_unique: dict[str, MemoryRecord] = {}
         for record in new_records:
             if record.record_id:
+                if reference_timestamp:
+                    record.created_at = reference_timestamp
                 exact_unique[record.record_id] = record
         persisted_records = list(exact_unique.values())
 
