@@ -32,7 +32,7 @@ async def pipeline_status(pipeline=Depends(get_pipeline)):
         # composite records 作为"边"的近似
         try:
             debug = sc.semantic_engine.export_debug()
-            edge_count = len(debug.get("composites", []))
+            edge_count = len(debug.get("composites") or debug.get("evidence_nodes") or [])
         except Exception:
             edge_count = 0
     else:
@@ -78,9 +78,13 @@ async def last_consolidation(
 
 
 @router.post("/memory/consolidate/{session_id}", response_model=DeleteResponse)
-async def trigger_consolidation(session_id: str, pipeline=Depends(get_pipeline)):
+async def trigger_consolidation(
+    session_id: str,
+    flush_session: bool = Query(default=False),
+    pipeline=Depends(get_pipeline),
+):
     """手动触发指定会话的固化（实体→图谱，技能→技能库）。"""
-    result = pipeline.consolidate(session_id)
+    result = pipeline.consolidate(session_id, flush_session=flush_session)
     entities = result.get("entities_added", 0)
     skills = result.get("skills_added", 0)
     return DeleteResponse(

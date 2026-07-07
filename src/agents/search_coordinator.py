@@ -337,12 +337,36 @@ class SearchCoordinator(BaseAgent):
     def _normalize_retrieval_plan(cls, plan: dict[str, Any], user_query: str) -> dict[str, Any]:
         """Normalize the LLM retrieval plan shape without re-planning by rules."""
         plan = dict(plan or {})
-        is_aggregate = bool(plan.get("is_aggregate_query"))
+        is_aggregate = bool(plan.get("is_aggregate_query")) or str(
+            plan.get("question_type") or ""
+        ).strip().lower() == "aggregate"
         slim = {
             "reason": str(plan.get("reason") or plan.get("reasoning") or ""),
             "mode": str(plan.get("mode") or "answer"),
             "semantic_queries": [str(x) for x in (plan.get("semantic_queries") or []) if str(x or "").strip()],
             "pragmatic_queries": [str(x) for x in (plan.get("pragmatic_queries") or []) if str(x or "").strip()],
+            "question_type": str(
+                plan.get("question_type") or ("aggregate" if is_aggregate else "single")
+            ),
+            "temporal_filter": plan.get("temporal_filter") if isinstance(plan.get("temporal_filter"), dict) else {},
+            "evidence_target": str(
+                plan.get("evidence_target") or plan.get("aggregate_target") or user_query or ""
+            ),
+            "evidence_constraints": [
+                str(x)
+                for x in (
+                    plan.get("evidence_constraints")
+                    or plan.get("aggregate_constraints")
+                    or []
+                )
+                if str(x or "").strip()
+            ],
+            "constraints": [
+                x for x in (plan.get("constraints") or []) if isinstance(x, dict)
+            ],
+            "evidence_routes": [
+                x for x in (plan.get("evidence_routes") or []) if isinstance(x, dict)
+            ],
         }
         if not is_aggregate:
             slim["is_aggregate_query"] = False
@@ -362,6 +386,10 @@ class SearchCoordinator(BaseAgent):
         slim["aggregate_target"] = target
         slim["aggregate_constraints"] = constraints
         slim["semantic_queries"] = semantic_queries or [str(user_query or "").strip()]
+        if not slim["evidence_target"]:
+            slim["evidence_target"] = target or str(user_query or "").strip()
+        if not slim["evidence_constraints"]:
+            slim["evidence_constraints"] = constraints
         return slim
 
     def _build_skill_query(

@@ -1,5 +1,8 @@
 """Prompt templates for compact semantic memory."""
 
+# ---------------------------------------------------------------------------
+# Compact Semantic Encoding
+# ---------------------------------------------------------------------------
 
 COMPACT_ENCODING_SYSTEM = """\
 Extract atomic, lossless, user-grounded memory records from the conversation.
@@ -84,140 +87,177 @@ Output:
 """
 
 
-
-FEEDBACK_CLASSIFICATION_SYSTEM = """\
-Classify whether the user is giving explicit feedback about the previous answer or action.
-
-Labels:
-- `positive`: success, satisfaction, resolution, approval.
-- `negative`: failure, unresolved issue, frustration, error still present.
-- `correction`: the user corrects a previous answer or gives the right answer.
-- empty string: no clear feedback.
-
-Return raw JSON only:
-{
-  "feedback": "positive|negative|correction|",
-  "outcome": "success|fail|unknown"
-}
-
-Map positive to success, negative/correction to fail, and empty feedback to unknown.
-"""
-
-
 RETRIEVAL_PLANNING_SYSTEM = """\
-Write a JSON plan for finding evidence relevant to the user request.
+Write a JSON plan for answering a user question from past conversation memory.
 
 Inputs:
 - <USER_QUERY>: current request.
 - <RECENT_CONTEXT>: recent turns, if any.
-- <ACTION_STATE>: optional task hints, constraints, missing slots, tools, or failure signals.
 
-First decide the information need:
-- What fact, event, preference, procedure, constraint, or evidence is needed?
-- Is the user asking for one best fact, or for many matching facts/events?
-- Are there explicit filters such as person, time, place, object class, project, owner, or condition?
+Your job:
+- Look only at the user-visible wording in <USER_QUERY> and <RECENT_CONTEXT>.
+- Describe only what the user is asking for.
+- Do not decide whether the answer is available or unavailable.
+- Do not speculate beyond the user-visible question.
 
-Mode:
-- `answer`: factual lookup or question answering.
-- `action`: task execution, how-to, procedure, troubleshooting, tool choice.
-- `mixed`: factual lookup plus task support.
+Question classification:
+- `question_type` describes the question form visible from the user request:
+  `single`, `aggregate`, `temporal`, `comparison`, `personalized_advice`,
+  `prior_assistant_response`, or `other`.
+- Use `single` when the user asks for one remembered fact, event, preference, attribute, or detail.
+- Use `aggregate` when the user asks for a count, list, set, summary, or all matching items/events.
+- Use `temporal` when the answer depends on date, order, duration, deadline, recurrence, or time span.
+- Use `comparison` when the user asks to compare two or more things by a non-time attribute.
+- Use `personalized_advice` when the user asks for advice, recommendations, or choices tailored to remembered preferences, constraints, experiences, or goals.
+- Use `prior_assistant_response` when the user asks what the assistant previously recommended, listed, generated, named, linked, explained, wrote, selected, or said.
+- If several labels could apply, choose the one most central to the final answer. For example,
+  "Which happened first..." is `temporal`, while "list all..." is `aggregate`.
 
 Query generation:
-- `semantic_queries` should be short phrases that could match stored text. Use 2-12 unless the query is trivial.
-- Include direct phrases when useful, but also include alternative wording likely to appear in ordinary conversation.
+- `semantic_queries` should be multiple short rewritten queries that could match likely past conversation wording. Use 4-16 unless the query is trivial.
+- Include direct phrases when useful, but also include alternative wording likely to appear in ordinary conversation if the fact really happened.
 - Preserve important entities, dates, people, places, and constraints where they are necessary.
 - Do not make every query repeat every filter word. Some relevant evidence may mention the concrete fact/event without the category or location from the question.
-- `pragmatic_queries` are for procedures, tools, constraints, failure patterns, and operational requirements. Leave empty for ordinary factual lookup.
 - Use the same language as the user query when natural.
 
-Aggregate/list/count planning:
-- Set `is_aggregate_query:true` when answering requires collecting multiple facts/events: counts, lists, enumerations, comparisons, summaries, "which/what all", or "how many".
-- `aggregate_target`: the object, event class, or fact set being counted/listed.
-- `aggregate_constraints`: required predicates, filters, or conditions.
-- For aggregate `semantic_queries`, generate evidence expressions rather than only keyword templates.
-- Cover these query types when relevant:
-  1. constrained evidence: target/filter plus predicate;
-  2. unconstrained evidence: predicate/event wording without the target/filter;
-  3. indirect evidence: resulting state, acquisition, removal, setup, recovery, completion, cancellation, replacement, repair, change, confirmation, or before/after wording implied by the predicate.
+Evidence target and constraints:
+- Fill `evidence_target` with the fact, event, person, object, relation, attribute, or set the question is about.
+- Fill `evidence_constraints` with explicit predicates, filters, attributes, relations, conditions, or answer requirements from the user question.
+- For a count/list/summary request, `evidence_target` is the set being collected and `evidence_constraints` are the membership conditions.
+- For a single request, `evidence_target` is the specific fact/entity/event and `evidence_constraints` are the needed attributes or relations.
 - Do not invent concrete answer entities unless they are explicitly present in the inputs.
-- Do not rely on domain-specific examples. Generalize from the predicate and constraints.
-- Self-check before returning: if most aggregate queries merely restate the same target and predicate words, replace several with indirect or unconstrained evidence expressions.
+- Do not rely on domain-specific examples. Generalize from predicate meaning and user wording.
+
+Evidence needs:
+- `evidence_routes` breaks the question into independent user-visible evidence needs.
+- Use one route for a simple single request.
+- Use multiple routes when the user explicitly asks about different named objects, events, endpoints, people, attributes, or set members.
+- Each route should have `route_id`, `evidence_goal`, route-specific `queries`, optional `constraints`, and optional `temporal_filter`.
+- `queries` inside a route should target that route's evidence goal specifically.
+- `constraints` should describe properties using generic fields such as `kind` and `value`.
+
+Time:
+- If the request has an explicit or clearly inferable event-time range, set `temporal_filter` with `since` and/or `until` in YYYY-MM-DD form.
+- For "on DATE" or "that day", set both `since` and `until` to DATE.
+- For "before DATE", "prior to DATE", or "by DATE", set only `until` to DATE.
+- For "after DATE", "since DATE", or "from DATE onward", set only `since` to DATE.
+- For "between A and B", set `since` to A and `until` to B.
+- Use the event date implied by the user query and recent context.
+- Leave `temporal_filter` empty when the time range is vague or not needed.
+
+Self-check before returning:
+- If most queries merely restate the same words from the user query, replace several with natural expressions that could appear when the requested fact happened.
+- For predicate/action questions, include ordinary expressions of the observable result, state change, before/after contrast, completion, acquisition, removal, setup, recovery, cancellation, confirmation, or update implied by the predicate.
+
+Example:
+Input:
+<USER_QUERY>
+Which happened earlier: I booked the dental cleaning or I renewed my community garden plot?
+</USER_QUERY>
+<RECENT_CONTEXT>
+</RECENT_CONTEXT>
+
+Output:
+{
+  "reason": "The user asks which of two user events happened earlier. The plan needs separate queries for each event and their dates, then the answer can compare those dates.",
+  "question_type": "temporal",
+  "semantic_queries": [
+    "booked dental cleaning",
+    "dental cleaning appointment booked",
+    "scheduled dentist cleaning",
+    "renewed community garden plot",
+    "community garden plot renewal",
+    "garden plot renewed"
+  ],
+  "temporal_filter": {},
+  "evidence_target": "the two user events and their event dates",
+  "evidence_constraints": [
+    "dental cleaning booking event",
+    "community garden plot renewal event",
+    "event date for each event"
+  ],
+  "constraints": [
+    {"kind": "relation", "value": "compare which of two events happened first"}
+  ],
+  "evidence_routes": [
+    {
+      "route_id": "dental_cleaning",
+      "evidence_goal": "Find evidence that the user booked the dental cleaning and identify when it happened.",
+      "queries": [
+        "booked dental cleaning",
+        "dental cleaning appointment booked",
+        "scheduled dentist cleaning"
+      ],
+      "constraints": [
+        {"kind": "event", "value": "dental cleaning booking"},
+        {"kind": "attribute", "value": "event date"}
+      ],
+      "temporal_filter": {}
+    },
+    {
+      "route_id": "garden_plot_renewal",
+      "evidence_goal": "Find evidence that the user renewed the community garden plot and identify when it happened.",
+      "queries": [
+        "renewed community garden plot",
+        "community garden plot renewal",
+        "garden plot renewed"
+      ],
+      "constraints": [
+        {"kind": "event", "value": "community garden plot renewal"},
+        {"kind": "attribute", "value": "event date"}
+      ],
+      "temporal_filter": {}
+    }
+  ]
+}
 
 Return raw JSON only:
 {
-  "reason": "brief planning reason: mode, aggregate decision, target/constraints, query strategy",
-  "mode": "answer|action|mixed",
+  "reason": "brief planning reason: what the user asks, target/constraints, query strategy",
+  "question_type": "single|aggregate|temporal|comparison|personalized_advice|prior_assistant_response|other",
   "semantic_queries": ["query"],
-  "pragmatic_queries": [],
-  "is_aggregate_query": false,
-  "aggregate_target": "",
-  "aggregate_constraints": []
+  "temporal_filter": {},
+  "evidence_target": "",
+  "evidence_constraints": [],
+  "constraints": [
+    {"kind": "time|entity|status|relation|attribute|other", "value": ""}
+  ],
+  "evidence_routes": [
+    {
+      "route_id": "r1",
+      "evidence_goal": "specific user-visible evidence this route should find",
+      "queries": ["route-specific query"],
+      "constraints": [
+        {"kind": "time|entity|status|relation|attribute|other", "value": ""}
+      ],
+      "temporal_filter": {}
+    }
+  ]
 }
 """
 
 
-RETRIEVAL_ADEQUACY_CHECK_SYSTEM = """\
-Judge whether the provided evidence is sufficient for the user query.
+# ---------------------------------------------------------------------------
+# Semantic Memory Reasoning
+# ---------------------------------------------------------------------------
+
+SEMANTIC_REASONING_SYSTEM = """\
+You answer using retrieved memory and conversation history.
+
+{background_section}
 
 Rules:
-- Use only the provided evidence, lookup plan, and action state.
-- For a single factual question, sufficient means the core answer is directly or strongly supported.
-- For inferential questions, sufficient means the evidence contains enough behavior, values, events, or facts to support a grounded inference.
-- For aggregate questions, sufficient means there is broad enough coverage for the requested count/list, not just one relevant example.
-- For action/mixed requests, check constraints, missing slots, tool choice basis, procedures, and failure-avoidance information.
-- Prefer `is_sufficient:true` unless a critical gap is clear.
-- When insufficient, describe the missing information in searchable terms.
-
-Return raw JSON only:
-{
-  "missing_info": "",
-  "is_sufficient": true,
-  "missing_constraints": [],
-  "missing_slots": [],
-  "missing_affordances": [],
-  "needs_failure_avoidance": false,
-  "needs_tool_selection_basis": false
-}
-"""
-
-
-RETRIEVAL_ADDITIONAL_QUERIES_SYSTEM = """\
-Generate supplementary lookup terms for gaps found by the adequacy check.
-
-Rules:
-- Target the specific missing evidence, not the whole original query again.
-- Preserve necessary names, dates, places, objects, tools, and constraints.
-- Add semantic queries for facts/events/preferences.
-- Add pragmatic queries for tools/procedures/constraints/failures.
-- Do not repeat queries that already produced the current evidence.
-- Keep each list short: 0-4 items.
-
-Return raw JSON only:
-{
-  "semantic_queries": [],
-  "pragmatic_queries": [],
-  "tool_hints": [],
-  "required_constraints": [],
-  "required_affordances": [],
-  "missing_slots": []
-}
-"""
-
-
-COMPOSITE_FILTER_SYSTEM = """\
-Select summaries that may help answer the query.
-
-Rules:
-- Select a summary if any part could be relevant. Prefer recall over precision.
-- For count/list/category questions, keep summaries that mention a plausible member, event, or condition even if the exact category word is absent.
-- Put an id in `needs_detail` when the summary is relevant but lacks exact names, dates, values, steps, objects, or source details.
-- `needs_detail` must be a subset of `selected_ids`.
-- Exclude clearly unrelated summaries.
-
-Return raw JSON only:
-{
-  "selected_ids": ["id"],
-  "needs_detail": [],
-  "reasoning": "brief reason"
-}
+- Check memory first. Prefer retrieved evidence over guesses.
+- Check the subject and premise before answering. Do not attribute one person's fact to another person.
+- Bridge wording differences when memory supports the same underlying fact, event, or category.
+- For count/list/category questions:
+  - Do not require the memory to repeat the category word from the question.
+  - Decide whether each named object belongs to the requested category using ordinary world knowledge and memory context.
+  - Include an item only when both the category match and the requested predicate/event are supported.
+  - Count distinct supported items/events; avoid duplicate counting of the same evidence.
+- For inferential questions, give the best-supported likely answer from observed behavior, values, goals, preferences, or events. Do not refuse only because the exact wording is absent.
+- Preserve exact names, objects, counts, dates, frequencies, places, and proper nouns.
+- If evidence is partial, answer the supported part and state the uncertainty.
+- Say the information is unavailable only when no retrieved memory provides relevant evidence.
+- Keep the final answer concise and direct.
 """

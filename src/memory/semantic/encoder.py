@@ -50,14 +50,36 @@ class CompactSemanticEncoder:
         Returns:
             编码完成的 MemoryRecord 列表
         """
-        raw_records = self._encode_records(
+        records, disambiguation_context = self.encode_conversation_with_disambiguation(
+            current_turns,
+            previous_turns=previous_turns,
+            reference_context=reference_context,
+            session_id=session_id,
+            turn_index_offset=turn_index_offset,
+            session_date=session_date,
+        )
+        self.last_disambiguation_context = disambiguation_context
+        return records
+
+    def encode_conversation_with_disambiguation(
+        self,
+        current_turns: list[dict[str, Any]],
+        *,
+        previous_turns: list[dict[str, Any]] | None = None,
+        reference_context: str | None = None,
+        session_id: str = "",
+        turn_index_offset: int = 0,
+        session_date: str | None = None,
+    ) -> tuple[list[MemoryRecord], str]:
+        """Encode turns and return the disambiguation note without shared state."""
+        raw_records, disambiguation_context = self._encode_records_with_disambiguation(
             current_turns,
             previous_turns or [],
             session_date=session_date,
             reference_context=reference_context,
         )
         if not raw_records:
-            return []
+            return [], disambiguation_context
 
         now_iso = datetime.now(timezone.utc).isoformat()
         results: list[MemoryRecord] = []
@@ -99,9 +121,11 @@ class CompactSemanticEncoder:
             )
             results.append(record)
 
-        return results
+        return results, disambiguation_context
 
+    # ──────────────────────────────────────
     # 单次 LLM 编码（抽取 + 指代消解 + metadata）
+    # ──────────────────────────────────────
 
     def _encode_records(
         self,
@@ -111,7 +135,24 @@ class CompactSemanticEncoder:
         reference_context: str | None = None,
     ) -> list[dict[str, Any]]:
         """单次 LLM 调用：输出包含全部字段的 record 列表。"""
-        self.last_disambiguation_context = ""
+        records, disambiguation_context = self._encode_records_with_disambiguation(
+            current_turns,
+            previous_turns,
+            session_date=session_date,
+            reference_context=reference_context,
+        )
+        self.last_disambiguation_context = disambiguation_context
+        return records
+
+    def _encode_records_with_disambiguation(
+        self,
+        current_turns: list[dict[str, Any]],
+        previous_turns: list[dict[str, Any]],
+        session_date: str | None = None,
+        reference_context: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str]:
+        """单次 LLM 调用：输出 record 列表和本次消歧上下文。"""
+        disambiguation_context = ""
         if reference_context is not None:
             ref_text = reference_context.strip() or "(none)"
         elif previous_turns:
@@ -146,15 +187,19 @@ class CompactSemanticEncoder:
         try:
             parsed = self._parse_json(response)
             if isinstance(parsed, dict):
-                self.last_disambiguation_context = self._normalize_disambiguation_context(
+                disambiguation_context = self._normalize_disambiguation_context(
                     parsed.get("disambiguation_context", "")
                 )
             records = parsed.get("records", [])
             if isinstance(records, list):
-                return records
+                return records, disambiguation_context
         except (ValueError, json.JSONDecodeError):
             pass
-        return []
+        return [], disambiguation_context
+
+    # ──────────────────────────────────────
+    # 工具方法
+    # ──────────────────────────────────────
 
     @staticmethod
     def _make_record_id(semantic_text: str) -> str:
@@ -177,7 +222,7 @@ class CompactSemanticEncoder:
         text = text.strip()
         if text.startswith("```"):
             lines = text.split("\n")
-            lines = [l for l in lines if not l.strip().startswith("```")]
+            lines = [line for line in lines if not line.strip().startswith("```")]
             text = "\n".join(lines)
         return json.loads(text)
 

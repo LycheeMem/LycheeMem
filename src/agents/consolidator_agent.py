@@ -39,6 +39,7 @@ class ConsolidatorAgent(BaseAgent):
         session_id: str | None = None,
         turn_index_offset: int = 0,
         skip_skills: bool = False,
+        flush_session: bool = False,
         session_date: str | None = None,
         **kwargs,
     ) -> dict[str, Any]:
@@ -51,7 +52,7 @@ class ConsolidatorAgent(BaseAgent):
         Returns:
             dict 包含：entities_added (int), skills_added (int), facts_added (int)
         """
-        if not turns:
+        if not turns and not flush_session:
             return {"entities_added": 0, "skills_added": 0, "steps": []}
 
         if not session_id:
@@ -62,6 +63,7 @@ class ConsolidatorAgent(BaseAgent):
             session_id=session_id,
             turn_index_offset=turn_index_offset,
             skip_skills=skip_skills,
+            flush_session=flush_session,
             session_date=session_date,
         )
 
@@ -72,6 +74,7 @@ class ConsolidatorAgent(BaseAgent):
         session_id: str,
         turn_index_offset: int = 0,
         skip_skills: bool = False,
+        flush_session: bool = False,
         session_date: str | None = None,
     ) -> dict[str, Any]:
         """Compact 后端路径：语义固化 → 技能抽取。
@@ -85,21 +88,23 @@ class ConsolidatorAgent(BaseAgent):
             session_id=session_id,
             turn_index_offset=turn_index_offset,
             reference_timestamp=session_date,
+            flush_session=flush_session,
         )
 
         steps: list[dict[str, Any]] = list(ingest_result.steps)
 
-        if skip_skills:
+        if skip_skills or not turns:
             steps.append({
                 "name": "skill_extraction",
                 "status": "skipped",
-                "detail": "skip_skills=True，跳过技能提取",
+                "detail": "skip_skills=True 或无新增 turns，跳过技能提取",
             })
             return {
                 "entities_added": ingest_result.records_added,
                 "skills_added": 0,
                 "facts_added": ingest_result.records_merged,
                 "records_expired": ingest_result.records_expired,
+                "turns_consumed": getattr(ingest_result, "turns_consumed", len(turns)),
                 "steps": steps,
             }
 
@@ -170,6 +175,7 @@ class ConsolidatorAgent(BaseAgent):
             "skills_added": skills_added,
             "facts_added": ingest_result.records_merged,
             "records_expired": ingest_result.records_expired,
+            "turns_consumed": getattr(ingest_result, "turns_consumed", len(turns)),
             "steps": steps,
         }
 

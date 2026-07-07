@@ -144,6 +144,15 @@ class LiteLLMEmbedder(BaseEmbedder):
 
     def embed_query(self, text: str) -> list[float]:
         """单条查询 embedding（查询侧）。"""
+        vectors = self.embed_queries([text])
+        if not vectors:
+            return []
+        return vectors[0]
+
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        """批量生成查询 embedding（查询侧）。"""
+        if not texts:
+            return []
         t0 = time.perf_counter()
         kwargs = self._build_kwargs(task_type=self._query_task_type)
         last_exc: Exception | None = None
@@ -151,7 +160,7 @@ class LiteLLMEmbedder(BaseEmbedder):
             try:
                 resp = litellm.embedding(
                     model=self.model,
-                    input=[text],
+                    input=texts,
                     **kwargs,
                 )
                 break
@@ -172,5 +181,5 @@ class LiteLLMEmbedder(BaseEmbedder):
         latency_ms = (time.perf_counter() - t0) * 1000
         usage = getattr(resp, "usage", None)
         tokens = int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
-        self._accumulate_usage(1, tokens, latency_ms)
-        return self._extract_embedding(resp.data[0])
+        self._accumulate_usage(len(texts), tokens, latency_ms)
+        return [self._extract_embedding(item) for item in resp.data]

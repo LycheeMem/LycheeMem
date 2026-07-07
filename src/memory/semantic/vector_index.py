@@ -2,8 +2,9 @@
 
 职责：
 - memory_records 表：MemoryRecord 的 semantic / normalized embedding
-- composite_records 表：CompositeRecord 的 embedding
-- 提供 ANN 向量检索（semantic_query / pragmatic_query 两种向量）
+- evidence_nodes 表：entity/tag/entity_tag/time/event-frame 等结构化证据索引的 embedding
+- episode_turns 表：原始对话 turn 的 embedding
+- 提供 ANN 向量检索
 
 依赖 lancedb (已列入 pyproject.toml) + pyarrow。
 """
@@ -11,6 +12,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from typing import Any
 
 import lancedb
@@ -31,14 +33,14 @@ def _make_record_schema(dim: int) -> pa.Schema:
     ])
 
 
-def _make_composite_schema(dim: int) -> pa.Schema:
-    """构建 composite_records 表 schema。"""
+def _make_evidence_node_schema(dim: int) -> pa.Schema:
+    """构建 evidence_nodes 表 schema。"""
     vec_type = pa.list_(pa.float32(), dim) if dim > 0 else pa.list_(pa.float32())
     return pa.schema([
-        pa.field("composite_id", pa.utf8()),
-        pa.field("memory_type", pa.utf8()),
+        pa.field("node_id", pa.utf8()),
+        pa.field("node_type", pa.utf8()),
+        pa.field("key", pa.utf8()),
         pa.field("vector", vec_type),
-        pa.field("normalized_vector", vec_type),
     ])
 
 
@@ -57,10 +59,10 @@ def _make_episode_turn_schema(dim: int) -> pa.Schema:
 
 
 class LanceVectorIndex:
-    """基于 LanceDB 的向量索引，ANN 检索 MemoryRecord / CompositeRecord / 原始 Turn。"""
+    """基于 LanceDB 的向量索引，ANN 检索 MemoryRecord / EvidenceNode / 原始 Turn。"""
 
     MEMORY_TABLE = "memory_records"
-    SYNTH_TABLE = "composite_records"
+    EVIDENCE_TABLE = "evidence_nodes"
     EPISODE_TABLE = "episode_turns"
 
     def __init__(
@@ -72,6 +74,22 @@ class LanceVectorIndex:
         self._db_path = db_path
         self._embedder = embedder
         self._embedding_dim = embedding_dim  # 0 = 自动检测 / 使用变长 list
+        self._local = threading.local()
+        self._meta_lock = threading.Lock()
+        self._table_nonempty_cache: dict[str, bool] = {}
+        self._vector_dim_cache: dict[tuple[str, str], int] = {}
+        self._exact_max_rows = max(0, self._env_int("LYCHEE_VECTOR_EXACT_MAX_ROWS", 20_000))
+        self._exact_rows_cache: dict[str, list[dict[str, Any]]] = {}
+        self._exact_matrix_cache: dict[tuple[str, str], Any] = {}
+        self._search_semaphore = threading.BoundedSemaphore(
+            max(
+                1,
+                self._env_int(
+                    "LYCHEE_VECTOR_SEARCH_CONCURRENCY",
+                    min(16, max(1, os.cpu_count() or 1)),
+                ),
+            )
+        )
         os.makedirs(db_path, exist_ok=True)
         self._db = lancedb.connect(db_path)
         self._ensure_tables()
@@ -79,6 +97,9 @@ class LanceVectorIndex:
     def set_embedder(self, embedder: BaseEmbedder) -> None:
         self._embedder = embedder
 
+    # ──────────────────────────────────────
+    # 表初始化
+    # ──────────────────────────────────────
 
     def _ensure_tables(self) -> None:
         """创建或验证 LanceDB 表。
@@ -89,13 +110,13 @@ class LanceVectorIndex:
         - 若 embedding_dim=0：建变长 list schema（底存，仅用于无配置场景）。
         """
         target_mr = _make_record_schema(self._embedding_dim)
-        target_cr = _make_composite_schema(self._embedding_dim)
+        target_ev = _make_evidence_node_schema(self._embedding_dim)
         target_ep = _make_episode_turn_schema(self._embedding_dim)
         existing = set(self._db.table_names())
 
         for table_name, schema in [
             (self.MEMORY_TABLE, target_mr),
-            (self.SYNTH_TABLE, target_cr),
+            (self.EVIDENCE_TABLE, target_ev),
             (self.EPISODE_TABLE, target_ep),
         ]:
             if table_name not in existing:
@@ -114,6 +135,9 @@ class LanceVectorIndex:
                     pass  # 无法检查则保持现有状态
 
 
+    # ──────────────────────────────────────
+    # MemoryRecord 向量写入
+    # ──────────────────────────────────────
 
     def upsert(
         self,
@@ -150,6 +174,8 @@ class LanceVectorIndex:
             "normalized_vector": normalized_vector,
             "expired": expired,
         }])
+        self._mark_table_nonempty(self.MEMORY_TABLE)
+        self._invalidate_exact_cache(self.MEMORY_TABLE)
 
     def upsert_batch(
         self,
@@ -204,6 +230,8 @@ class LanceVectorIndex:
             for r in records
         ]
         table.add(rows)
+        self._mark_table_nonempty(self.MEMORY_TABLE)
+        self._invalidate_exact_cache(self.MEMORY_TABLE)
 
     def search(
         self,
@@ -224,26 +252,46 @@ class LanceVectorIndex:
                 raise RuntimeError("LanceVectorIndex: embedder 未设置且未提供查询向量")
             query_vector = self._embedder.embed_query(query_text)
 
-        table = self._db.open_table(self.MEMORY_TABLE)
-
-        # 构造过滤条件
-        filters: list[str] = []
-        if not include_expired:
-            filters.append("expired = false")
-        if memory_types:
-            type_strs = ", ".join(f"'{self._escape_sql(t)}'" for t in memory_types)
-            filters.append(f"memory_type IN ({type_strs})")
-
-        where = " AND ".join(filters) if filters else None
+        table = self._open_table(self.MEMORY_TABLE)
+        if table is None or not self._table_has_rows(self.MEMORY_TABLE, table):
+            return []
+        query_vector = self._normalize_query_vector(self.MEMORY_TABLE, table, column, query_vector)
+        if query_vector is None:
+            return []
 
         try:
-            q = table.search(query_vector, vector_column_name=column).limit(limit)
-            if where:
-                q = q.where(where)
-            results = q.to_list()
+            search_limit = self._search_limit_with_filter_headroom(
+                limit,
+                has_filter=(not include_expired or bool(memory_types)),
+            )
+            results = self._exact_vector_search(
+                table_name=self.MEMORY_TABLE,
+                table=table,
+                vector_column=column,
+                query_vector=query_vector,
+                limit=search_limit,
+            )
+            if results is None:
+                with self._search_semaphore:
+                    results = (
+                        table.search(query_vector, vector_column_name=column)
+                        .limit(search_limit)
+                        .to_list()
+                    )
         except Exception:
             # 表为空或列不存在等，返回空
             return []
+
+        allowed_types = {str(t) for t in (memory_types or [])}
+        filtered: list[dict[str, Any]] = []
+        for row in results:
+            if not include_expired and bool(row.get("expired", False)):
+                continue
+            if allowed_types and str(row.get("memory_type", "")) not in allowed_types:
+                continue
+            filtered.append(row)
+            if len(filtered) >= limit:
+                break
 
         return [
             {
@@ -251,126 +299,130 @@ class LanceVectorIndex:
                 "memory_type": r.get("memory_type", ""),
                 "_distance": r.get("_distance", 999.0),
             }
-            for r in results
+            for r in filtered
         ]
 
+    # ──────────────────────────────────────
+    # EvidenceNode 向量写入 / 检索
+    # ──────────────────────────────────────
 
-    def upsert_synthesized(
-        self,
-        composite_id: str,
-        memory_type: str,
-        semantic_text: str,
-        normalized_text: str,
-        *,
-        semantic_vector: list[float] | None = None,
-        normalized_vector: list[float] | None = None,
-    ) -> None:
-        if semantic_vector is None or normalized_vector is None:
-            if self._embedder is None:
-                raise RuntimeError("LanceVectorIndex: embedder 未设置且未提供向量")
-            vecs = self._embedder.embed([semantic_text, normalized_text])
-            semantic_vector = semantic_vector or vecs[0]
-            normalized_vector = normalized_vector or vecs[1]
+    def upsert_evidence_nodes_batch(self, nodes: list[dict[str, Any]]) -> None:
+        """批量写入 entity/tag/entity_tag/time/event-frame 证据索引向量。
 
-        table = self._db.open_table(self.SYNTH_TABLE)
-        try:
-            table.delete(f"composite_id = '{self._escape_sql(composite_id)}'")
-        except Exception:
-            pass
-        table.add([{
-            "composite_id": composite_id,
-            "memory_type": memory_type,
-            "vector": semantic_vector,
-            "normalized_vector": normalized_vector,
-        }])
-
-    def upsert_synthesized_batch(
-        self,
-        composites: list[dict[str, Any]],
-    ) -> None:
-        """批量写入 CompositeRecord 向量。
-
-        每条 composite 需要: composite_id, memory_type, semantic_text, normalized_text。
-        可选: semantic_vector, normalized_vector（未提供则自动批量计算）。
+        每条 node 需要: node_id, node_type, key, search_text。
+        可选: vector。
         """
-        if not composites:
+        if not nodes:
             return
 
         texts_to_embed: list[str] = []
-        embed_indices: list[tuple[int, str]] = []
-        for i, c in enumerate(composites):
-            if "semantic_vector" not in c or c["semantic_vector"] is None:
-                embed_indices.append((i, "semantic"))
-                texts_to_embed.append(c["semantic_text"])
-            if "normalized_vector" not in c or c["normalized_vector"] is None:
-                embed_indices.append((i, "normalized"))
-                texts_to_embed.append(c["normalized_text"])
+        embed_indices: list[int] = []
+        for i, node in enumerate(nodes):
+            if "vector" not in node or node["vector"] is None:
+                embed_indices.append(i)
+                texts_to_embed.append(str(node.get("search_text") or node.get("key") or ""))
 
         if texts_to_embed:
             if self._embedder is None:
                 raise RuntimeError("LanceVectorIndex: embedder 未设置且未提供向量")
             embedded = self._embedder.embed(texts_to_embed)
-            for (idx, kind), vec in zip(embed_indices, embedded):
-                if kind == "semantic":
-                    composites[idx]["semantic_vector"] = vec
-                else:
-                    composites[idx]["normalized_vector"] = vec
+            for idx, vec in zip(embed_indices, embedded):
+                nodes[idx]["vector"] = vec
 
-        table = self._db.open_table(self.SYNTH_TABLE)
-        for c in composites:
-            cid = self._escape_sql(str(c["composite_id"]))
+        table = self._db.open_table(self.EVIDENCE_TABLE)
+        for node in nodes:
+            node_id = self._escape_sql(str(node.get("node_id", "")))
+            if not node_id:
+                continue
             try:
-                table.delete(f"composite_id = '{cid}'")
+                table.delete(f"node_id = '{node_id}'")
             except Exception:
                 pass
 
         rows = [
             {
-                "composite_id": c["composite_id"],
-                "memory_type": c["memory_type"],
-                "vector": c["semantic_vector"],
-                "normalized_vector": c["normalized_vector"],
+                "node_id": str(node.get("node_id", "")),
+                "node_type": str(node.get("node_type", "")),
+                "key": str(node.get("key", "")),
+                "vector": node["vector"],
             }
-            for c in composites
+            for node in nodes
+            if str(node.get("node_id", "")).strip() and node.get("vector") is not None
         ]
-        table.add(rows)
+        if rows:
+            table.add(rows)
+            self._mark_table_nonempty(self.EVIDENCE_TABLE)
+            self._invalidate_exact_cache(self.EVIDENCE_TABLE)
 
-    def search_synthesized(
+    def search_evidence_nodes(
         self,
         query_text: str,
         *,
-        column: str = "vector",
-        limit: int = 10,
+        node_types: list[str] | None = None,
+        limit: int = 20,
         query_vector: list[float] | None = None,
     ) -> list[dict[str, Any]]:
+        """对 evidence_nodes 做 ANN 检索。"""
         if query_vector is None:
             if self._embedder is None:
                 raise RuntimeError("LanceVectorIndex: embedder 未设置且未提供查询向量")
             query_vector = self._embedder.embed_query(query_text)
 
-        table = self._db.open_table(self.SYNTH_TABLE)
-
-        filters: list[str] = []
-        where = " AND ".join(filters) if filters else None
+        table = self._open_table(self.EVIDENCE_TABLE)
+        if table is None or not self._table_has_rows(self.EVIDENCE_TABLE, table):
+            return []
+        query_vector = self._normalize_query_vector(self.EVIDENCE_TABLE, table, "vector", query_vector)
+        if query_vector is None:
+            return []
 
         try:
-            q = table.search(query_vector, vector_column_name=column).limit(limit)
-            if where:
-                q = q.where(where)
-            results = q.to_list()
+            search_limit = self._search_limit_with_filter_headroom(
+                limit,
+                has_filter=bool(node_types),
+            )
+            results = self._exact_vector_search(
+                table_name=self.EVIDENCE_TABLE,
+                table=table,
+                vector_column="vector",
+                query_vector=query_vector,
+                limit=search_limit,
+            )
+            if results is None:
+                with self._search_semaphore:
+                    results = (
+                        table.search(query_vector, vector_column_name="vector")
+                        .limit(search_limit)
+                        .to_list()
+                    )
         except Exception:
             return []
 
+        allowed_types = {str(t) for t in (node_types or [])}
+        filtered: list[dict[str, Any]] = []
+        for row in results:
+            if allowed_types and str(row.get("node_type", "")) not in allowed_types:
+                continue
+            filtered.append(row)
+            if len(filtered) >= limit:
+                break
+
         return [
             {
-                "composite_id": r.get("composite_id", ""),
-                "memory_type": r.get("memory_type", ""),
+                "node_id": r.get("node_id", ""),
+                "node_type": r.get("node_type", ""),
+                "key": r.get("key", ""),
                 "_distance": r.get("_distance", 999.0),
             }
-            for r in results
+            for r in filtered
         ]
 
+    # ──────────────────────────────────────
+    # 批量删除
+    # ──────────────────────────────────────
 
+    # ──────────────────────────────────────
+    # Episode Turn 向量写入 / 检索
+    # ──────────────────────────────────────
 
     def upsert_turns_batch(self, turns: list[dict[str, Any]]) -> None:
         """批量写入原始对话 turn 的向量。
@@ -391,12 +443,8 @@ class LanceVectorIndex:
         if texts_to_embed:
             if self._embedder is None:
                 raise RuntimeError("LanceVectorIndex: embedder 未设置且未提供向量")
-            # 分批嵌入，避免超出 API 单批限制（部分 provider 上限 10）
-            _EMBED_CHUNK = 8
-            all_embedded: list[list[float]] = []
-            for _i in range(0, len(texts_to_embed), _EMBED_CHUNK):
-                all_embedded.extend(self._embedder.embed(texts_to_embed[_i : _i + _EMBED_CHUNK]))
-            for idx, vec in zip(embed_indices, all_embedded):
+            embedded = self._embedder.embed(texts_to_embed)
+            for idx, vec in zip(embed_indices, embedded):
                 turns[idx]["vector"] = vec
 
         table = self._db.open_table(self.EPISODE_TABLE)
@@ -420,6 +468,9 @@ class LanceVectorIndex:
             for t in turns
         ]
         table.add(rows)
+        if rows:
+            self._mark_table_nonempty(self.EPISODE_TABLE)
+            self._invalidate_exact_cache(self.EPISODE_TABLE)
 
     def search_turns(
         self,
@@ -435,19 +486,43 @@ class LanceVectorIndex:
                 raise RuntimeError("LanceVectorIndex: embedder 未设置且未提供查询向量")
             query_vector = self._embedder.embed_query(query_text)
 
-        table = self._db.open_table(self.EPISODE_TABLE)
-        filters: list[str] = []
-        if session_id:
-            filters.append(f"session_id = '{self._escape_sql(session_id)}'")
-        where = " AND ".join(filters) if filters else None
+        table = self._open_table(self.EPISODE_TABLE)
+        if table is None or not self._table_has_rows(self.EPISODE_TABLE, table):
+            return []
+        query_vector = self._normalize_query_vector(self.EPISODE_TABLE, table, "vector", query_vector)
+        if query_vector is None:
+            return []
 
         try:
-            q = table.search(query_vector, vector_column_name="vector").limit(limit)
-            if where:
-                q = q.where(where)
-            results = q.to_list()
+            search_limit = self._search_limit_with_filter_headroom(
+                limit,
+                has_filter=bool(session_id),
+            )
+            results = self._exact_vector_search(
+                table_name=self.EPISODE_TABLE,
+                table=table,
+                vector_column="vector",
+                query_vector=query_vector,
+                limit=search_limit,
+            )
+            if results is None:
+                with self._search_semaphore:
+                    results = (
+                        table.search(query_vector, vector_column_name="vector")
+                        .limit(search_limit)
+                        .to_list()
+                    )
         except Exception:
             return []
+
+        target_session = str(session_id or "")
+        filtered: list[dict[str, Any]] = []
+        for row in results:
+            if target_session and str(row.get("session_id", "")) != target_session:
+                continue
+            filtered.append(row)
+            if len(filtered) >= limit:
+                break
 
         return [
             {
@@ -459,49 +534,246 @@ class LanceVectorIndex:
                 "created_at": r.get("created_at", ""),
                 "_distance": r.get("_distance", 999.0),
             }
-            for r in results
+            for r in filtered
         ]
 
     def get_all_episode_ids(self) -> set[str]:
         """返回 episode_turns 表中已索引的全部 episode_id 集合（用于增量补全）。"""
         try:
-            table = self._db.open_table(self.EPISODE_TABLE)
-            results = table.search().select(["episode_id"]).limit(10_000_000).to_list()
+            table = self._open_table(self.EPISODE_TABLE)
+            if table is None or not self._table_has_rows(self.EPISODE_TABLE, table):
+                return set()
+            with self._search_semaphore:
+                results = table.search().select(["episode_id"]).limit(10_000_000).to_list()
             return {str(r.get("episode_id", "")) for r in results if r.get("episode_id")}
         except Exception:
             return set()
 
+    # ──────────────────────────────────────
+    # 批量删除
+    # ──────────────────────────────────────
 
     def delete_all(self) -> None:
         """删除全部向量数据。"""
-        for tname in [self.MEMORY_TABLE, self.SYNTH_TABLE, self.EPISODE_TABLE]:
+        for tname in [self.MEMORY_TABLE, self.EVIDENCE_TABLE, self.EPISODE_TABLE]:
             try:
-                table = self._db.open_table(tname)
+                table = self._open_table(tname)
+                if table is None:
+                    continue
                 table.delete("1 = 1")
+                self._mark_table_empty(tname)
+                self._invalidate_exact_cache(tname)
             except Exception:
                 pass
 
-    def delete_record(self, record_id: str) -> None:
-        try:
-            table = self._db.open_table(self.MEMORY_TABLE)
-            table.delete(f"record_id = '{self._escape_sql(record_id)}'")
-        except Exception:
-            pass
-
-    def delete_synthesized(self, composite_id: str) -> None:
-        try:
-            table = self._db.open_table(self.SYNTH_TABLE)
-            table.delete(f"composite_id = '{self._escape_sql(composite_id)}'")
-        except Exception:
-            pass
-
-    def mark_expired(self, record_id: str) -> None:
-        """标记过期（向量层面：删除后以 expired=True 重新插入开销大，直接删除即可，
-        具体过期条目不参与 ANN 召回，靠 sqlite 侧查询）。"""
-        self.delete_record(record_id)
-
+    # ──────────────────────────────────────
+    # 工具
+    # ──────────────────────────────────────
 
     @staticmethod
     def _escape_sql(value: str) -> str:
         """防止 SQL 注入（LanceDB filter 为字符串拼接）。"""
         return value.replace("'", "''").replace("\\", "\\\\")
+
+    @staticmethod
+    def _search_limit_with_filter_headroom(limit: int, *, has_filter: bool) -> int:
+        base = max(1, int(limit or 1))
+        if not has_filter:
+            return base
+        return max(base * 5, min(base + 80, 200))
+
+    def _open_table(self, table_name: str) -> Any | None:
+        """Safely open a LanceDB table.
+
+        Some LanceDB failures are raised before the search call, especially when
+        a table directory is missing or half-written. Keep retrieval robust by
+        treating those cases as empty indexes.
+        """
+        table_cache: dict[str, Any] | None = getattr(self._local, "table_cache", None)
+        if table_cache is None:
+            table_cache = {}
+            self._local.table_cache = table_cache
+        table = table_cache.get(table_name)
+        if table is not None:
+            return table
+        try:
+            table = self._db.open_table(table_name)
+            table_cache[table_name] = table
+            return table
+        except Exception:
+            return None
+
+    def _table_has_rows(self, table_name: str, table: Any) -> bool:
+        with self._meta_lock:
+            cached = self._table_nonempty_cache.get(table_name)
+        if cached is not None:
+            return cached
+        try:
+            has_rows = int(table.count_rows()) > 0
+        except Exception:
+            has_rows = True
+        with self._meta_lock:
+            self._table_nonempty_cache[table_name] = has_rows
+        return has_rows
+
+    def _normalize_query_vector(
+        self,
+        table_name: str,
+        table: Any,
+        vector_column: str,
+        query_vector: Any,
+    ) -> list[float] | None:
+        """Coerce and validate query vectors before entering LanceDB native search."""
+        if query_vector is None:
+            return None
+        if hasattr(query_vector, "tolist"):
+            query_vector = query_vector.tolist()
+        if not isinstance(query_vector, list):
+            try:
+                vector = [float(x) for x in query_vector]
+            except (TypeError, ValueError):
+                return None
+        else:
+            vector = query_vector
+
+        try:
+            vector_len = len(vector)
+        except TypeError:
+            return None
+
+        expected_dim = self._table_vector_dim(table_name, table, vector_column) or self._embedding_dim
+        if expected_dim > 0 and vector_len != expected_dim:
+            return None
+        return vector
+
+    def _table_vector_dim(self, table_name: str, table: Any, vector_column: str) -> int:
+        cache_key = (table_name, vector_column)
+        with self._meta_lock:
+            cached = self._vector_dim_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        try:
+            vec_type = table.schema.field(vector_column).type
+            if pa.types.is_fixed_size_list(vec_type):
+                dim = int(vec_type.list_size)
+                with self._meta_lock:
+                    self._vector_dim_cache[cache_key] = dim
+                return dim
+        except Exception:
+            return 0
+        return 0
+
+    def _mark_table_nonempty(self, table_name: str) -> None:
+        with self._meta_lock:
+            self._table_nonempty_cache[table_name] = True
+
+    def _mark_table_empty(self, table_name: str) -> None:
+        with self._meta_lock:
+            self._table_nonempty_cache[table_name] = False
+
+    def _exact_vector_search(
+        self,
+        *,
+        table_name: str,
+        table: Any,
+        vector_column: str,
+        query_vector: list[float],
+        limit: int,
+    ) -> list[dict[str, Any]] | None:
+        rows = self._exact_rows(table_name, table)
+        if rows is None:
+            return None
+        if not rows:
+            return []
+        cache_key = (table_name, vector_column)
+        try:
+            import numpy as np
+
+            with self._meta_lock:
+                matrix = self._exact_matrix_cache.get(cache_key)
+            if matrix is None:
+                matrix = np.asarray([row.get(vector_column) or [] for row in rows], dtype="float32")
+                with self._meta_lock:
+                    self._exact_matrix_cache[cache_key] = matrix
+            query = np.asarray(query_vector, dtype="float32")
+            if matrix.ndim != 2 or query.ndim != 1 or matrix.shape[1] != query.shape[0]:
+                return None
+            distances = np.sum((matrix - query) ** 2, axis=1)
+            take = min(max(1, int(limit or 1)), len(rows))
+            if take < len(rows):
+                order = np.argpartition(distances, take - 1)[:take]
+                order = order[np.argsort(distances[order])]
+            else:
+                order = np.argsort(distances)
+            return [
+                {**rows[int(index)], "_distance": float(distances[int(index)])}
+                for index in order[:take]
+            ]
+        except Exception:
+            return self._exact_vector_search_python(
+                rows=rows,
+                vector_column=vector_column,
+                query_vector=query_vector,
+                limit=limit,
+            )
+
+    def _exact_vector_search_python(
+        self,
+        *,
+        rows: list[dict[str, Any]],
+        vector_column: str,
+        query_vector: list[float],
+        limit: int,
+    ) -> list[dict[str, Any]] | None:
+        try:
+            query = [float(x) for x in query_vector]
+            scored: list[tuple[float, dict[str, Any]]] = []
+            for row in rows:
+                vector = row.get(vector_column) or []
+                if len(vector) != len(query):
+                    return None
+                distance = 0.0
+                for left, right in zip(vector, query):
+                    diff = float(left) - right
+                    distance += diff * diff
+                scored.append((distance, row))
+            scored.sort(key=lambda item: item[0])
+            take = min(max(1, int(limit or 1)), len(scored))
+            return [
+                {**row, "_distance": float(distance)}
+                for distance, row in scored[:take]
+            ]
+        except Exception:
+            return None
+
+    def _exact_rows(self, table_name: str, table: Any) -> list[dict[str, Any]] | None:
+        if self._exact_max_rows <= 0:
+            return None
+        with self._meta_lock:
+            cached = self._exact_rows_cache.get(table_name)
+        if cached is not None:
+            return cached
+        try:
+            row_count = int(table.count_rows())
+            if row_count > self._exact_max_rows:
+                return None
+            rows = table.to_arrow().to_pylist()
+        except Exception:
+            return None
+        with self._meta_lock:
+            self._exact_rows_cache[table_name] = rows
+        return rows
+
+    def _invalidate_exact_cache(self, table_name: str) -> None:
+        with self._meta_lock:
+            self._exact_rows_cache.pop(table_name, None)
+            for key in list(self._exact_matrix_cache):
+                if key[0] == table_name:
+                    self._exact_matrix_cache.pop(key, None)
+
+    @staticmethod
+    def _env_int(name: str, default: int) -> int:
+        try:
+            return int(os.getenv(name, "") or default)
+        except (TypeError, ValueError):
+            return default

@@ -155,3 +155,7 @@ class BaseEmbedder(ABC):
     def embed_query(self, text: str) -> list[float]:
         """单条查询 embedding。"""
         return self.embed([text])[0]
+
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        """批量生成查询侧 embedding。"""
+        return [self.embed_query(text) for text in texts]

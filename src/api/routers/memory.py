@@ -121,11 +121,122 @@ def _build_tree_relationships(
     return source_sets, child_to_parent, parent_to_children
 
 
+def _build_evidence_graph_payload(
+    data: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    records = [
+        record
+        for record in data.get("records", [])
+        if not bool(record.get("expired", False))
+    ]
+    evidence_nodes = list(data.get("evidence_nodes", []))
+
+    node_cache: dict[str, dict[str, Any]] = {}
+    edges: list[dict[str, Any]] = []
+    records_with_parent: set[str] = set()
+
+    def _record_node(record: dict[str, Any]) -> dict[str, Any]:
+        record_id = _normalize_graph_id(record.get("record_id"))
+        if record_id in node_cache:
+            return node_cache[record_id]
+        node = {
+            "id": record_id,
+            "name": str(record.get("normalized_text") or record.get("semantic_text") or record_id)[:120],
+            "label": record.get("memory_type", "record"),
+            "node_kind": "record",
+            "properties": {
+                "semantic_text": record.get("semantic_text", ""),
+                "normalized_text": record.get("normalized_text", ""),
+                "entities": record.get("entities", []),
+                "tags": record.get("tags", []),
+                "temporal": record.get("temporal", {}),
+                "confidence": record.get("confidence", 1.0),
+                "created_at": record.get("created_at", ""),
+                "source_session": record.get("source_session", ""),
+                "source_role": record.get("source_role", ""),
+                "evidence_turn_range": record.get("evidence_turn_range", []),
+            },
+            "children": [],
+        }
+        node_cache[record_id] = node
+        return node
+
+    record_by_id = {
+        _normalize_graph_id(record.get("record_id")): record
+        for record in records
+        if _normalize_graph_id(record.get("record_id"))
+    }
+
+    for node in evidence_nodes:
+        node_id = _normalize_graph_id(node.get("node_id"))
+        if not node_id:
+            continue
+        record_ids = [
+            _normalize_graph_id(record_id)
+            for record_id in (node.get("record_ids") or [])
+            if _normalize_graph_id(record_id)
+        ]
+        children = [
+            _record_node(record_by_id[record_id])
+            for record_id in record_ids
+            if record_id in record_by_id
+        ]
+        evidence_node = {
+            "id": node_id,
+            "name": str(node.get("label") or node.get("key") or node_id)[:120],
+            "label": node.get("node_type", "evidence"),
+            "node_kind": "evidence",
+            "properties": {
+                "key": node.get("key", ""),
+                "label": node.get("label", ""),
+                "search_text": node.get("search_text", ""),
+                "record_ids": record_ids,
+                "record_count": len(record_ids),
+                "session_ids": node.get("session_ids", []),
+                "entities": node.get("entities", []),
+                "tags": node.get("tags", []),
+                "temporal": node.get("temporal", {}),
+                "metadata": node.get("metadata", {}),
+                "created_at": node.get("created_at", ""),
+                "updated_at": node.get("updated_at", ""),
+            },
+            "children": children,
+        }
+        node_cache[node_id] = evidence_node
+        for record_id in record_ids:
+            if record_id in record_by_id:
+                records_with_parent.add(record_id)
+                edges.append({
+                    "source": node_id,
+                    "target": record_id,
+                    "relation": "indexes_record",
+                })
+
+    for record_id, record in record_by_id.items():
+        _record_node(record)
+
+    roots = [
+        node_cache[_normalize_graph_id(node.get("node_id"))]
+        for node in evidence_nodes
+        if _normalize_graph_id(node.get("node_id")) in node_cache
+    ]
+    roots.extend(
+        node_cache[record_id]
+        for record_id in sorted(record_by_id)
+        if record_id not in records_with_parent
+    )
+
+    return list(node_cache.values()), edges, roots
+
+
 def _build_semantic_tree_payload(
     data: dict[str, Any],
     *,
     session_store: Any | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    if data.get("evidence_nodes") and not data.get("composites"):
+        return _build_evidence_graph_payload(data)
+
     records = [
         record
         for record in data.get("records", [])
@@ -599,7 +710,7 @@ def run_memory_consolidate(
     effective_watermark = 0 if req.force_ingest else watermark
     turns = [t for t in log.turns[effective_watermark:] if not t.get("deleted", False)]
 
-    if not turns:
+    if not turns and not req.flush_session:
         return MemoryConsolidateResponse(
             status="skipped",
             skipped_reason="no_new_turns",
@@ -610,14 +721,20 @@ def run_memory_consolidate(
     if req.background:
         def _run() -> None:
             try:
-                pipeline.consolidator.run(
+                result = pipeline.consolidator.run(
                     turns=turns,
                     session_id=req.session_id,
                     turn_index_offset=effective_watermark,
                     skip_skills=req.skip_skills,
+                    flush_session=req.flush_session,
                     session_date=req.session_date,
                 )
-                store.set_last_consolidated_turn_index(req.session_id, raw_total)
+                raw_consumed = result.get("turns_consumed")
+                consumed = int(len(turns) if raw_consumed is None else raw_consumed)
+                store.set_last_consolidated_turn_index(
+                    req.session_id,
+                    min(raw_total, effective_watermark + max(0, consumed)),
+                )
             except Exception:
                 logger.exception("background consolidation failed session=%s", req.session_id)
 
@@ -634,9 +751,15 @@ def run_memory_consolidate(
         session_id=req.session_id,
         turn_index_offset=effective_watermark,
         skip_skills=req.skip_skills,
+        flush_session=req.flush_session,
         session_date=req.session_date,
     )
-    store.set_last_consolidated_turn_index(req.session_id, raw_total)
+    raw_consumed = result.get("turns_consumed")
+    consumed = int(len(turns) if raw_consumed is None else raw_consumed)
+    store.set_last_consolidated_turn_index(
+        req.session_id,
+        min(raw_total, effective_watermark + max(0, consumed)),
+    )
     return MemoryConsolidateResponse(
         status="skipped" if result.get("skipped_reason") else "done",
         entities_added=result.get("entities_added", 0),
@@ -774,6 +897,10 @@ async def get_graph(
             )
             return GraphResponse(nodes=nodes, edges=edges, tree_roots=tree_roots)
 
+        if data.get("evidence_nodes") and not data.get("composites"):
+            nodes, edges, tree_roots = _build_evidence_graph_payload(data)
+            return GraphResponse(nodes=nodes, edges=edges, tree_roots=tree_roots)
+
         nodes = []
         edges = []
         for u in data.get("records", []):
@@ -855,11 +982,15 @@ async def clear_all_graph(
     sc = pipeline.search_coordinator
     try:
         result = sc.semantic_engine.delete_all()
+        structural_deleted = result.get(
+            "composites_deleted",
+            result.get("evidence_nodes_deleted", 0),
+        )
         return DeleteResponse(
             message=(
                 f"Compact memory cleared "
                 f"(records_deleted={result.get('records_deleted', 0)}, "
-                f"composites_deleted={result.get('composites_deleted', 0)})."
+                f"structural_nodes_deleted={structural_deleted})."
             )
         )
     except Exception as exc:

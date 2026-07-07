@@ -2,10 +2,9 @@
 
 职责：
 - memory_records 表：MemoryRecord 主存储
-- composite_records 表：CompositeRecord 聚合条目
+- evidence_nodes 表：由 entity/tag/time/session-turn 等结构化字段形成的无损证据索引
 - memory_records_fts：FTS5 全文索引（覆盖 normalized_text + entities + tags）
-- composite_records_fts：FTS5 全文索引
-- usage_logs 表：检索使用记录
+- evidence_nodes_fts：FTS5 全文索引
 
 所有写操作线程安全（sqlite3 + threading.Lock）。
 """
@@ -18,7 +17,8 @@ import sqlite3
 import threading
 from typing import Any
 
-from src.memory.semantic.models import MemoryRecord, CompositeRecord, UsageLog
+from src.memory.semantic.models import MemoryRecord
+from src.utils.time_utils import normalize_date_key
 
 
 def _json_dumps(obj: Any) -> str:
@@ -47,13 +47,58 @@ def _json_loads_dict(s: str | None) -> dict:
         return {}
 
 
+def _merge_unique_values(*values: Any) -> list[Any]:
+    result: list[Any] = []
+    seen: set[str] = set()
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            items = [value]
+        elif isinstance(value, (list, tuple, set)):
+            items = list(value)
+        else:
+            items = [value]
+        for item in items:
+            key = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(item)
+    return result
+
+
+def _merge_temporal_dict(existing: Any, incoming: Any) -> dict[str, Any]:
+    left = existing if isinstance(existing, dict) else {}
+    right = incoming if isinstance(incoming, dict) else {}
+    merged: dict[str, Any] = dict(left)
+    for key, value in right.items():
+        if value in ("", None, [], {}):
+            continue
+        if key in {"start", "t_valid_from"}:
+            current = str(merged.get(key) or "")
+            incoming_text = normalize_date_key(value) or str(value)
+            current = normalize_date_key(current) or current
+            merged[key] = min(current, incoming_text) if current else incoming_text
+        elif key in {"end", "t_valid_to"}:
+            current = str(merged.get(key) or "")
+            incoming_text = normalize_date_key(value) or str(value)
+            current = normalize_date_key(current) or current
+            merged[key] = max(current, incoming_text) if current else incoming_text
+        else:
+            merged[key] = value
+    return merged
+
+
 class SQLiteSemanticStore:
     """基于 SQLite + FTS5 的 Compact Semantic Memory 结构化存储。"""
 
     def __init__(self, db_path: str = "lychee_compact_memory.db"):
         self._db_path = db_path
         self._lock = threading.Lock()
+        self._cache_lock = threading.Lock()
         self._local = threading.local()
+        self._evidence_type_cache: dict[tuple[str, int], list[dict[str, Any]]] = {}
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
         # init_schema() 通过 self._conn property 在当前线程建立首条连接
         self.init_schema()
@@ -70,8 +115,10 @@ class SQLiteSemanticStore:
         if conn is None:
             conn = sqlite3.connect(self._db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
             conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA temp_store=MEMORY")
             self._local.conn = conn
         return conn
 
@@ -79,6 +126,8 @@ class SQLiteSemanticStore:
         """创建表 + FTS5 索引（幂等）。"""
         with self._lock:
             c = self._conn
+            if self._db_path != ":memory:":
+                c.execute("PRAGMA journal_mode=WAL")
             c.executescript("""
                 CREATE TABLE IF NOT EXISTS memory_records (
                     record_id        TEXT PRIMARY KEY,
@@ -94,54 +143,33 @@ class SQLiteSemanticStore:
                     source_role      TEXT NOT NULL DEFAULT '',
                     created_at       TEXT NOT NULL DEFAULT '',
                     updated_at       TEXT NOT NULL DEFAULT '',
-                    retrieval_count       INTEGER NOT NULL DEFAULT 0,
-                    retrieval_hit_count   INTEGER NOT NULL DEFAULT 0,
-                    action_success_count  INTEGER NOT NULL DEFAULT 0,
-                    action_fail_count     INTEGER NOT NULL DEFAULT 0,
-                    last_retrieved_at     TEXT NOT NULL DEFAULT '',
                     expired          INTEGER NOT NULL DEFAULT 0,
                     expired_at       TEXT NOT NULL DEFAULT '',
                     expired_reason   TEXT NOT NULL DEFAULT ''
                 );
 
-                CREATE TABLE IF NOT EXISTS composite_records (
-                    composite_id     TEXT PRIMARY KEY,
-                    memory_type      TEXT NOT NULL,
-                    semantic_text    TEXT NOT NULL,
-                    normalized_text  TEXT NOT NULL,
-                    source_record_ids TEXT NOT NULL DEFAULT '[]',
-                    child_composite_ids TEXT NOT NULL DEFAULT '[]',
+                CREATE TABLE IF NOT EXISTS evidence_nodes (
+                    node_id          TEXT PRIMARY KEY,
+                    node_type        TEXT NOT NULL,
+                    key              TEXT NOT NULL,
+                    label            TEXT NOT NULL DEFAULT '',
+                    search_text      TEXT NOT NULL DEFAULT '',
+                    record_ids       TEXT NOT NULL DEFAULT '[]',
+                    session_ids      TEXT NOT NULL DEFAULT '[]',
                     entities         TEXT NOT NULL DEFAULT '[]',
-                    temporal         TEXT NOT NULL DEFAULT '{}',
                     tags             TEXT NOT NULL DEFAULT '[]',
-                    confidence       REAL NOT NULL DEFAULT 1.0,
+                    temporal         TEXT NOT NULL DEFAULT '{}',
+                    evidence_turn_ranges TEXT NOT NULL DEFAULT '[]',
+                    metadata         TEXT NOT NULL DEFAULT '{}',
                     created_at       TEXT NOT NULL DEFAULT '',
-                    updated_at       TEXT NOT NULL DEFAULT '',
-                    retrieval_count       INTEGER NOT NULL DEFAULT 0,
-                    retrieval_hit_count   INTEGER NOT NULL DEFAULT 0,
-                    action_success_count  INTEGER NOT NULL DEFAULT 0,
-                    action_fail_count     INTEGER NOT NULL DEFAULT 0,
-                    last_retrieved_at     TEXT NOT NULL DEFAULT ''
-                );
-
-                CREATE TABLE IF NOT EXISTS usage_logs (
-                    log_id           TEXT PRIMARY KEY,
-                    session_id       TEXT NOT NULL,
-                    timestamp        TEXT NOT NULL,
-                    query            TEXT NOT NULL,
-                    retrieval_plan   TEXT NOT NULL DEFAULT '{}',
-                    action_state     TEXT NOT NULL DEFAULT '{}',
-                    retrieved_record_ids TEXT NOT NULL DEFAULT '[]',
-                    kept_record_ids  TEXT NOT NULL DEFAULT '[]',
-                    final_response_excerpt TEXT NOT NULL DEFAULT '',
-                    user_feedback    TEXT NOT NULL DEFAULT '',
-                    action_outcome   TEXT NOT NULL DEFAULT ''
+                    updated_at       TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_mr_memory_type ON memory_records(memory_type);
                 CREATE INDEX IF NOT EXISTS idx_mr_expired ON memory_records(expired);
                 CREATE INDEX IF NOT EXISTS idx_mr_created_at ON memory_records(created_at);
-                CREATE INDEX IF NOT EXISTS idx_ul_session ON usage_logs(session_id);
+                CREATE INDEX IF NOT EXISTS idx_en_type ON evidence_nodes(node_type);
+                CREATE INDEX IF NOT EXISTS idx_en_key ON evidence_nodes(key);
             """)
 
             # FTS5 虚拟表
@@ -163,12 +191,15 @@ class SQLiteSemanticStore:
 
             try:
                 c.execute("""
-                    CREATE VIRTUAL TABLE composite_records_fts USING fts5(
-                        composite_id UNINDEXED,
-                        normalized_text,
+                    CREATE VIRTUAL TABLE evidence_nodes_fts USING fts5(
+                        node_id UNINDEXED,
+                        node_type UNINDEXED,
+                        key,
+                        label,
+                        search_text,
                         entities,
                         tags,
-                        content=composite_records,
+                        content=evidence_nodes,
                         content_rowid=rowid,
                         tokenize='unicode61'
                     )
@@ -178,6 +209,9 @@ class SQLiteSemanticStore:
 
             c.commit()
 
+    # ──────────────────────────────────────
+    # MemoryRecord CRUD
+    # ──────────────────────────────────────
 
     def upsert_record(self, record: MemoryRecord) -> None:
         """写入或更新一个 MemoryRecord（幂等）。"""
@@ -189,18 +223,12 @@ class SQLiteSemanticStore:
                     entities, temporal, tags,
                     confidence, evidence_turn_range, source_session, source_role,
                     created_at, updated_at,
-                    retrieval_count, retrieval_hit_count,
-                    action_success_count, action_fail_count,
-                    last_retrieved_at,
                     expired, expired_at, expired_reason
                 ) VALUES (
                     ?, ?, ?, ?,
                     ?, ?, ?,
                     ?, ?, ?, ?,
                     ?, ?,
-                    ?, ?,
-                    ?, ?,
-                    ?,
                     ?, ?, ?
                 )
                 ON CONFLICT(record_id) DO UPDATE SET
@@ -226,9 +254,6 @@ class SQLiteSemanticStore:
                     record.confidence, _json_dumps(record.evidence_turn_range),
                     record.source_session, record.source_role,
                     record.created_at, record.updated_at,
-                    record.retrieval_count, record.retrieval_hit_count,
-                    record.action_success_count, record.action_fail_count,
-                    record.last_retrieved_at,
                     int(record.expired), record.expired_at, record.expired_reason,
                 ),
             )
@@ -242,11 +267,6 @@ class SQLiteSemanticStore:
             )
             self._conn.commit()
 
-    def upsert_records(self, records: list[MemoryRecord]) -> None:
-        """批量写入 MemoryRecord。"""
-        for u in records:
-            self.upsert_record(u)
-
     def get_record(self, record_id: str) -> MemoryRecord | None:
         """按 ID 获取单个 MemoryRecord。"""
         row = self._conn.execute(
@@ -256,36 +276,31 @@ class SQLiteSemanticStore:
             return None
         return self._row_to_record(row)
 
-    def get_records_by_ids(self, record_ids: list[str]) -> list[MemoryRecord]:
-        """按 ID 列表批量获取。"""
-        if not record_ids:
-            return []
-        placeholders = ",".join("?" for _ in record_ids)
-        rows = self._conn.execute(
-            f"SELECT * FROM memory_records WHERE record_id IN ({placeholders})",
-            record_ids,
-        ).fetchall()
-        return [self._row_to_record(r) for r in rows]
+    def get_records_by_ids(self, record_ids: list[str]) -> dict[str, MemoryRecord]:
+        """Batch fetch MemoryRecord rows by ID."""
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for record_id in record_ids:
+            rid = str(record_id or "").strip()
+            if not rid or rid in seen:
+                continue
+            seen.add(rid)
+            cleaned.append(rid)
+        if not cleaned:
+            return {}
 
-    def delete_record(self, record_id: str) -> None:
-        """硬删除一个 MemoryRecord。"""
-        with self._lock:
-            self._conn.execute(
-                "DELETE FROM memory_records WHERE record_id = ?", (record_id,)
-            )
-            self._conn.commit()
-
-    def expire_record(
-        self, record_id: str, *, expired_at: str = "", expired_reason: str = "",
-    ) -> None:
-        """软删除（标记过期）。"""
-        with self._lock:
-            self._conn.execute(
-                "UPDATE memory_records SET expired = 1, expired_at = ?, expired_reason = ? "
-                "WHERE record_id = ?",
-                (expired_at, expired_reason, record_id),
-            )
-            self._conn.commit()
+        found: dict[str, MemoryRecord] = {}
+        for start in range(0, len(cleaned), 500):
+            chunk = cleaned[start:start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._conn.execute(
+                f"SELECT * FROM memory_records WHERE record_id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                record = self._row_to_record(row)
+                found[record.record_id] = record
+        return found
 
     def delete_all(self) -> dict[str, int]:
         """清空全部数据。"""
@@ -294,14 +309,22 @@ class SQLiteSemanticStore:
                 "SELECT COUNT(*) FROM memory_records"
             ).fetchone()[0]
             c2 = self._conn.execute(
-                "SELECT COUNT(*) FROM composite_records"
+                "SELECT COUNT(*) FROM evidence_nodes"
             ).fetchone()[0]
             self._conn.execute("DELETE FROM memory_records")
-            self._conn.execute("DELETE FROM composite_records")
-            self._conn.execute("DELETE FROM usage_logs")
+            self._conn.execute("DELETE FROM evidence_nodes")
+            for fts_table in ("memory_records_fts", "evidence_nodes_fts"):
+                try:
+                    self._conn.execute(f"DELETE FROM {fts_table}")
+                except sqlite3.OperationalError:
+                    pass
             self._conn.commit()
-        return {"records_deleted": c1, "composites_deleted": c2}
+            self._clear_evidence_type_cache()
+        return {"records_deleted": c1, "evidence_nodes_deleted": c2}
 
+    # ──────────────────────────────────────
+    # FTS5 全文检索
+    # ──────────────────────────────────────
 
     def fulltext_search(
         self,
@@ -337,496 +360,201 @@ class SQLiteSemanticStore:
         rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
-    def fulltext_search_synthesized(
+    # ──────────────────────────────────────
+    # EvidenceNode CRUD / 检索
+    # ──────────────────────────────────────
+
+    def upsert_evidence_nodes(self, nodes: list[dict[str, Any]]) -> None:
+        """写入由 entity/tag/time/event-frame 构成的无损证据索引节点。"""
+        if not nodes:
+            return
+        now_nodes: list[dict[str, Any]] = []
+        with self._lock:
+            for node in nodes:
+                node_id = str(node.get("node_id") or "").strip()
+                node_type = str(node.get("node_type") or "").strip()
+                key = str(node.get("key") or "").strip()
+                if not node_id or not node_type or not key:
+                    continue
+
+                existing_row = self._conn.execute(
+                    "SELECT * FROM evidence_nodes WHERE node_id = ?", (node_id,)
+                ).fetchone()
+                if existing_row is not None:
+                    existing = self._row_to_dict(existing_row)
+                else:
+                    existing = {}
+
+                existing_text = str(existing.get("search_text") or "").strip()
+                incoming_text = str(node.get("search_text") or "").strip()
+                if existing_text and incoming_text and incoming_text not in existing_text:
+                    search_text = (existing_text + "\n" + incoming_text).strip()
+                else:
+                    search_text = incoming_text or existing_text
+                if len(search_text) > 8000:
+                    search_text = search_text[-8000:].lstrip()
+
+                created_at = str(
+                    existing.get("created_at")
+                    or node.get("created_at")
+                    or ""
+                )
+                merged = {
+                    "node_id": node_id,
+                    "node_type": node_type,
+                    "key": key,
+                    "label": str(node.get("label") or existing.get("label") or key),
+                    "search_text": search_text,
+                    "record_ids": _merge_unique_values(
+                        existing.get("record_ids"), node.get("record_ids")
+                    ),
+                    "session_ids": _merge_unique_values(
+                        existing.get("session_ids"), node.get("session_ids")
+                    ),
+                    "entities": _merge_unique_values(
+                        existing.get("entities"), node.get("entities")
+                    ),
+                    "tags": _merge_unique_values(existing.get("tags"), node.get("tags")),
+                    "temporal": _merge_temporal_dict(
+                        existing.get("temporal"), node.get("temporal")
+                    ),
+                    "evidence_turn_ranges": _merge_unique_values(
+                        existing.get("evidence_turn_ranges"),
+                        node.get("evidence_turn_ranges"),
+                    ),
+                    "metadata": {
+                        **(existing.get("metadata") if isinstance(existing.get("metadata"), dict) else {}),
+                        **(node.get("metadata") if isinstance(node.get("metadata"), dict) else {}),
+                    },
+                    "created_at": created_at,
+                    "updated_at": str(node.get("updated_at") or ""),
+                }
+                now_nodes.append(merged)
+
+                self._conn.execute(
+                    """
+                    INSERT INTO evidence_nodes (
+                        node_id, node_type, key, label, search_text,
+                        record_ids, session_ids, entities, tags, temporal,
+                        evidence_turn_ranges, metadata, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(node_id) DO UPDATE SET
+                        node_type = excluded.node_type,
+                        key = excluded.key,
+                        label = excluded.label,
+                        search_text = excluded.search_text,
+                        record_ids = excluded.record_ids,
+                        session_ids = excluded.session_ids,
+                        entities = excluded.entities,
+                        tags = excluded.tags,
+                        temporal = excluded.temporal,
+                        evidence_turn_ranges = excluded.evidence_turn_ranges,
+                        metadata = excluded.metadata,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        merged["node_id"], merged["node_type"], merged["key"],
+                        merged["label"], merged["search_text"],
+                        _json_dumps(merged["record_ids"]),
+                        _json_dumps(merged["session_ids"]),
+                        _json_dumps(merged["entities"]),
+                        _json_dumps(merged["tags"]),
+                        _json_dumps(merged["temporal"]),
+                        _json_dumps(merged["evidence_turn_ranges"]),
+                        _json_dumps(merged["metadata"]),
+                        merged["created_at"], merged["updated_at"],
+                    ),
+                )
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO evidence_nodes_fts(rowid, node_id, "
+                    "node_type, key, label, search_text, entities, tags) "
+                    "SELECT rowid, node_id, node_type, key, label, search_text, entities, tags "
+                    "FROM evidence_nodes WHERE node_id = ?",
+                    (merged["node_id"],),
+                )
+            self._conn.commit()
+            self._clear_evidence_type_cache()
+
+    def get_evidence_node(self, node_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM evidence_nodes WHERE node_id = ?", (node_id,)
+        ).fetchone()
+        return self._row_to_dict(row) if row is not None else None
+
+    def get_evidence_nodes_by_ids(self, node_ids: list[str]) -> list[dict[str, Any]]:
+        cleaned = [str(node_id or "").strip() for node_id in node_ids if str(node_id or "").strip()]
+        if not cleaned:
+            return []
+        placeholders = ",".join("?" for _ in cleaned)
+        rows = self._conn.execute(
+            f"SELECT * FROM evidence_nodes WHERE node_id IN ({placeholders})",
+            cleaned,
+        ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    def get_evidence_nodes_by_type(
+        self,
+        node_type: str,
+        *,
+        limit: int = 100_000,
+    ) -> list[dict[str, Any]]:
+        cleaned_type = str(node_type or "").strip()
+        if not cleaned_type:
+            return []
+        cache_key = (cleaned_type, max(1, int(limit or 1)))
+        with self._cache_lock:
+            cached = self._evidence_type_cache.get(cache_key)
+        if cached is not None:
+            return [dict(item) for item in cached]
+
+        rows = self._conn.execute(
+            "SELECT * FROM evidence_nodes WHERE node_type = ? ORDER BY key LIMIT ?",
+            cache_key,
+        ).fetchall()
+        result = [self._row_to_dict(r) for r in rows]
+        with self._cache_lock:
+            self._evidence_type_cache[cache_key] = result
+        return [dict(item) for item in result]
+
+    def fulltext_search_evidence_nodes(
         self,
         query: str,
         *,
-        limit: int = 10,
-        memory_types: list[str] | None = None,
+        node_types: list[str] | None = None,
+        limit: int = 30,
     ) -> list[dict[str, Any]]:
-        """BM25 全文召回复合记录。"""
         fts_query = self._escape_fts_query(query)
         if not fts_query:
             return []
-
         sql = (
-            "SELECT s.*, bm25(composite_records_fts) AS fts_score "
-            "FROM composite_records_fts f "
-            "JOIN composite_records s ON f.rowid = s.rowid "
-            "WHERE composite_records_fts MATCH ? "
+            "SELECT n.*, bm25(evidence_nodes_fts) AS fts_score "
+            "FROM evidence_nodes_fts f "
+            "JOIN evidence_nodes n ON f.rowid = n.rowid "
+            "WHERE evidence_nodes_fts MATCH ? "
         )
         params: list[Any] = [fts_query]
-
-        if memory_types:
-            placeholders = ",".join("?" for _ in memory_types)
-            sql += f"AND s.memory_type IN ({placeholders}) "
-            params.extend(memory_types)
-
+        if node_types:
+            placeholders = ",".join("?" for _ in node_types)
+            sql += f"AND n.node_type IN ({placeholders}) "
+            params.extend(node_types)
         sql += "ORDER BY fts_score LIMIT ?"
         params.append(limit)
-
         rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
-
-    def search_by_time(
-        self,
-        *,
-        since: str | None = None,
-        until: str | None = None,
-        limit: int = 30,
-        include_expired: bool = False,
-    ) -> list[dict[str, Any]]:
-        """按事件有效时间范围查询 MemoryRecord。
-
-        优先匹配 temporal.t_valid_from / t_valid_to（事件真实发生时间窗口）；
-        同时对 created_at（写入时刻）做回退匹配，取两者的 UNION，保证不遗漏。
-        """
-        params: list[Any] = []
-        filter_clauses: list[str] = []
-        if not include_expired:
-            filter_clauses.append("expired = 0")
-
-        # 事件时间子查询：JSON_EXTRACT 读取 temporal 字段中的时间值
-        # t_valid_from / t_valid_to 均存储为 ISO 字符串，可直接做字符串比较
-        event_time_clauses: list[str] = []
-        event_params: list[Any] = []
-        write_time_clauses: list[str] = []
-        write_params: list[Any] = []
-
-        if since:
-            # 事件结束时间 >= since（事件在查询区间内仍有效）
-            # 若 t_valid_to 为空则退化为按 t_valid_from >= since
-            event_time_clauses.append(
-                "(JSON_EXTRACT(temporal, '$.t_valid_to') >= ? OR "
-                "(JSON_EXTRACT(temporal, '$.t_valid_to') = '' AND "
-                " JSON_EXTRACT(temporal, '$.t_valid_from') >= ?))"
-            )
-            event_params.extend([since, since])
-            write_time_clauses.append("created_at >= ?")
-            write_params.append(since)
-        if until:
-            # 事件开始时间 <= until（事件在查询区间内尚未结束）
-            event_time_clauses.append(
-                "(JSON_EXTRACT(temporal, '$.t_valid_from') <= ? OR "
-                "(JSON_EXTRACT(temporal, '$.t_valid_from') = '' AND "
-                " JSON_EXTRACT(temporal, '$.t_valid_to') <= ?))"
-            )
-            event_params.extend([until, until])
-            write_time_clauses.append("created_at <= ?")
-            write_params.append(until)
-
-        if event_time_clauses and write_time_clauses:
-            # UNION：事件时间命中 OR 写入时间命中
-            event_where_parts = [*filter_clauses, *event_time_clauses]
-            write_where_parts = [*filter_clauses, *write_time_clauses]
-            event_where = " AND ".join(event_where_parts)
-            write_where = " AND ".join(write_where_parts)
-            sql = (
-                f"SELECT * FROM memory_records WHERE {event_where} "
-                f"UNION "
-                f"SELECT * FROM memory_records WHERE {write_where} "
-                f"ORDER BY created_at DESC LIMIT ?"
-            )
-            params.extend(event_params)
-            params.extend(write_params)
-            params.append(limit)
-        else:
-            # 没有时间约束，退化为全量查询
-            where_sql = " AND ".join(filter_clauses) if filter_clauses else "1=1"
-            sql = f"SELECT * FROM memory_records WHERE {where_sql} ORDER BY created_at DESC LIMIT ?"
-            params.append(limit)
-
-        rows = self._conn.execute(sql, params).fetchall()
-        return [self._row_to_dict(r) for r in rows]
-
-
-    def search_by_tags(
-        self,
-        *,
-        tags: list[str] | None = None,
-        memory_types: list[str] | None = None,
-        limit: int = 30,
-        include_expired: bool = False,
-    ) -> list[dict[str, Any]]:
-        """按统一 tags 字段做 LIKE 匹配查询。"""
-        if not tags:
-            return []
-        sql = "SELECT * FROM memory_records WHERE 1=1 "
-        params: list[Any] = []
-
-        if not include_expired:
-            sql += "AND expired = 0 "
-        if memory_types:
-            placeholders = ",".join("?" for _ in memory_types)
-            sql += f"AND memory_type IN ({placeholders}) "
-            params.extend(memory_types)
-
-        conditions = []
-        for tag in tags:
-            conditions.append("tags LIKE ?")
-            params.append(f"%{tag}%")
-        sql += "AND (" + " OR ".join(conditions) + ") "
-
-        sql += "ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
-
-        rows = self._conn.execute(sql, params).fetchall()
-        return [self._row_to_dict(r) for r in rows]
-
-    def search_by_slot_hints(
-        self,
-        *,
-        slot_terms: list[str],
-        memory_types: list[str] | None = None,
-        limit: int = 30,
-        include_expired: bool = False,
-    ) -> list[dict[str, Any]]:
-        """根据缺失 slot 关键字，在文本与 tags 上做定向召回。"""
-        cleaned_terms = [str(term or "").strip() for term in (slot_terms or []) if str(term or "").strip()]
-        if not cleaned_terms:
-            return []
-
-        sql = "SELECT * FROM memory_records WHERE 1=1 "
-        params: list[Any] = []
-
-        if not include_expired:
-            sql += "AND expired = 0 "
-        if memory_types:
-            placeholders = ",".join("?" for _ in memory_types)
-            sql += f"AND memory_type IN ({placeholders}) "
-            params.extend(memory_types)
-
-        group_conditions: list[str] = []
-        for term in cleaned_terms:
-            group_conditions.extend([
-                "normalized_text LIKE ?",
-                "semantic_text LIKE ?",
-                "entities LIKE ?",
-                "tags LIKE ?",
-            ])
-            like_term = f"%{term}%"
-            params.extend([like_term] * 4)
-
-        sql += "AND (" + " OR ".join(group_conditions) + ") "
-        sql += "ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
-
-        rows = self._conn.execute(sql, params).fetchall()
-        return [self._row_to_dict(r) for r in rows]
-
-
-    def upsert_synthesized(self, composite: CompositeRecord) -> None:
-        """写入或更新 CompositeRecord。"""
-        with self._lock:
-            self._conn.execute(
-                """
-                INSERT INTO composite_records (
-                    composite_id, memory_type, semantic_text, normalized_text,
-                    source_record_ids, child_composite_ids,
-                    entities, temporal, tags,
-                    confidence, created_at, updated_at,
-                    retrieval_count, retrieval_hit_count,
-                    action_success_count, action_fail_count, last_retrieved_at
-                ) VALUES (?, ?, ?, ?,  ?, ?,  ?, ?, ?,  ?, ?, ?,  ?, ?,  ?, ?, ?)
-                ON CONFLICT(composite_id) DO UPDATE SET
-                    memory_type = excluded.memory_type,
-                    semantic_text = excluded.semantic_text,
-                    normalized_text = excluded.normalized_text,
-                    source_record_ids = excluded.source_record_ids,
-                    child_composite_ids = excluded.child_composite_ids,
-                    entities = excluded.entities,
-                    temporal = excluded.temporal,
-                    tags = excluded.tags,
-                    confidence = excluded.confidence,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    composite.composite_id, composite.memory_type,
-                    composite.semantic_text, composite.normalized_text,
-                    _json_dumps(composite.source_record_ids),
-                    _json_dumps(composite.child_composite_ids),
-                    _json_dumps(composite.entities), _json_dumps(composite.temporal),
-                    _json_dumps(composite.tags),
-                    composite.confidence, composite.created_at, composite.updated_at,
-                    composite.retrieval_count, composite.retrieval_hit_count,
-                    composite.action_success_count, composite.action_fail_count,
-                    composite.last_retrieved_at,
-                ),
-            )
-            # 同步 FTS5
-            self._conn.execute(
-                "INSERT OR REPLACE INTO composite_records_fts(rowid, composite_id, "
-                "normalized_text, entities, tags) "
-                "SELECT rowid, composite_id, normalized_text, entities, tags "
-                "FROM composite_records WHERE composite_id = ?",
-                (composite.composite_id,),
-            )
-            self._conn.commit()
-
-    def get_synthesized_by_source(
-        self, source_record_ids: list[str],
-    ) -> list[CompositeRecord]:
-        """查找包含指定 source_record_id 的合成条目。"""
-        if not source_record_ids:
-            return []
-        rows = self._conn.execute(
-            "SELECT * FROM composite_records"
-        ).fetchall()
-        results = []
-        for r in rows:
-            stored_ids = _json_loads(r["source_record_ids"])
-            if any(uid in stored_ids for uid in source_record_ids):
-                results.append(self._row_to_synth(r))
-        return results
-
-    def get_synthesized(self, composite_id: str) -> CompositeRecord | None:
-        """按 composite_id 获取单个 CompositeRecord。"""
-        row = self._conn.execute(
-            "SELECT * FROM composite_records WHERE composite_id = ?", (composite_id,)
-        ).fetchone()
-        if row is None:
-            return None
-        return self._row_to_synth(row)
-
-    def delete_synthesized(self, composite_id: str) -> None:
-        """硬删除单个 CompositeRecord。"""
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT rowid FROM composite_records WHERE composite_id = ?",
-                (composite_id,),
-            ).fetchone()
-
-            if row is None:
-                return
-
-            rowid = row["rowid"]
-            self._conn.execute(
-                "DELETE FROM composite_records_fts WHERE rowid = ?",
-                (rowid,),
-            )
-            self._conn.execute(
-                "DELETE FROM composite_records WHERE composite_id = ?",
-                (composite_id,),
-            )
-            self._conn.commit()
-
-    def delete_synthesized_many(self, composite_ids: list[str]) -> None:
-        """批量硬删除 CompositeRecord。"""
-        for composite_id in composite_ids:
-            if not str(composite_id or "").strip():
-                continue
-            self.delete_synthesized(str(composite_id).strip())
-
-    def list_synthesized(self) -> list[CompositeRecord]:
-        """获取全部 CompositeRecord。"""
-        rows = self._conn.execute("SELECT * FROM composite_records").fetchall()
-        return [self._row_to_synth(r) for r in rows]
-
-
-    def find_similar_by_normalized_text(
-        self,
-        normalized_text: str,
-        *,
-        limit: int = 5,
-    ) -> list[MemoryRecord]:
-        """FTS5 模糊匹配，用于写入时去重。"""
-        fts_query = self._escape_fts_query(normalized_text)
-        if not fts_query:
-            return []
-
-        sql = (
-            "SELECT m.* FROM memory_records_fts f "
-            "JOIN memory_records m ON f.rowid = m.rowid "
-            "WHERE memory_records_fts MATCH ? AND m.expired = 0 "
-        )
-        params: list[Any] = [fts_query]
-        sql += "LIMIT ?"
-        params.append(limit)
-
-        rows = self._conn.execute(sql, params).fetchall()
-        return [self._row_to_record(r) for r in rows]
-
-
-    def insert_usage_log(self, log: UsageLog) -> None:
-        """插入一条使用日志。"""
-        with self._lock:
-            self._conn.execute(
-                "INSERT OR IGNORE INTO usage_logs "
-                "(log_id, session_id, timestamp, query, "
-                "retrieval_plan, action_state, retrieved_record_ids, kept_record_ids, "
-                "final_response_excerpt, user_feedback, action_outcome) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    log.log_id, log.session_id, log.timestamp,
-                    log.query, _json_dumps(log.retrieval_plan),
-                    _json_dumps(log.action_state),
-                    _json_dumps(log.retrieved_record_ids),
-                    _json_dumps(log.kept_record_ids),
-                    log.final_response_excerpt,
-                    log.user_feedback, log.action_outcome,
-                ),
-            )
-            self._conn.commit()
-
-    def get_usage_log(self, log_id: str) -> UsageLog | None:
-        row = self._conn.execute(
-            "SELECT * FROM usage_logs WHERE log_id = ?",
-            (log_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        return UsageLog(
-            log_id=row["log_id"],
-            session_id=row["session_id"],
-            timestamp=row["timestamp"],
-            query=row["query"],
-            retrieval_plan=_json_loads_dict(row["retrieval_plan"]),
-            action_state=_json_loads_dict(row["action_state"]),
-            retrieved_record_ids=_json_loads(row["retrieved_record_ids"]),
-            kept_record_ids=_json_loads(row["kept_record_ids"]),
-            final_response_excerpt=row["final_response_excerpt"],
-            user_feedback=row["user_feedback"],
-            action_outcome=row["action_outcome"],
-        )
-
-    def update_usage_log(
-        self,
-        log_id: str,
-        *,
-        final_response_excerpt: str | None = None,
-        user_feedback: str | None = None,
-        action_outcome: str | None = None,
-    ) -> None:
-        fields: list[str] = []
-        params: list[Any] = []
-
-        if final_response_excerpt is not None:
-            fields.append("final_response_excerpt = ?")
-            params.append(final_response_excerpt)
-        if user_feedback is not None:
-            fields.append("user_feedback = ?")
-            params.append(user_feedback)
-        if action_outcome is not None:
-            fields.append("action_outcome = ?")
-            params.append(action_outcome)
-
-        if not fields:
-            return
-
-        params.append(log_id)
-        with self._lock:
-            self._conn.execute(
-                f"UPDATE usage_logs SET {', '.join(fields)} WHERE log_id = ?",
-                params,
-            )
-            self._conn.commit()
-
-    def get_recent_usage_logs(
-        self, *, session_id: str, limit: int = 20,
-    ) -> list[UsageLog]:
-        """获取最近的使用日志。"""
-        rows = self._conn.execute(
-            "SELECT * FROM usage_logs WHERE session_id = ? "
-            "ORDER BY timestamp DESC LIMIT ?",
-            (session_id, limit),
-        ).fetchall()
-        return [
-            UsageLog(
-                log_id=r["log_id"],
-                session_id=r["session_id"],
-                timestamp=r["timestamp"],
-                query=r["query"],
-                retrieval_plan=_json_loads_dict(r["retrieval_plan"]),
-                action_state=_json_loads_dict(r["action_state"]),
-                retrieved_record_ids=_json_loads(r["retrieved_record_ids"]),
-                kept_record_ids=_json_loads(r["kept_record_ids"]),
-                final_response_excerpt=r["final_response_excerpt"],
-                user_feedback=r["user_feedback"],
-                action_outcome=r["action_outcome"],
-            )
-            for r in rows
-        ]
-
-
-    def increment_retrieval_count(self, record_ids: list[str]) -> None:
-        if not record_ids:
-            return
-        with self._lock:
-            placeholders = ",".join("?" for _ in record_ids)
-            self._conn.execute(
-                f"UPDATE memory_records SET retrieval_count = retrieval_count + 1 "
-                f"WHERE record_id IN ({placeholders})",
-                record_ids,
-            )
-            self._conn.execute(
-                f"UPDATE composite_records SET retrieval_count = retrieval_count + 1 "
-                f"WHERE composite_id IN ({placeholders})",
-                record_ids,
-            )
-            self._conn.commit()
-
-    def increment_hit_count(self, record_ids: list[str]) -> None:
-        if not record_ids:
-            return
-        with self._lock:
-            placeholders = ",".join("?" for _ in record_ids)
-            self._conn.execute(
-                f"UPDATE memory_records SET retrieval_hit_count = retrieval_hit_count + 1 "
-                f"WHERE record_id IN ({placeholders})",
-                record_ids,
-            )
-            self._conn.execute(
-                f"UPDATE composite_records SET retrieval_hit_count = retrieval_hit_count + 1 "
-                f"WHERE composite_id IN ({placeholders})",
-                record_ids,
-            )
-            self._conn.commit()
-
-    def increment_action_success(self, record_ids: list[str]) -> None:
-        if not record_ids:
-            return
-        with self._lock:
-            placeholders = ",".join("?" for _ in record_ids)
-            self._conn.execute(
-                f"UPDATE memory_records SET action_success_count = action_success_count + 1 "
-                f"WHERE record_id IN ({placeholders})",
-                record_ids,
-            )
-            self._conn.execute(
-                f"UPDATE composite_records SET action_success_count = action_success_count + 1 "
-                f"WHERE composite_id IN ({placeholders})",
-                record_ids,
-            )
-            self._conn.commit()
-
-    def increment_action_fail(self, record_ids: list[str]) -> None:
-        if not record_ids:
-            return
-        with self._lock:
-            placeholders = ",".join("?" for _ in record_ids)
-            self._conn.execute(
-                f"UPDATE memory_records SET action_fail_count = action_fail_count + 1 "
-                f"WHERE record_id IN ({placeholders})",
-                record_ids,
-            )
-            self._conn.execute(
-                f"UPDATE composite_records SET action_fail_count = action_fail_count + 1 "
-                f"WHERE composite_id IN ({placeholders})",
-                record_ids,
-            )
-            self._conn.commit()
-
+    # ──────────────────────────────────────
+    # 调试导出
+    # ──────────────────────────────────────
 
     def export_all(self) -> dict[str, Any]:
         """导出全部数据用于调试/前端。"""
         records = [self._row_to_dict(r) for r in self._conn.execute("SELECT * FROM memory_records").fetchall()]
-        synths = [self._row_to_dict(r) for r in self._conn.execute("SELECT * FROM composite_records").fetchall()]
+        evidence_nodes = [self._row_to_dict(r) for r in self._conn.execute("SELECT * FROM evidence_nodes").fetchall()]
         return {
             "records": records,
-            "composites": synths,
+            "evidence_nodes": evidence_nodes,
             "total_records": len(records),
-            "total_composites": len(synths),
+            "total_evidence_nodes": len(evidence_nodes),
         }
 
     def count_records(self) -> int:
@@ -834,11 +562,22 @@ class SQLiteSemanticStore:
             "SELECT COUNT(*) FROM memory_records WHERE expired = 0"
         ).fetchone()[0]
 
-    def count_composites(self) -> int:
+    def count_evidence_nodes(self) -> int:
         return self._conn.execute(
-            "SELECT COUNT(*) FROM composite_records"
+            "SELECT COUNT(*) FROM evidence_nodes"
         ).fetchone()[0]
 
+    def count_composites(self) -> int:
+        """Compatibility alias for older API status code."""
+        return self.count_evidence_nodes()
+
+    # ──────────────────────────────────────
+    # 内部工具
+    # ──────────────────────────────────────
+
+    def _clear_evidence_type_cache(self) -> None:
+        with self._cache_lock:
+            self._evidence_type_cache.clear()
 
     @staticmethod
     def _escape_fts_query(query: str) -> str:
@@ -872,8 +611,8 @@ class SQLiteSemanticStore:
         d = dict(row)
         for key in (
             "entities", "temporal", "tags",
-            "evidence_turn_range", "source_record_ids", "child_composite_ids",
-            "retrieval_plan", "retrieved_record_ids", "kept_record_ids",
+            "evidence_turn_range",
+            "record_ids", "session_ids", "evidence_turn_ranges", "metadata",
         ):
             if key in d and isinstance(d[key], str):
                 d[key] = _json_loads(d[key]) if key != "temporal" else _json_loads_dict(d[key])
@@ -898,34 +637,7 @@ class SQLiteSemanticStore:
             source_role=d.get("source_role", ""),
             created_at=d["created_at"],
             updated_at=d["updated_at"],
-            retrieval_count=int(d["retrieval_count"] or 0),
-            retrieval_hit_count=int(d["retrieval_hit_count"] or 0),
-            action_success_count=int(d["action_success_count"] or 0),
-            action_fail_count=int(d["action_fail_count"] or 0),
-            last_retrieved_at=d["last_retrieved_at"],
             expired=bool(d["expired"]),
             expired_at=d["expired_at"],
             expired_reason=d["expired_reason"],
-        )
-
-    @staticmethod
-    def _row_to_synth(row: sqlite3.Row) -> CompositeRecord:
-        return CompositeRecord(
-            composite_id=row["composite_id"],
-            memory_type=row["memory_type"],
-            semantic_text=row["semantic_text"],
-            normalized_text=row["normalized_text"],
-            source_record_ids=_json_loads(row["source_record_ids"]),
-            child_composite_ids=_json_loads(row["child_composite_ids"]),
-            entities=_json_loads(row["entities"]),
-            temporal=_json_loads_dict(row["temporal"]),
-            tags=_json_loads(row["tags"]),
-            confidence=float(row["confidence"] or 0.0),
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-            retrieval_count=int(row["retrieval_count"] or 0),
-            retrieval_hit_count=int(row["retrieval_hit_count"] or 0),
-            action_success_count=int(row["action_success_count"] or 0),
-            action_fail_count=int(row["action_fail_count"] or 0),
-            last_retrieved_at=row["last_retrieved_at"],
         )

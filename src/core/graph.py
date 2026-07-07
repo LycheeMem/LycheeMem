@@ -590,7 +590,12 @@ class LycheePipeline:
         finally:
             _reset_once()
 
-    def consolidate(self, session_id: str, session_date: str | None = None) -> dict[str, Any]:
+    def consolidate(
+        self,
+        session_id: str,
+        session_date: str | None = None,
+        flush_session: bool = False,
+    ) -> dict[str, Any]:
         """手动触发固化（公共方法，可由 API BackgroundTasks 调用）。
 
         只处理自上次固化以来新增的 turns（水位线机制），成功后更新水位线，
@@ -609,14 +614,20 @@ class LycheePipeline:
         new_turns = [
             t for t in log.turns[watermark:] if not t.get("deleted", False)
         ]
-        if not new_turns:
+        if not new_turns and not flush_session:
             return {"entities_added": 0, "skills_added": 0, "skipped_reason": "no_new_turns"}
         result = self.consolidator.run(
             turns=new_turns, session_id=session_id,
             turn_index_offset=watermark,
+            flush_session=flush_session,
             session_date=session_date,
         )
-        store.set_last_consolidated_turn_index(session_id, raw_total)
+        raw_consumed = result.get("turns_consumed")
+        consumed = int(len(new_turns) if raw_consumed is None else raw_consumed)
+        store.set_last_consolidated_turn_index(
+            session_id,
+            min(raw_total, watermark + max(0, consumed)),
+        )
         return result
 
     def _trigger_consolidation_bg(
@@ -697,7 +708,12 @@ class LycheePipeline:
                     session_date=session_date,
                 ),
             )
-            store.set_last_consolidated_turn_index(session_id, raw_total)
+            raw_consumed = result.get("turns_consumed")
+            consumed = int(len(new_turns) if raw_consumed is None else raw_consumed)
+            store.set_last_consolidated_turn_index(
+                session_id,
+                min(raw_total, watermark + max(0, consumed)),
+            )
             self._finish_consolidation(
                 session_id=session_id,
                 job_id=job_id,
