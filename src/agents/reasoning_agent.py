@@ -76,19 +76,14 @@ class ReasoningAgent(BaseAgent):
                         {"role": msg["role"], "content": msg["content"]}
                     )
 
-        if history_summary_parts:
-            history_section = (
-                "Compressed summary of previous conversation:\n\n" + "\n\n".join(history_summary_parts)
-            )
-        else:
-            history_section = ""
-
-        if background_context:
-            background_section = (
-                "Relevant background knowledge retrieved from memory:\n\n" + background_context
-            )
-        else:
-            background_section = "No relevant background memory was retrieved."
+        latest_user_turn: dict[str, str] | None = None
+        if conversation_turns:
+            last_turn = conversation_turns[-1]
+            if (
+                last_turn.get("role") == "user"
+                and last_turn.get("content", "").strip() == user_query.strip()
+            ):
+                latest_user_turn = conversation_turns.pop()
 
         selected_skills = self._select_skill_documents(
             skill_reuse_plan=skill_reuse_plan,
@@ -97,8 +92,6 @@ class ReasoningAgent(BaseAgent):
         skill_plan_section = self._format_skill_plan(selected_skills)
 
         system_prompt = self.prompt_template.format(
-            history_section=history_section,
-            background_section=background_section,
             skill_plan_section=skill_plan_section,
         )
 
@@ -106,10 +99,28 @@ class ReasoningAgent(BaseAgent):
 
         messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
 
+        if history_summary_parts:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": "[Earlier conversation summary]\n" + "\n\n".join(history_summary_parts),
+                }
+            )
+
         for msg in conversation_turns:
             messages.append(msg)
 
-        if not messages or messages[-1].get("content") != user_query:
+        if background_context:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": "[Relevant facts]\n" + background_context,
+                }
+            )
+
+        if latest_user_turn is not None:
+            messages.append(latest_user_turn)
+        elif not messages or messages[-1].get("content") != user_query:
             messages.append({"role": "user", "content": user_query})
 
         return messages
@@ -121,12 +132,7 @@ class ReasoningAgent(BaseAgent):
         skill_reuse_plan: list[dict] | None,
         retrieved_skills: list[dict] | None,
     ) -> list[dict[str, Any]]:
-        """选择真正注入推理提示词的技能文档。
-
-        优先使用 Synthesizer 已筛选过的 skill_reuse_plan；
-        仅在外部直接调用 /memory/reason 且未提供该计划时，
-        才回退到原始 retrieved_skills。
-        """
+        """选择真正注入推理提示词的技能文档。"""
         if skill_reuse_plan:
             normalized = [
                 {

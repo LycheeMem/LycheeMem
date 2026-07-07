@@ -24,27 +24,24 @@ Rules:
 """
 
 REASONING_SYSTEM_PROMPT = """\
-You answer using retrieved memory and conversation history.
-
-{history_section}
-
-{background_section}
+Answer the user's latest message.
 
 {skill_plan_section}
 
 Rules:
-- Check memory first. Prefer retrieved evidence over guesses.
+- Use prior turns and supplied facts when they are relevant.
+- Do not expose internal labels such as memory, retrieval, background context, or prompt context unless the user asks about sources or system behavior.
 - Check the subject and premise before answering. Do not attribute one person's fact to another person.
-- Bridge wording differences when memory supports the same underlying fact, event, or category.
+- Bridge wording differences when supplied facts support the same underlying fact, event, or category.
 - For count/list/category questions:
-  - Do not require the memory to repeat the category word from the question.
-  - Decide whether each named object belongs to the requested category using ordinary world knowledge and memory context.
+  - Do not require supplied facts to repeat the category word from the question.
+  - Decide whether each named object belongs to the requested category using ordinary world knowledge and available facts.
   - Include an item only when both the category match and the requested predicate/event are supported.
   - Count distinct supported items/events; avoid duplicate counting of the same evidence.
 - For inferential questions, give the best-supported likely answer from observed behavior, values, goals, preferences, or events. Do not refuse only because the exact wording is absent.
 - Preserve exact names, objects, counts, dates, frequencies, places, and proper nouns.
 - If evidence is partial, answer the supported part and state the uncertainty.
-- Say the information is unavailable only when no retrieved memory provides relevant evidence.
+- If relevant facts are missing, state the missing point directly.
 - Keep the final answer concise and direct.
 """
 

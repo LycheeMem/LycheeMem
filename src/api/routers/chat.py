@@ -133,19 +133,14 @@ def _openai_request_to_chat_input(
         images.extend(msg_images)
         image_mime_types.extend(msg_mime_types)
 
-    current_text = extracted[last_user_idx][1] or "请根据已提供的上下文继续回答。"
+    current_text = extracted[last_user_idx][1] or "继续回答。"
     context_lines: list[str] = []
     for role, text, _, _ in extracted[:last_user_idx]:
         if text:
             context_lines.append(f"{role}: {text}")
 
     if context_lines:
-        message = (
-            "以下是本次请求提供的对话上下文：\n"
-            + "\n".join(context_lines)
-            + "\n\n当前用户问题：\n"
-            + current_text
-        )
+        message = "\n".join(context_lines + [f"user: {current_text}"])
     else:
         message = current_text
 
@@ -256,25 +251,7 @@ async def _run_openai_complete(
     )
 
 
-@router.post("/v1/chat/completions", response_model=OpenAIChatCompletionResponse)
-@router.post("/v1/chat/complete", response_model=OpenAIChatCompletionResponse)
-async def openai_chat_complete(req: OpenAIChatCompletionRequest, pipeline=Depends(get_pipeline)):
-    """OpenAI Chat Completions 兼容的非流式端点。"""
-    try:
-        return await _run_openai_complete(req, pipeline)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("OpenAI compatible chat complete failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-
-@router.post("/v1/chat")
-async def openai_chat(req: OpenAIChatCompletionRequest, pipeline=Depends(get_pipeline)):
-    """OpenAI Chat Completions 兼容端点。stream=true 时返回 SSE chunk。"""
-    if not req.stream:
-        return await openai_chat_complete(req, pipeline)
-
+async def _run_openai_stream(req: OpenAIChatCompletionRequest, pipeline) -> StreamingResponse:
     completion_id = _new_completion_id()
     created = int(time.time())
     session_id, message, images, image_mime_types, reference_time = _openai_request_to_chat_input(req)
@@ -292,20 +269,28 @@ async def openai_chat(req: OpenAIChatCompletionRequest, pipeline=Depends(get_pip
         try:
             final_result: dict[str, Any] = {}
 
-            yield _sse(
-                {
+            def chunk_payload(choices: list[dict[str, Any]]) -> dict[str, Any]:
+                payload: dict[str, Any] = {
                     "id": completion_id,
                     "object": "chat.completion.chunk",
                     "created": created,
                     "model": req.model,
-                    "choices": [
+                    "choices": choices,
+                }
+                if include_usage:
+                    payload["usage"] = None
+                return payload
+
+            yield _sse(
+                chunk_payload(
+                    [
                         {
                             "index": 0,
                             "delta": {"role": "assistant"},
                             "finish_reason": None,
                         }
-                    ],
-                }
+                    ]
+                )
             )
 
             async for evt in pipeline.astream_steps(
@@ -316,38 +301,30 @@ async def openai_chat(req: OpenAIChatCompletionRequest, pipeline=Depends(get_pip
             ):
                 if evt["type"] == "token":
                     yield _sse(
-                        {
-                            "id": completion_id,
-                            "object": "chat.completion.chunk",
-                            "created": created,
-                            "model": req.model,
-                            "choices": [
+                        chunk_payload(
+                            [
                                 {
                                     "index": 0,
                                     "delta": {"content": evt["content"]},
                                     "finish_reason": None,
                                 }
-                            ],
-                        }
+                            ]
+                        )
                     )
                 elif evt["type"] == "done":
                     final_result = evt.get("result", {})
                     break
 
             yield _sse(
-                {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": req.model,
-                    "choices": [
+                chunk_payload(
+                    [
                         {
                             "index": 0,
                             "delta": {},
                             "finish_reason": "stop",
                         }
-                    ],
-                }
+                    ]
+                )
             )
 
             if include_usage:
@@ -380,6 +357,45 @@ async def openai_chat(req: OpenAIChatCompletionRequest, pipeline=Depends(get_pip
             yield _sse_done()
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+async def _openai_chat_completions_response(req: OpenAIChatCompletionRequest, pipeline):
+    if req.stream:
+        return await _run_openai_stream(req, pipeline)
+    return await _run_openai_complete(req, pipeline)
+
+
+@router.post("/v1/chat/completions", response_model=None)
+async def openai_chat_completions(req: OpenAIChatCompletionRequest, pipeline=Depends(get_pipeline)):
+    try:
+        return await _openai_chat_completions_response(req, pipeline)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("OpenAI compatible chat completions failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/v1/chat/complete", response_model=OpenAIChatCompletionResponse)
+async def openai_chat_complete(req: OpenAIChatCompletionRequest, pipeline=Depends(get_pipeline)):
+    try:
+        return await _run_openai_complete(req, pipeline)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("OpenAI compatible chat complete failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@router.post("/v1/chat", response_model=None)
+async def openai_chat(req: OpenAIChatCompletionRequest, pipeline=Depends(get_pipeline)):
+    try:
+        return await _openai_chat_completions_response(req, pipeline)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("OpenAI compatible chat failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/chat/complete", response_model=ChatResponse)
