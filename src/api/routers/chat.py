@@ -51,6 +51,14 @@ def _openai_session_id(req: OpenAIChatCompletionRequest) -> str:
     return value[:128] if value else f"openai-{uuid.uuid4().hex[:16]}"
 
 
+def _openai_auto_consolidate(req: OpenAIChatCompletionRequest) -> bool:
+    if req.consolidate is not None:
+        return req.consolidate
+    if req.store is not None:
+        return req.store
+    return True
+
+
 def _extract_image_from_data_url(url: str) -> tuple[str, str] | None:
     if not url.startswith("data:") or "," not in url:
         return None
@@ -242,6 +250,7 @@ async def _run_openai_complete(
         session_id=session_id,
         input_images=[],
         reference_time=reference_time,
+        auto_consolidate=_openai_auto_consolidate(req),
     )
     return _openai_response_from_result(
         completion_id=completion_id,
@@ -298,6 +307,7 @@ async def _run_openai_stream(req: OpenAIChatCompletionRequest, pipeline) -> Stre
                 session_id=session_id,
                 input_images=[],
                 reference_time=reference_time,
+                auto_consolidate=_openai_auto_consolidate(req),
             ):
                 if evt["type"] == "token":
                     yield _sse(

@@ -38,6 +38,7 @@ class PipelineState(TypedDict, total=False):
     final_response: str
     tool_calls: list[dict[str, Any]]
 
+    auto_consolidate: bool
     consolidation_pending: bool
 
     turn_input_tokens: int   # 输入 token 总量

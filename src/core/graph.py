@@ -388,7 +388,7 @@ class LycheePipeline:
 
         return {
             "final_response": result["final_response"],
-            "consolidation_pending": True,
+            "consolidation_pending": bool(state.get("auto_consolidate", True)),
         }
 
     def _build_graph(self):
@@ -414,6 +414,7 @@ class LycheePipeline:
         session_id: str,
         input_images: list[str] | None = None,
         reference_time: str | None = None,
+        auto_consolidate: bool = True,
     ) -> dict[str, Any]:
         """同步运行 Pipeline。
 
@@ -433,6 +434,7 @@ class LycheePipeline:
                 "session_id": session_id,
                 "input_images": input_images or [],
                 "reference_time": reference_time or "",
+                "auto_consolidate": auto_consolidate,
             }
             result = self._graph.invoke(initial_state)
         finally:
@@ -458,6 +460,7 @@ class LycheePipeline:
         session_id: str,
         input_images: list[str] | None = None,
         reference_time: str | None = None,
+        auto_consolidate: bool = True,
     ) -> dict[str, Any]:
         """异步运行 Pipeline。"""
         initial_state: dict[str, Any] = {
@@ -465,6 +468,7 @@ class LycheePipeline:
             "session_id": session_id,
             "input_images": input_images or [],
             "reference_time": reference_time or "",
+            "auto_consolidate": auto_consolidate,
         }
         result = await self._graph.ainvoke(initial_state)
 
@@ -486,6 +490,7 @@ class LycheePipeline:
         session_id: str,
         input_images: list[str] | None = None,
         reference_time: str | None = None,
+        auto_consolidate: bool = True,
     ) -> AsyncIterator[dict[str, Any]]:
         """逐节点执行 Pipeline，每步完成后 yield 进度事件。
 
@@ -509,6 +514,7 @@ class LycheePipeline:
                 "session_id": session_id,
                 "input_images": input_images or [],
                 "reference_time": reference_time or "",
+                "auto_consolidate": auto_consolidate,
             }
 
             patch = await asyncio.to_thread(self._wm_manager_node, state)
@@ -558,7 +564,10 @@ class LycheePipeline:
                     )
                 except Exception:
                     logger.warning("finalize_usage_log failed session=%s", state.get("session_id"), exc_info=True)
-            patch = {"final_response": streaming_response, "consolidation_pending": True}
+            patch = {
+                "final_response": streaming_response,
+                "consolidation_pending": bool(state.get("auto_consolidate", True)),
+            }
             state.update(patch)
             yield {"type": "step", "step": "reason", "status": "done", "patch": patch}
 

@@ -100,6 +100,8 @@ class OpenAIChatCompletionRequest(BaseModel):
     model: str = "lycheemem"
     messages: list[OpenAIChatMessage] = Field(..., min_length=1)
     stream: bool = False
+    store: bool | None = None
+    consolidate: bool | None = None
     user: str | None = Field(default=None, max_length=128)
     session_id: str | None = Field(default=None, max_length=128)
     reference_time: str | None = None
