@@ -27,14 +27,14 @@ VISUAL_EXTRACTION_PROMPT_FAST = """\
 
 
 class VisualExtractorFast:
-    """使用 VLM 进行图片理解和结构化提取（极速版）。
+    """使用 VLM 进行图片理解和结构化提取。
 
     Args:
         llm: LLM 适配器（需支持多模态输入，如 qwen-vl-max）。
         fast_mode: 是否启用快速模式（更短的 Prompt 和更低的 token 限制）。
         ultra_fast_mode: 是否启用超快速模式（进一步压缩图片和 Prompt）。
-        max_image_size: 图片最大边长（像素），超过则缩放，默认 512（极速版）。
-        image_quality: JPEG 压缩质量 (1-100)，默认 75（极速版）。
+        max_image_size: 图片最大边长（像素），超过则缩放，默认 512。
+        image_quality: JPEG 压缩质量 (1-100)，默认 75。
         cache_size: LRU 缓存大小，默认 256。
         timeout: VLM 调用超时（秒），默认 15 秒。
     """
@@ -85,7 +85,7 @@ class VisualExtractorFast:
         mime_type: str = "image/jpeg",
         session_id: str = "",
     ) -> dict[str, Any]:
-        """从 Base64 编码的图片提取结构化信息（带缓存优化）。
+        """从 Base64 编码的图片提取结构化信息。
 
         Args:
             image_b64: Base64 编码的图片数据。
@@ -105,7 +105,7 @@ class VisualExtractorFast:
         )
 
         if image_hash in self._result_cache:
-            logger.debug("✓ Cache hit for image hash: %s", image_hash)
+            logger.debug("Cache hit for image hash: %s", image_hash)
             cached_result = self._result_cache[image_hash].copy()
             cached_result["from_cache"] = True
             return cached_result
@@ -113,7 +113,7 @@ class VisualExtractorFast:
         compressed_b64 = self._compress_image(image_bytes, mime_type, image_hash)
         if compressed_b64:
             compression_ratio = (1 - len(compressed_b64) * 3 / 4 / len(image_bytes)) * 100
-            logger.debug("✓ Image compressed: %d -> %d bytes (%.1f%%)",
+            logger.debug("Image compressed: %d -> %d bytes (%.1f%%)",
                         len(image_bytes), len(compressed_b64) * 3 // 4, compression_ratio)
         else:
             compressed_b64 = image_b64
@@ -130,7 +130,7 @@ class VisualExtractorFast:
         self._update_cache(image_hash, result, compressed_b64)
 
         logger.info(
-            "✓ Visual extraction completed: scene_type=%s, importance=%.2f, caption_len=%d",
+            "Visual extraction completed: scene_type=%s, importance=%.2f, caption_len=%d",
             result["scene_type"], result["importance_score"], len(result.get("caption", "")),
         )
 
@@ -159,7 +159,7 @@ class VisualExtractorFast:
 
         """
         if image_hash and image_hash in self._compressed_cache:
-            logger.debug("✓ Compression cache hit for hash: %s", image_hash)
+            logger.debug("Compression cache hit for hash: %s", image_hash)
             return self._compressed_cache[image_hash]
 
         try:
@@ -179,7 +179,7 @@ class VisualExtractorFast:
                 new_width = int(width * scale)
                 new_height = int(height * scale)
                 img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                logger.debug("✓ Image resized: %dx%d -> %dx%d", width, height, new_width, new_height)
+                logger.debug("Image resized: %dx%d -> %dx%d", width, height, new_width, new_height)
 
             output = io.BytesIO()
             img.save(output, format="JPEG", quality=self.image_quality, optimize=True)
@@ -238,10 +238,10 @@ class VisualExtractorFast:
                 timeout=self.timeout,
             )
         except asyncio.TimeoutError:
-            logger.error("✗ VLM call timeout after %ds", self.timeout)
+            logger.error("VLM call timeout after %ds", self.timeout)
             return self._get_fallback_result(f"VLM 响应超时 ({self.timeout}s)")
         except Exception as e:
-            logger.error("✗ VLM API call failed: %s", e)
+            logger.error("VLM API call failed: %s", e)
             return self._get_fallback_result(f"VLM API 错误")
 
         text = response.strip()
@@ -298,7 +298,6 @@ class VisualExtractorFast:
 
     def _validate_and_fix(self, result: dict[str, Any]) -> dict[str, Any]:
         """验证和修正提取结果，确保字段完整性。"""
-        # 确保必需字段存在
         required_fields = {
             "caption": "",
             "scene_type": "other",
@@ -311,11 +310,9 @@ class VisualExtractorFast:
         for field, default in required_fields.items():
             result.setdefault(field, default)
 
-        # 修正 scene_type
         if result["scene_type"] not in SCENE_TYPES:
             result["scene_type"] = "other"
 
-        # 修正 importance_score 范围
         score = result.get("importance_score", 0.5)
         try:
             score = float(score)
@@ -323,11 +320,9 @@ class VisualExtractorFast:
         except (ValueError, TypeError):
             result["importance_score"] = 0.5
 
-        # 确保 entities 是列表
         if not isinstance(result.get("entities"), list):
             result["entities"] = []
 
-        # 确保 structured_data 是字典
         if not isinstance(result.get("structured_data"), dict):
             result["structured_data"] = {}
 

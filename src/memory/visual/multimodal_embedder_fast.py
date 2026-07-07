@@ -51,7 +51,7 @@ class MultimodalEmbedderFast:
         use_fp16: bool = True,
         batch_size: int = 64,
     ) -> None:
-        """初始化多模态嵌入器（极速版）。
+        """初始化多模态嵌入器。
 
         Args:
             model_name: HuggingFace 模型名称。选项：
@@ -139,7 +139,7 @@ class MultimodalEmbedderFast:
             self._model = SentenceTransformer(self.model_name, device=self.device)
         
         self._embedding_dim = self._model.get_sentence_embedding_dimension()
-        logger.info("✓ Multimodal model loaded: dim=%d, device=%s", self._embedding_dim, self.device)
+        logger.info("Multimodal model loaded: dim=%d, device=%s", self._embedding_dim, self.device)
 
     @property
     def model(self):
@@ -181,7 +181,7 @@ class MultimodalEmbedderFast:
         cache_key = f"{text}:{normalize}"
         text_hash = hash(cache_key)
         if text_hash in self._text_cache:
-            logger.debug("✓ Text embedding cache hit")
+            logger.debug("Text embedding cache hit")
             return self._text_cache[text_hash].copy()
 
         embedding = self.model.encode(
@@ -217,7 +217,7 @@ class MultimodalEmbedderFast:
             cache_key = f"dashscope_image:{str(image)}:{normalize}"
             image_hash = hash(cache_key)
             if image_hash in self._image_cache:
-                logger.debug("✓ DashScope image embedding cache hit")
+                logger.debug("DashScope image embedding cache hit")
                 return self._image_cache[image_hash].copy()
 
             try:
@@ -252,7 +252,7 @@ class MultimodalEmbedderFast:
         if isinstance(image, (str, Path)):
             image_path = str(image)
             if image_path in self._image_cache_pil:
-                logger.debug("✓ Image PIL cache hit: %s", image_path)
+                logger.debug("Image PIL cache hit: %s", image_path)
                 pil_image = self._image_cache_pil[image_path]
             else:
                 logger.debug("Loading image: %s", image_path)
@@ -274,7 +274,7 @@ class MultimodalEmbedderFast:
         image_hash = hash(cache_key)
 
         if image_hash in self._image_cache:
-            logger.debug("✓ Image embedding cache hit")
+            logger.debug("Image embedding cache hit")
             return self._image_cache[image_hash].copy()
 
         embedding = self.model.encode(
@@ -298,7 +298,7 @@ class MultimodalEmbedderFast:
         batch_size: Optional[int] = None,
         show_progress: bool = False
     ) -> List[List[float]]:
-        """批量嵌入多个文本（极速版）。
+        """批量嵌入多个文本。
 
         Args:
             texts: 文本列表
@@ -326,7 +326,7 @@ class MultimodalEmbedderFast:
         batch_size: Optional[int] = None,
         show_progress: bool = False
     ) -> List[List[float]]:
-        """批量嵌入多个图像（极速版）。
+        """批量嵌入多个图像。
 
         Args:
             images: 图像列表（路径或 PIL Image）

@@ -156,8 +156,6 @@ class CompactSemanticEncoder:
             pass
         return []
 
-    # 工具方法
-
     @staticmethod
     def _make_record_id(semantic_text: str) -> str:
         """SHA256(semantic_text) 作为记录 ID。

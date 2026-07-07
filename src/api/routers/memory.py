@@ -748,7 +748,7 @@ async def memory_smart_search(
     req: MemorySmartSearchRequest,
     pipeline=Depends(get_pipeline),
 ):
-    """实验性 one-shot 检索包装器：search，可选自动 synthesize。"""
+    """执行 one-shot 检索，可选自动 synthesize。"""
     return await run_in_threadpool(run_memory_smart_search, pipeline, req)
 
 

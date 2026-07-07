@@ -91,7 +91,7 @@ class VisualStore:
             image_storage_path: 图片存储目录。
             embedding_dim: Embedding 向量维度。
             embedder: 文本 Embedding 适配器（可选，向后兼容）。
-            multimodal_embedder: 多模态 Embedder（新增，支持跨模态检索）。
+            multimodal_embedder: 多模态 Embedder，用于跨模态检索。
         """
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -104,12 +104,10 @@ class VisualStore:
 
         self.embedding_dim = embedding_dim
         self.embedder = embedder  # 文本 embedder（向后兼容）
-        self.multimodal_embedder = multimodal_embedder  # 多模态 embedder（新增）
+        self.multimodal_embedder = multimodal_embedder
 
-        # 初始化 SQLite
         self._init_sqlite()
 
-        # 初始化 LanceDB
         self._init_lancedb()
 
         # 向量索引缓冲区（批量异步写入）
@@ -171,11 +169,9 @@ class VisualStore:
         """
         import base64
 
-        # 按会话创建子目录
         session_dir = self.image_storage_path / session_id
         session_dir.mkdir(parents=True, exist_ok=True)
 
-        # 确定文件扩展名
         ext_map = {
             "image/jpeg": ".jpg",
             "image/jpg": ".jpg",
@@ -288,7 +284,6 @@ class VisualStore:
             logger.debug("LanceDB table not initialized, skipping vector indexing")
             return
 
-        # 添加到缓冲区
         self._vector_buffer.append(record)
 
         # 当缓冲区达到阈值时批量写入
@@ -303,7 +298,6 @@ class VisualStore:
         try:
             import numpy as np
 
-            # 准备批量数据
             batch_data = []
             for record in self._vector_buffer:
                 data = {
@@ -452,7 +446,6 @@ class VisualStore:
         """
         logger.info("Searching visual memories with query: '%s' (top_k=%d)", query, top_k)
 
-        # 方案 A：使用多模态嵌入器进行双路检索
         if self.multimodal_embedder is not None and self._visual_table is not None:
             try:
                 import asyncio
@@ -460,11 +453,9 @@ class VisualStore:
 
                 loop = asyncio.new_event_loop()
                 try:
-                    # 生成 CLIP 文本嵌入（用于 visual_vector 检索）
                     clip_query_vec = loop.run_until_complete(
                         asyncio.to_thread(self.multimodal_embedder.embed_text, query)
                     )
-                    # 生成文本嵌入（用于 caption vector 检索，向后兼容）
                     if self.embedder:
                         text_query_vec = loop.run_until_complete(
                             asyncio.to_thread(self.embedder.embed_query, query)
@@ -481,7 +472,6 @@ class VisualStore:
 
                 results = []
 
-                # 第一路：CLIP 文本嵌入 → visual_vector 检索
                 try:
                     visual_results = (
                         self._visual_table.search(np.array(clip_query_vec, dtype=np.float32), vector_column_name="visual_vector")
@@ -502,7 +492,6 @@ class VisualStore:
                 except Exception as e:
                     logger.warning("Visual vector search failed: %s", e)
 
-                # 第二路：文本嵌入 → caption vector 检索
                 try:
                     text_results = (
                         self._visual_table.search(np.array(text_query_vec, dtype=np.float32), vector_column_name="vector")
@@ -511,10 +500,8 @@ class VisualStore:
                     )
                     logger.debug("Text vector search returned %d results", len(text_results))
                     for r in text_results:
-                        # 检查是否已存在
                         existing = next((x for x in results if x["record_id"] == r["record_id"]), None)
                         if existing:
-                            # 更新 text_score
                             existing["text_score"] = float(1.0 - r.get("_distance", 0.0))
                         else:
                             results.append({
@@ -538,15 +525,12 @@ class VisualStore:
                         text_weight * r["text_score"] +
                         visual_weight * r["visual_score"]
                     )
-                    # 重要性加权
                     r["final_score"] *= (0.5 + 0.5 * r["importance_score"])
 
-                # 按最终分数排序
                 results.sort(key=lambda x: x["final_score"], reverse=True)
 
                 logger.info("Multimodal search completed: %d results (before dedup)", len(results))
 
-                # 返回 top_k
                 return [
                     {
                         "record_id": r["record_id"],
@@ -631,7 +615,7 @@ class VisualStore:
         query_embedding: list[float],
         top_k: int = 5
     ) -> list[dict[str, Any]]:
-        """通过视觉嵌入检索视觉记忆（新增，支持图像查询）。
+        """通过视觉嵌入检索视觉记忆。
         
         Args:
             query_embedding: 查询图像的 CLIP 嵌入向量
@@ -732,7 +716,6 @@ class VisualStore:
         """彻底删除视觉记忆记录（包括图片文件）。"""
         import os
 
-        # 先获取图片路径
         image_path = self.get_image_path(record_id)
 
         conn = sqlite3.connect(str(self.db_path))
@@ -742,7 +725,6 @@ class VisualStore:
         finally:
             conn.close()
 
-        # 删除图片文件
         if image_path:
             full_path = self.image_storage_path / image_path
             if full_path.exists():

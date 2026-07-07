@@ -1281,17 +1281,12 @@ class CompactSemanticEngine(BaseSemanticMemoryEngine):
             records=filtered_records,
         )
 
-        # 一次批量 embed 同时覆盖 semantic_text + normalized_text
-        #     normalized_text = f"{memory_type}: {semantic_text}"（确定性规则生成）
-        #     向量将复用于：① ANN 搜索 query_vector（无需线程内 embed_query）
-        #                  ② Phase B 相似度判重（无需逐条 embed）
-        #                  ③ Phase C upsert_batch 两列直接传入（无需 upsert_batch 内部再 embed）
-        #                  ④ synthesizer 的 _dedup / _cluster 也直接复用（无需再 embed）
+        # 一次批量 embed 同时覆盖 semantic_text 和 normalized_text，后续检索、
+        # 判重、写入和 synthesizer 去重都复用同一批向量，避免重复调用 embedder。
         _record_vec_map: dict[str, list[float]] = {}   # record_id → semantic_vector
         _record_norm_vec_map: dict[str, list[float]] = {}  # record_id → normalized_vector
         if filtered_records:
             set_embedding_call_source("dedup_search")
-            # 前 N 个：semantic_text；后 N 个：normalized_text
             _N = len(filtered_records)
             _all_texts = (
                 [r.semantic_text for r in filtered_records]

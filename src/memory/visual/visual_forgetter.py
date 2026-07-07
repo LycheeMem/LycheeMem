@@ -59,7 +59,6 @@ class VisualForgetter:
         if now is None:
             now = datetime.now(timezone.utc)
 
-        # 解析时间戳
         ts_str = record.timestamp if hasattr(record, "timestamp") else record.get("timestamp", "")
         try:
             created_at = datetime.fromisoformat(ts_str)
@@ -70,7 +69,6 @@ class VisualForgetter:
 
         elapsed = (now - created_at).total_seconds() / 3600.0  # 小时
 
-        # 获取重要性评分
         importance = (
             record.importance_score
             if hasattr(record, "importance_score")
@@ -82,7 +80,6 @@ class VisualForgetter:
             1 + importance * (IMPORTANCE_HALF_LIFE_MULTIPLIER - 1)
         )
 
-        # 衰减计算
         decay = 0.5 ** (elapsed / effective_half_life)
 
         # 检索次数加成（被检索过的记忆衰减更慢）
@@ -158,7 +155,6 @@ class VisualForgetter:
         """
         importance = getattr(record, "importance_score", 0.5)
 
-        # 根据重要性决定 TTL
         if importance >= 0.8:
             ttl_days = MAX_TTL_DAYS
         elif importance >= 0.5:

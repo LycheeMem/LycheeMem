@@ -46,7 +46,7 @@ VISUAL_EXTRACTION_PROMPT_DETAILED = """\
 
 
 class VisualExtractor:
-    """使用 VLM 进行图片理解和结构化提取（高性能版）。
+    """使用 VLM 进行图片理解和结构化提取。
 
     Args:
         llm: LLM 适配器（需支持多模态输入，如 qwen-vl-max）。
@@ -85,7 +85,7 @@ class VisualExtractor:
         mime_type: str = "image/jpeg",
         session_id: str = "",
     ) -> dict[str, Any]:
-        """从 Base64 编码的图片提取结构化信息（带缓存优化）。
+        """从 Base64 编码的图片提取结构化信息。
 
         Args:
             image_b64: Base64 编码的图片数据。
@@ -210,7 +210,7 @@ class VisualExtractor:
             return None
 
     async def _call_vlm(self, image_b64: str, mime_type: str) -> dict[str, Any]:
-        """调用 VLM 进行图片理解（优化参数）。
+        """调用 VLM 进行图片理解。
 
         Args:
             image_b64: Base64 编码的图片。
@@ -332,7 +332,6 @@ class VisualExtractor:
         Returns:
             修正后的结果字典。
         """
-        # 确保必需字段存在
         required_fields = {
             "caption": "",
             "scene_type": "other",
@@ -345,11 +344,9 @@ class VisualExtractor:
         for field, default in required_fields.items():
             result.setdefault(field, default)
 
-        # 修正 scene_type
         if result["scene_type"] not in SCENE_TYPES:
             result["scene_type"] = "other"
 
-        # 修正 importance_score 范围
         score = result.get("importance_score", 0.5)
         try:
             score = float(score)
@@ -357,11 +354,9 @@ class VisualExtractor:
         except (ValueError, TypeError):
             result["importance_score"] = 0.5
 
-        # 确保 entities 是列表
         if not isinstance(result.get("entities"), list):
             result["entities"] = []
 
-        # 确保 structured_data 是字典
         if not isinstance(result.get("structured_data"), dict):
             result["structured_data"] = {}
 

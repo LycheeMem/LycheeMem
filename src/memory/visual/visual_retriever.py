@@ -1,15 +1,4 @@
-"""视觉记忆检索器 - 高性能版。
-
-提供多种检索方式：
-- 文本查询 → 视觉记忆检索（双路检索 + 分数融合）
-- 图像查询 → 相似图片检索（基于 CLIP 视觉嵌入）
-- 联合文本记忆检索
-
-优化:
-- 批量获取记录，避免 N+1 查询
-- SQLite 连接复用
-- 检索计数异步批量更新
-"""
+"""视觉记忆检索器。"""
 
 from __future__ import annotations
 
@@ -22,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class VisualRetriever:
-    """视觉记忆检索器（高性能版）。
+    """视觉记忆检索器。
 
     Args:
         visual_store: 视觉记忆存储实例。
@@ -40,7 +29,7 @@ class VisualRetriever:
         top_k: int = 5,
         session_id: Optional[str] = None,
     ) -> list[dict[str, Any]]:
-        """通过文本查询检索相关视觉记忆（双路检索 + 分数融合，批量优化）。
+        """通过文本查询检索相关视觉记忆。
 
         Args:
             query: 查询文本。
@@ -59,7 +48,6 @@ class VisualRetriever:
         record_ids = [r["record_id"] for r in results]
         records_map = self.store.get_by_ids_batch(record_ids)
 
-        # 补充图片路径信息
         enriched = []
         for r in results:
             record = records_map.get(r["record_id"])
@@ -82,7 +70,6 @@ class VisualRetriever:
                 # 更新检索计数（批量）
                 self._increment_retrieval_count(r["record_id"])
 
-        # 按分数排序
         enriched.sort(key=lambda x: x["score"], reverse=True)
         return enriched[:top_k]
 
@@ -102,7 +89,6 @@ class VisualRetriever:
         """
         logger.info("Retrieving visual memories by image: %s (top_k=%d)", image_path, top_k)
 
-        # 检查多模态嵌入器可用性
         if not hasattr(self.store, 'multimodal_embedder') or self.store.multimodal_embedder is None:
             logger.warning("Multimodal embedder not available, image retrieval disabled")
             return []
@@ -113,7 +99,6 @@ class VisualRetriever:
                 logger.error("Image file not found: %s", image_path)
                 return []
 
-            # 生成 CLIP 图像嵌入
             logger.debug("Generating image embedding for: %s", image_path)
             query_embedding = self.store.multimodal_embedder.embed_image(image_path)
 

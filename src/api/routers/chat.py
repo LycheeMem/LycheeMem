@@ -31,7 +31,7 @@ def _sse(data: dict) -> str:
 
 @router.post("/chat/complete", response_model=ChatResponse)
 async def chat_complete(req: ChatRequest, pipeline=Depends(get_pipeline)):
-    """非流式对话端点（带错误处理）。"""
+    """非流式对话端点。"""
     try:
         visual_memory_ids = []
         if req.images:
@@ -68,7 +68,7 @@ async def chat_complete(req: ChatRequest, pipeline=Depends(get_pipeline)):
 
 @router.post("/chat")
 async def chat_stream(req: ChatRequest, pipeline=Depends(get_pipeline)):
-    """SSE 流式对话（带错误处理）。
+    """SSE 流式对话。
 
     流式 chunk 格式 (Server-Sent Events):
       data: {"type": "step", "step": "wm_manager", "status": "done", "trace_fragment": {...}}
@@ -92,7 +92,7 @@ async def chat_stream(req: ChatRequest, pipeline=Depends(get_pipeline)):
             logger.info("Waiting for image recognition to complete...")
             stored_ids = await _process_images_with_mime(images_with_mime, req.session_id, pipeline)
             visual_memory_ids = stored_ids
-            logger.info("✅ Image recognition completed, stored %d visual memories", len(visual_memory_ids))
+            logger.info("Image recognition completed, stored %d visual memories", len(visual_memory_ids))
             
             for record_id in stored_ids:
                 try:
@@ -178,7 +178,7 @@ async def _process_images_with_mime(
     session_id: str,
     pipeline
 ) -> list[str]:
-    """处理输入图片（带 MIME 类型），提取并存储视觉记忆（双嵌入：文本 + 视觉）。
+    """处理输入图片，提取并存储视觉记忆。
 
     Args:
         images_with_mime: 包含 base64 和 mime_type 的字典列表。
@@ -301,7 +301,7 @@ async def _process_images_with_mime(
             if stored_id:
                 stored_ids.append(stored_id)
                 logger.info(
-                    "✓ Visual memory stored: id=%s, caption=%s",
+                    "Visual memory stored: id=%s, caption=%s",
                     stored_id, record.caption[:60],
                 )
             else:
@@ -315,7 +315,7 @@ async def _process_images_with_mime(
 
 
 async def _process_images(images: list[str], session_id: str, pipeline) -> list[str]:
-    """处理输入图片，提取并存储视觉记忆（双嵌入：文本 + 视觉）。
+    """处理输入图片，提取并存储视觉记忆。
 
     Args:
         images: Base64 编码的图片列表。
@@ -436,7 +436,7 @@ async def _process_images(images: list[str], session_id: str, pipeline) -> list[
             if stored_id:
                 stored_ids.append(stored_id)
                 logger.info(
-                    "✓ Visual memory stored: id=%s, caption=%s",
+                    "Visual memory stored: id=%s, caption=%s",
                     stored_id, record.caption[:60],
                 )
             else:

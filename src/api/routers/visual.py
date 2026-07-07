@@ -132,7 +132,6 @@ async def list_visual_memories(
         for r in records
     ]
 
-    # 获取总数
     stats = visual_store.get_stats()
     total = stats["active"] if not include_expired else stats["total"]
 
@@ -183,7 +182,6 @@ async def get_visual_memory_image(record_id: str, pipeline=Depends(get_pipeline)
     if record is None:
         raise HTTPException(status_code=404, detail="Visual memory not found")
 
-    # 构建完整路径
     base_path = Path(visual_store.image_storage_path)
     full_path = base_path / record.image_path
 

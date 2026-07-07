@@ -151,8 +151,6 @@ def create_pipeline(
     from src.memory.visual.visual_retriever import VisualRetriever
     from src.memory.visual.visual_store import VisualStore
 
-    # 新增：多模态嵌入器（CLIP 风格，支持跨模态检索）
-    # 注意：如果无法访问 HuggingFace，则使用 DashScope API 或禁用
     multimodal_embedder = None
     use_multimodal = getattr(global_settings, "use_multimodal_embedding", False)
     if use_multimodal:
@@ -160,7 +158,6 @@ def create_pipeline(
             logger.info("Initializing multimodal embedder...")
             from src.memory.visual.multimodal_embedder import MultimodalEmbedder
             
-            # 优先使用 DashScope（如果有 API key）
             dashscope_key = getattr(global_settings, "llm_api_key", "")
             use_dashscope = bool(dashscope_key)
             
@@ -197,11 +194,9 @@ def create_pipeline(
         image_storage_path=getattr(global_settings, "visual_image_path", "data/visual_memory"),
         embedding_dim=_resolve_embedding_dim(embedder, global_settings),
         embedder=embedder,  # 文本 embedder（向后兼容）
-        multimodal_embedder=multimodal_embedder,  # 多模态 embedder（新增）
+        multimodal_embedder=multimodal_embedder,
     )
 
-    # 视觉提取器使用 VLM（如果配置了多模态模型，否则复用主 LLM）
-    # 启用快速模式：更短的 Prompt、更低的 token 限制、图片压缩
     vlm_model = getattr(global_settings, "vlm_model", None)
     logger.info("VLM 配置检查：vlm_model=%s, vlm_api_base=%s", 
                 vlm_model, 
@@ -221,12 +216,11 @@ def create_pipeline(
             ),
             default_top_p=getattr(global_settings, "vlm_top_p", 1.0),
         )
-        logger.info("✓ VLM 初始化成功：model=%s", vlm_model)
+        logger.info("VLM 初始化成功：model=%s", vlm_model)
     else:
         vlm_llm = llm  # 降级：复用主 LLM
-        logger.warning("⚠️ 未配置 VLM 模型，将复用主 LLM（可能不支持图片识别）")
+        logger.warning("未配置 VLM 模型，将复用主 LLM（可能不支持图片识别）")
 
-    # 快速模式配置
     use_fast_mode = getattr(global_settings, "visual_fast_mode", True)
     max_image_size = getattr(global_settings, "visual_max_image_size", 1024)
 
@@ -234,7 +228,7 @@ def create_pipeline(
         llm=vlm_llm,
         fast_mode=use_fast_mode,
         max_image_size=max_image_size,
-        cache_size=128,  # 新增：缓存大小
+        cache_size=128,
     )
     visual_retriever = VisualRetriever(visual_store=visual_store)
     visual_forgetter = VisualForgetter(visual_store=visual_store)

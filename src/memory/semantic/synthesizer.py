@@ -520,8 +520,6 @@ class RecordFusionEngine:
             updated_at=now_iso,
         )
 
-    # 工具方法
-
     @staticmethod
     def _union_find_clusters(
         edges: list[tuple[str, str]],
