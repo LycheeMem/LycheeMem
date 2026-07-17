@@ -44,6 +44,7 @@ class SQLiteSessionStore:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL,
                 role TEXT NOT NULL,
+                speaker TEXT NOT NULL DEFAULT '',
                 content TEXT NOT NULL,
                 deleted INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -73,6 +74,7 @@ class SQLiteSessionStore:
         for alter_sql in [
             "ALTER TABLE turns ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE turns ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE turns ADD COLUMN speaker TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE summaries ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE session_meta ADD COLUMN last_consolidated_turn_index INTEGER NOT NULL DEFAULT 0",
         ]:
@@ -88,13 +90,14 @@ class SQLiteSessionStore:
         turns = [
             {
                 "role": row["role"],
+                "speaker": row["speaker"] if "speaker" in row.keys() else "",
                 "content": row["content"],
                 "created_at": row["created_at"],
                 "deleted": bool(row["deleted"]),
                 "token_count": row["token_count"] if "token_count" in row.keys() else 0,
             }
             for row in conn.execute(
-                "SELECT role, content, created_at, deleted, token_count FROM turns WHERE session_id = ? ORDER BY id",
+                "SELECT role, speaker, content, created_at, deleted, token_count FROM turns WHERE session_id = ? ORDER BY id",
                 (session_id,),
             )
         ]
@@ -123,17 +126,19 @@ class SQLiteSessionStore:
         content: str,
         token_count: int = 0,
         created_at: str | None = None,
+        speaker: str | None = None,
     ) -> None:
         conn = self._get_conn()
+        normalized_speaker = str(speaker or "").strip()
         if created_at:
             conn.execute(
-                "INSERT INTO turns (session_id, role, content, token_count, created_at) VALUES (?, ?, ?, ?, ?)",
-                (session_id, role, content, token_count, created_at),
+                "INSERT INTO turns (session_id, role, speaker, content, token_count, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, role, normalized_speaker, content, token_count, created_at),
             )
         else:
             conn.execute(
-                "INSERT INTO turns (session_id, role, content, token_count) VALUES (?, ?, ?, ?)",
-                (session_id, role, content, token_count),
+                "INSERT INTO turns (session_id, role, speaker, content, token_count) VALUES (?, ?, ?, ?, ?)",
+                (session_id, role, normalized_speaker, content, token_count),
             )
         # upsert session_meta 的 updated_at
         conn.execute(
@@ -147,13 +152,14 @@ class SQLiteSessionStore:
         return [
             {
                 "role": row["role"],
+                "speaker": row["speaker"] if "speaker" in row.keys() else "",
                 "content": row["content"],
                 "created_at": row["created_at"],
                 "deleted": bool(row["deleted"]),
                 "token_count": row["token_count"] if "token_count" in row.keys() else 0,
             }
             for row in conn.execute(
-                "SELECT role, content, created_at, deleted, token_count FROM turns WHERE session_id = ? ORDER BY id",
+                "SELECT role, speaker, content, created_at, deleted, token_count FROM turns WHERE session_id = ? ORDER BY id",
                 (session_id,),
             )
         ]

@@ -18,9 +18,16 @@ logs
 debug.md
 import
 tests
+!tests/
+tests/*
+!tests/test_retrieval_regressions.py
+!tests/test_speaker_and_answer_prompt.py
 results
 reference
 scripts
+!scripts/
+scripts/*
+!scripts/eval_locomo_qa_all.py
 !openclaw-plugin/scripts/
 !openclaw-plugin/scripts/setup_openclaw_plugin.py
 !openclaw-plugin/scripts/verify_openclaw_plugin.py

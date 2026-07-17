@@ -481,7 +481,7 @@ class RetrievalSelectionMixin:
         if source_key == "record":
             return 1.0
         if source_key == "episode":
-            return 0.88
+            return 1.0
         return 0.95
 
     @classmethod

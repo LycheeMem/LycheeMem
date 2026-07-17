@@ -275,11 +275,14 @@ class RouteRetrievalMixin:
                     item["retrieval_score"] = retrieval_score
                     candidate_by_id[record_id] = item
                 else:
-                    existing["field_score"] = min(
-                        1.0,
-                        self._safe_float(existing.get("field_score"), 0.0)
-                        + 0.20
-                        + 0.20 * retrieval_score,
+                    direct_score = 0.30 + 0.30 * retrieval_score
+                    existing["field_score"] = max(
+                        self._safe_float(existing.get("field_score"), 0.0),
+                        direct_score,
+                    )
+                    existing["retrieval_score"] = max(
+                        self._safe_float(existing.get("retrieval_score"), 0.0),
+                        retrieval_score,
                     )
                     existing["semantic_distance"] = min(
                         self._safe_float(existing.get("semantic_distance"), 1.0),
@@ -327,13 +330,13 @@ class RouteRetrievalMixin:
                     item["retrieval_score"] = retrieval_score
                     raw_turn_by_id[episode_id] = item
                 else:
-                    current["field_score"] = min(
-                        1.0,
-                        max(
-                            self._safe_float(current.get("field_score"), 0.0),
-                            self._raw_turn_field_score(retrieval_score, item, strategy),
-                        )
-                        + 0.08,
+                    current["field_score"] = max(
+                        self._safe_float(current.get("field_score"), 0.0),
+                        self._raw_turn_field_score(retrieval_score, item, strategy),
+                    )
+                    current["retrieval_score"] = max(
+                        self._safe_float(current.get("retrieval_score"), 0.0),
+                        retrieval_score,
                     )
                     self._append_unique(current, "matched_queries", variant)
                     current["semantic_distance"] = min(

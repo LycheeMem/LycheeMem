@@ -50,13 +50,16 @@ class RetrievalRouteHelperMixin:
 
     @classmethod
     def _route_query_variants(cls, query: str, route: EvidenceRoute) -> list[str]:
+        # Constraints describe which candidates are acceptable; they are not
+        # standalone semantic questions.  Embedding broad constraints such as
+        # ``entity: Melanie`` caused nearly every record for that entity to be
+        # recalled repeatedly and rewarded for duplicate matches.
         secondary: list[str] = []
+        if query:
+            secondary.append(query)
         if route.evidence_goal:
             secondary.append(route.evidence_goal)
         secondary.extend(route.queries or [])
-        secondary.extend(cls._constraint_texts(route.constraints))
-        if not secondary and query:
-            secondary.append(query)
-        return cls._merge_unique([], secondary)[: cls.MAX_ROUTE_QUERIES + 2]
+        return cls._merge_unique([], secondary)[: cls.MAX_ROUTE_QUERIES]
 
 

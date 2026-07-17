@@ -683,6 +683,7 @@ def run_memory_append_turn(
         req.content,
         token_count=req.token_count,
         created_at=req.created_at,
+        speaker=req.speaker,
     )
     log = pipeline.wm_manager.session_store.get_or_create(req.session_id)
     return MemoryAppendTurnResponse(

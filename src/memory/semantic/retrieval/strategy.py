@@ -16,9 +16,9 @@ class RetrievalStrategy:
     raw_turn_score_multiplier: float = 1.0
     assistant_turn_bonus: float = 0.0
     user_turn_bonus: float = 0.0
-    episode_source_weight: float = 0.88
-    episode_budget_ratio: float = 1.0 / 3.0
-    min_episode_score_ratio: float = 0.75
+    episode_source_weight: float = 1.0
+    episode_budget_ratio: float = 0.40
+    min_episode_score_ratio: float = 0.72
     expansion_window: int = 0
     expansion_limit_per_route: int = 0
     expansion_score: float = 0.0

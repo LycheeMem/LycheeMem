@@ -427,12 +427,13 @@ class SemanticIngestionMixin:
             except (TypeError, ValueError):
                 turn_index = turn_index_offset + local_index
             source_dialogue_time = str(reference_timestamp or turn.get("created_at") or "")
+            indexed_content = self._content_with_speaker(content, turn.get("speaker"))
             batch.append({
                 "episode_id": self._make_episode_id(sid, turn_index),
                 "session_id": sid,
                 "turn_index": turn_index,
                 "role": str(turn.get("role", "unknown")),
-                "content": content,
+                "content": indexed_content,
                 "created_at": source_dialogue_time,
             })
 
@@ -480,12 +481,13 @@ class SemanticIngestionMixin:
                 content = str(turn.get("content", "")).strip()
                 if not content or turn.get("deleted", False):
                     continue
+                indexed_content = self._content_with_speaker(content, turn.get("speaker"))
                 batch.append({
                     "episode_id": ep_id,
                     "session_id": sid,
                     "turn_index": idx,
                     "role": str(turn.get("role", "unknown")),
-                    "content": content,
+                    "content": indexed_content,
                     "created_at": str(turn.get("created_at", "")),
                 })
 
@@ -552,6 +554,18 @@ class SemanticIngestionMixin:
                 "source_dialogue_time": str(hit.get("created_at", "")),
             })
         return results
+
+    @staticmethod
+    def _content_with_speaker(content: str, speaker: Any) -> str:
+        """Make participant identity searchable without changing vector schema."""
+        normalized_content = str(content or "").strip()
+        normalized_speaker = str(speaker or "").strip()
+        if not normalized_speaker or not normalized_content:
+            return normalized_content
+        prefix = f"{normalized_speaker}:"
+        if normalized_content.casefold().startswith(prefix.casefold()):
+            return normalized_content
+        return f"{prefix} {normalized_content}"
 
     @staticmethod
     def _make_episode_id(session_id: str, turn_index: int) -> str:

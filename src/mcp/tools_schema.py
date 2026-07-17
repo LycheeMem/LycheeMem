@@ -106,6 +106,13 @@ TOOLS_SCHEMA = [
                     "type": "string",
                     "description": "Conversation role, typically user or assistant.",
                 },
+                "speaker": {
+                    "type": "string",
+                    "description": (
+                        "Optional named participant identity for imported multi-party conversations; "
+                        "kept separate from the transport role."
+                    ),
+                },
                 "content": {
                     "type": "string",
                     "description": "Raw turn text to append into LycheeMem's session store.",

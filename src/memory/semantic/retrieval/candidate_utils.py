@@ -180,13 +180,13 @@ class RetrievalCandidateUtilsMixin:
             candidate["matched_evidence_nodes"] = []
             candidate["retrieval_score"] = 0.0
             candidate_by_id[record_id] = candidate
-        candidate["field_score"] = min(
-            1.0,
-            self._safe_float(candidate.get("field_score"), 0.0) + max(0.0, score),
-        )
-        candidate["semantic_distance"] = min(
-            self._safe_float(candidate.get("semantic_distance"), 1.0),
-            1.0 - min(1.0, self._safe_float(candidate.get("field_score"), 0.0)),
+        # A duplicate hit is provenance, not additional relevance.  Adding the
+        # same record's score for every query variant/channel made field_score
+        # saturate at 1.0 across almost the whole candidate pool.  Keep the
+        # strongest independent signal and preserve the real ANN distance.
+        candidate["field_score"] = max(
+            self._safe_float(candidate.get("field_score"), 0.0),
+            max(0.0, min(1.0, score)),
         )
         self._append_unique(candidate, "matched_queries", matched_query)
         self._append_unique(candidate, "matched_channels", channel)
@@ -220,7 +220,9 @@ class RetrievalCandidateUtilsMixin:
         return {
             "id": record.record_id,
             "source": "record",
-            "semantic_distance": 0.5,  # 默认，由调用方覆盖
+            # Evidence-graph recall has no record-level ANN distance.  Use the
+            # neutral worst distance until a direct ANN hit supplies a real one.
+            "semantic_distance": 1.0,
             "memory_type": record.memory_type,
             "semantic_text": record.semantic_text,
             "normalized_text": record.normalized_text,

@@ -23,6 +23,9 @@ Requirements:
 8. **Reference Boundary**: Use <REFERENCE_CONTEXT> only to understand <CURRENT_TURNS>; do not extract facts from it, and do not assume it contains information from any other session.
 9. **Disambiguation Note**: Return `disambiguation_context` as a short note with only the resolved names, aliases, objects, dates, or open topics needed to understand later references. Use an empty string if nothing is needed.
 - `evidence_turns` are 0-based indexes into <CURRENT_TURNS>.
+- Each `<TURN>` has an explicit `index`, transport `role`, and optional named `speaker`. The `speaker` is the authoritative participant identity. Multiple named participants may share transport role `user`; never treat them as the same person or swap their facts.
+- Write every person's name explicitly in `semantic_text` when the source identifies them. Before returning a record, verify its subject against the `speaker` and wording of every cited turn.
+- `evidence_turns` must contain only indexes that actually appear in <CURRENT_TURNS>; never count content lines, image-caption lines, or XML boundary lines as turns.
 - If there is no durable information, return `{"records":[], "disambiguation_context": ""}`.
 
 Memory types:

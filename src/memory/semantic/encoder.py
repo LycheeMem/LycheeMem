@@ -113,6 +113,7 @@ class CompactSemanticEncoder:
                 evidence_turn_range=self._normalize_evidence_turns(
                     raw.get("evidence_turns", []),
                     turn_index_offset=turn_index_offset,
+                    turn_count=len(current_turns),
                 ),
                 source_session=session_id,
                 source_role=source_role,
@@ -212,9 +213,30 @@ class CompactSemanticEncoder:
 
     @staticmethod
     def _format_section(turns: list[dict[str, Any]]) -> str:
-        return "\n".join(
-            f"{t.get('role', 'unknown')}: {t.get('content', '')}" for t in turns
-        )
+        rendered: list[str] = []
+        for turn_index, turn in enumerate(turns):
+            role = str(turn.get("role") or "unknown").strip() or "unknown"
+            speaker = str(turn.get("speaker") or "").strip()
+            content = str(turn.get("content") or "").strip()
+
+            # Imported multi-party datasets may preserve the participant name
+            # both as metadata and as a leading ``Name:`` prefix.  Keep a
+            # single authoritative speaker marker in the encoding input.
+            if speaker:
+                prefix = f"{speaker}:"
+                if content.casefold().startswith(prefix.casefold()):
+                    content = content[len(prefix):].lstrip()
+
+            attributes = [
+                f"index={turn_index}",
+                f"role={json.dumps(role, ensure_ascii=False)}",
+            ]
+            if speaker:
+                attributes.append(f"speaker={json.dumps(speaker, ensure_ascii=False)}")
+            rendered.append(
+                f"<TURN {' '.join(attributes)}>\n{content}\n</TURN>"
+            )
+        return "\n".join(rendered)
 
     @staticmethod
     def _parse_json(text: str) -> dict[str, Any]:
@@ -244,6 +266,7 @@ class CompactSemanticEncoder:
         evidence_turns: Any,
         *,
         turn_index_offset: int = 0,
+        turn_count: int | None = None,
     ) -> list[int]:
         if not isinstance(evidence_turns, list):
             return []
@@ -253,9 +276,14 @@ class CompactSemanticEncoder:
         base_offset = max(0, int(turn_index_offset or 0))
         for raw in evidence_turns:
             try:
-                absolute_index = base_offset + int(raw)
+                local_index = int(raw)
             except (TypeError, ValueError):
                 continue
+            if local_index < 0:
+                continue
+            if turn_count is not None and local_index >= max(0, int(turn_count)):
+                continue
+            absolute_index = base_offset + local_index
             if absolute_index < 0 or absolute_index in seen:
                 continue
             seen.add(absolute_index)

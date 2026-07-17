@@ -52,11 +52,13 @@ class InMemorySessionStore:
         content: str,
         token_count: int = 0,
         created_at: str | None = None,
+        speaker: str | None = None,
     ) -> None:
         log = self.get_or_create(session_id)
         log.turns.append({
             "role": role,
             "content": content,
+            "speaker": str(speaker or "").strip(),
             "token_count": token_count,
             "created_at": created_at or _now_iso(),
         })

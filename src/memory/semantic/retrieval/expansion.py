@@ -42,11 +42,11 @@ class RetrievalExpansionMixin:
             ),
             reverse=True,
         )
-        del top_k  # The strategy owns the per-route source-window budget.
         anchor_limit = max(
             1,
             min(
                 len(ordered),
+                max(1, int(top_k or 1)),
                 int(getattr(strategy, "source_window_anchor_limit_per_route", 24) or 24),
             ),
         )
@@ -112,10 +112,7 @@ class RetrievalExpansionMixin:
         start, end = min(turn_indices), max(turn_indices)
         anchor_id = self._candidate_id(anchor)
         anchor_score = self._anchor_score(anchor)
-        retrieval_score = max(
-            anchor_score,
-            self._safe_float(anchor.get("retrieval_score"), 0.0),
-        )
+        retrieval_score = self._safe_float(anchor.get("retrieval_score"), 0.0)
         text = self._format_source_window_text(
             anchor_text=self._candidate_text(anchor),
             turns=turns,
@@ -143,8 +140,11 @@ class RetrievalExpansionMixin:
             "semantic_text": text,
             "normalized_text": text,
             "display_text": text,
-            "semantic_distance": max(0.0, min(1.0, 1.0 - retrieval_score)),
-            "field_score": min(1.0, max(0.0, anchor_score) + 0.04),
+            # A source window is supporting evidence for its anchor, not an
+            # independent relevance hit.  Inherit the calibrated score and real
+            # ANN distance without adding a bonus or forging a new distance.
+            "semantic_distance": self._safe_float(anchor.get("semantic_distance"), 1.0),
+            "field_score": max(0.0, min(1.0, anchor_score)),
             "retrieval_score": retrieval_score,
             "source_session": session_id,
             "source_role": "both",
@@ -165,7 +165,7 @@ class RetrievalExpansionMixin:
             "anchor_texts": [self._candidate_text(anchor)] if self._candidate_text(anchor) else [],
             "anchor_sources": [str(anchor.get("source") or "")],
             "source_turns": turns,
-            "source_weight_override": self._safe_float(strategy.episode_source_weight, 0.88),
+            "source_weight_override": self._safe_float(strategy.episode_source_weight, 1.0),
         }
 
     def _merge_source_windows(
@@ -325,14 +325,17 @@ class RetrievalExpansionMixin:
         rendered: list[tuple[str, list[str]]] = []
         for turn in turns:
             role = str(turn.get("role") or "unknown").strip().lower() or "unknown"
+            speaker = str(turn.get("speaker") or "").strip()
             content = str(turn.get("content") or "").strip()
             if not content:
                 continue
             try:
                 turn_index = int(turn.get("turn_index"))
-                prefix = f"[{turn_index} {role}]"
+                identity = f" speaker={speaker}" if speaker else ""
+                prefix = f"[{turn_index} role={role}{identity}]"
             except (TypeError, ValueError):
-                prefix = f"[{role}]"
+                identity = f" speaker={speaker}" if speaker else ""
+                prefix = f"[role={role}{identity}]"
             split_lines = [
                 line.strip()
                 for line in content.splitlines()

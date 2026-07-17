@@ -310,6 +310,10 @@ class MemoryAppendTurnRequest(BaseModel):
 
     session_id: str = Field(..., min_length=1, max_length=128)
     role: str = Field(..., min_length=1, max_length=32)
+    # Optional participant identity, distinct from the transport role.  This is
+    # useful for imported multi-party conversations where every participant is
+    # submitted through a user-role API turn.
+    speaker: str | None = Field(default=None, max_length=128)
     content: str = Field(..., min_length=1, max_length=100_000)
     token_count: int = Field(default=0, ge=0, le=1_000_000)
     created_at: str | None = None

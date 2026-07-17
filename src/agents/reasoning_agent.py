@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from src.agents.base_agent import BaseAgent
-from src.agents.prompts import REASONING_SYSTEM_PROMPT
+from src.agents.prompts import REASONING_SYSTEM_PROMPT, RETRIEVAL_ANSWER_RULES
 from src.llm.base import BaseLLM, set_llm_call_source
 
 
@@ -93,6 +93,9 @@ class ReasoningAgent(BaseAgent):
 
         system_prompt = self.prompt_template.format(
             skill_plan_section=skill_plan_section,
+            retrieval_answer_section=(
+                RETRIEVAL_ANSWER_RULES if str(background_context or "").strip() else ""
+            ),
         )
 
         system_prompt = self._append_time_basis(system_prompt, now=self._parse_reference_time(reference_time))
