@@ -18,6 +18,9 @@ logs
 debug.md
 import
 tests
+!tests/
+tests/*
+!tests/test_embedding_dimensions.py
 results
 reference
 scripts

@@ -95,6 +95,10 @@ def _create_embedder(settings):
         model=settings.embedding_model,
         api_key=settings.embedding_api_key or None,
         api_base=settings.embedding_api_base or None,
+        # OpenAI text-embedding-3 models default to 1536/3072 dimensions.
+        # Forward the configured dimension instead of only using it to build
+        # the local LanceDB schema.
+        dimensions=(settings.embedding_dim if settings.embedding_dim > 0 else None),
         # task_type 仅对 gemini/ 和 vertex_ai/ 生效，其他 provider 自动忽略
         task_type="RETRIEVAL_DOCUMENT",
         query_task_type="RETRIEVAL_QUERY",

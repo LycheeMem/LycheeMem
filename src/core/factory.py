@@ -25,31 +25,68 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_embedding_dim(embedder: BaseEmbedder, settings) -> int:
-    """返回实际 embedding_dim；若配置为 0，则自动探测。
+    """Resolve the dimension returned by the active embedder.
     
-    本地 SentenceTransformerEmbedder 有 dimension 属性，优先读取；
-    否则通过一次真实 API 调用探测。
+    The configured value is also forwarded to providers that support output
+    truncation, but it cannot be trusted as the storage dimension: compatible
+    APIs may ignore ``dimensions`` and return their model default. Probe once at
+    startup so LanceDB is built from the real vector shape.
     """
-    dim = getattr(settings, "embedding_dim", 0) or 0
-    if dim > 0:
-        return dim
+    cached_dim = int(getattr(embedder, "_lychee_resolved_dimension", 0) or 0)
+    if cached_dim > 0:
+        return cached_dim
+
+    def remember(dimension: int) -> int:
+        try:
+            setattr(embedder, "_lychee_resolved_dimension", dimension)
+        except Exception:
+            pass
+        return dimension
+
+    configured_dim = int(getattr(settings, "embedding_dim", 0) or 0)
     # 本地模型：直接读属性（会触发懒加载，但无网络调用）
     if hasattr(embedder, "dimension"):
         try:
-            dim = int(embedder.dimension)
-            logger.info("本地模型 embedding_dim = %d", dim)
-            return dim
+            actual_dim = int(embedder.dimension)
+            if configured_dim > 0 and actual_dim != configured_dim:
+                logger.warning(
+                    "配置 embedding_dim=%d，但本地模型实际返回 %d；使用实际维度",
+                    configured_dim,
+                    actual_dim,
+                )
+            else:
+                logger.info("本地模型 embedding_dim = %d", actual_dim)
+            return remember(actual_dim)
         except Exception:
             pass
-    logger.info("embedding_dim 未配置，自动探测中…")
+    logger.info(
+        "探测实际 embedding_dim（配置值=%d）…",
+        configured_dim,
+    )
     try:
         vec = embedder.embed_query("probe")
-        dim = len(vec)
-        logger.info("自动探测 embedding_dim = %d", dim)
+        actual_dim = len(vec)
+        if actual_dim <= 0:
+            raise ValueError("embedding probe returned an empty vector")
+        if configured_dim > 0 and actual_dim != configured_dim:
+            logger.warning(
+                "配置 embedding_dim=%d，但 embedding API 实际返回 %d；使用实际维度",
+                configured_dim,
+                actual_dim,
+            )
+        else:
+            logger.info("实际 embedding_dim = %d", actual_dim)
+        return remember(actual_dim)
     except Exception as exc:
-        logger.warning("自动探测 embedding_dim 失败，回退到变长模式: %s", exc)
-        dim = 0
-    return dim
+        if configured_dim > 0:
+            logger.warning(
+                "实际 embedding_dim 探测失败，暂用配置值 %d: %s",
+                configured_dim,
+                exc,
+            )
+            return remember(configured_dim)
+        logger.warning("实际 embedding_dim 探测失败，回退到变长模式: %s", exc)
+        return 0
 
 
 def _create_session_store(settings=None):

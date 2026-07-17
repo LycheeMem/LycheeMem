@@ -112,7 +112,11 @@ class LanceVectorIndex:
         target_mr = _make_record_schema(self._embedding_dim)
         target_ev = _make_evidence_node_schema(self._embedding_dim)
         target_ep = _make_episode_turn_schema(self._embedding_dim)
-        existing = set(self._db.table_names())
+        try:
+            existing = set(self._db.list_tables().tables)
+        except (AttributeError, TypeError):
+            # Compatibility with older LanceDB releases.
+            existing = set(self._db.table_names())
 
         for table_name, schema in [
             (self.MEMORY_TABLE, target_mr),
@@ -122,17 +126,42 @@ class LanceVectorIndex:
             if table_name not in existing:
                 self._db.create_table(table_name, schema=schema)
             elif self._embedding_dim > 0:
-                # 检查现有 vector 列类型是否为 FixedSizeList
-                try:
-                    tbl = self._db.open_table(table_name)
-                    existing_schema = tbl.schema
-                    vec_field = existing_schema.field("vector")
-                    if not pa.types.is_fixed_size_list(vec_field.type):
-                        # 旧 variable-length schema — 重建
-                        self._db.drop_table(table_name)
-                        self._db.create_table(table_name, schema=schema)
-                except Exception:
-                    pass  # 无法检查则保持现有状态
+                self._ensure_table_vector_dim(table_name, schema)
+
+    def _ensure_table_vector_dim(self, table_name: str, target_schema: pa.Schema) -> None:
+        """Validate an existing table against the embedder's real dimension.
+
+        Empty tables can be rebuilt safely. A non-empty mismatched index must
+        not be silently deleted or mixed with vectors from another shape.
+        """
+        try:
+            table = self._db.open_table(table_name)
+            vector_type = table.schema.field("vector").type
+            current_dim = (
+                int(vector_type.list_size)
+                if pa.types.is_fixed_size_list(vector_type)
+                else 0
+            )
+            if current_dim == self._embedding_dim:
+                return
+            row_count = int(table.count_rows())
+        except Exception as exc:
+            raise RuntimeError(
+                f"Unable to validate LanceDB table {table_name!r}: {exc}"
+            ) from exc
+
+        if row_count == 0:
+            self._db.drop_table(table_name)
+            self._db.create_table(table_name, schema=target_schema)
+            return
+
+        current_label = str(current_dim) if current_dim > 0 else "variable-length"
+        raise RuntimeError(
+            "Embedding dimension mismatch for non-empty LanceDB table "
+            f"{table_name!r}: stored={current_label}, active={self._embedding_dim}. "
+            "Use the original embedding model/dimension or clear and rebuild the vector index "
+            "before starting the service."
+        )
 
 
     # ──────────────────────────────────────
@@ -162,18 +191,25 @@ class LanceVectorIndex:
             normalized_vector = normalized_vector or vecs[1]
 
         table = self._db.open_table(self.MEMORY_TABLE)
-        # 先删除旧记录（如存在），再插入新记录
-        try:
-            table.delete(f"record_id = '{self._escape_sql(record_id)}'")
-        except Exception:
-            pass
-        table.add([{
+        row = {
             "record_id": record_id,
             "memory_type": memory_type,
             "vector": semantic_vector,
             "normalized_vector": normalized_vector,
             "expired": expired,
-        }])
+        }
+        self._validate_rows_vector_dims(
+            self.MEMORY_TABLE,
+            table,
+            [row],
+            ("vector", "normalized_vector"),
+        )
+        # 先删除旧记录（如存在），再插入新记录
+        try:
+            table.delete(f"record_id = '{self._escape_sql(record_id)}'")
+        except Exception:
+            pass
+        table.add([row])
         self._mark_table_nonempty(self.MEMORY_TABLE)
         self._invalidate_exact_cache(self.MEMORY_TABLE)
 
@@ -210,15 +246,6 @@ class LanceVectorIndex:
                 else:
                     records[idx]["normalized_vector"] = vec
 
-        table = self._db.open_table(self.MEMORY_TABLE)
-        # 批量删除旧记录
-        ids = [r["record_id"] for r in records]
-        for rid in ids:
-            try:
-                table.delete(f"record_id = '{self._escape_sql(rid)}'")
-            except Exception:
-                pass
-
         rows = [
             {
                 "record_id": r["record_id"],
@@ -229,6 +256,20 @@ class LanceVectorIndex:
             }
             for r in records
         ]
+        table = self._db.open_table(self.MEMORY_TABLE)
+        self._validate_rows_vector_dims(
+            self.MEMORY_TABLE,
+            table,
+            rows,
+            ("vector", "normalized_vector"),
+        )
+        # Validate the complete batch before deleting replace-target rows.
+        ids = [r["record_id"] for r in records]
+        for rid in ids:
+            try:
+                table.delete(f"record_id = '{self._escape_sql(rid)}'")
+            except Exception:
+                pass
         table.add(rows)
         self._mark_table_nonempty(self.MEMORY_TABLE)
         self._invalidate_exact_cache(self.MEMORY_TABLE)
@@ -329,16 +370,6 @@ class LanceVectorIndex:
             for idx, vec in zip(embed_indices, embedded):
                 nodes[idx]["vector"] = vec
 
-        table = self._db.open_table(self.EVIDENCE_TABLE)
-        for node in nodes:
-            node_id = self._escape_sql(str(node.get("node_id", "")))
-            if not node_id:
-                continue
-            try:
-                table.delete(f"node_id = '{node_id}'")
-            except Exception:
-                pass
-
         rows = [
             {
                 "node_id": str(node.get("node_id", "")),
@@ -350,6 +381,19 @@ class LanceVectorIndex:
             if str(node.get("node_id", "")).strip() and node.get("vector") is not None
         ]
         if rows:
+            table = self._db.open_table(self.EVIDENCE_TABLE)
+            self._validate_rows_vector_dims(
+                self.EVIDENCE_TABLE,
+                table,
+                rows,
+                ("vector",),
+            )
+            for row in rows:
+                node_id = self._escape_sql(str(row["node_id"]))
+                try:
+                    table.delete(f"node_id = '{node_id}'")
+                except Exception:
+                    pass
             table.add(rows)
             self._mark_table_nonempty(self.EVIDENCE_TABLE)
             self._invalidate_exact_cache(self.EVIDENCE_TABLE)
@@ -447,14 +491,6 @@ class LanceVectorIndex:
             for idx, vec in zip(embed_indices, embedded):
                 turns[idx]["vector"] = vec
 
-        table = self._db.open_table(self.EPISODE_TABLE)
-        for t in turns:
-            ep_id = self._escape_sql(str(t.get("episode_id", "")))
-            try:
-                table.delete(f"episode_id = '{ep_id}'")
-            except Exception:
-                pass
-
         rows = [
             {
                 "episode_id": str(t.get("episode_id", "")),
@@ -467,8 +503,21 @@ class LanceVectorIndex:
             }
             for t in turns
         ]
-        table.add(rows)
         if rows:
+            table = self._db.open_table(self.EPISODE_TABLE)
+            self._validate_rows_vector_dims(
+                self.EPISODE_TABLE,
+                table,
+                rows,
+                ("vector",),
+            )
+            for row in rows:
+                ep_id = self._escape_sql(str(row["episode_id"]))
+                try:
+                    table.delete(f"episode_id = '{ep_id}'")
+                except Exception:
+                    pass
+            table.add(rows)
             self._mark_table_nonempty(self.EPISODE_TABLE)
             self._invalidate_exact_cache(self.EPISODE_TABLE)
 
@@ -662,6 +711,39 @@ class LanceVectorIndex:
         except Exception:
             return 0
         return 0
+
+    def _validate_rows_vector_dims(
+        self,
+        table_name: str,
+        table: Any,
+        rows: list[dict[str, Any]],
+        vector_columns: tuple[str, ...],
+    ) -> None:
+        """Fail before mutation when an embedder returns the wrong shape."""
+        for column in vector_columns:
+            expected_dim = self._table_vector_dim(table_name, table, column)
+            if expected_dim <= 0:
+                expected_dim = self._embedding_dim
+            if expected_dim <= 0:
+                continue
+            for row_index, row in enumerate(rows):
+                vector = row.get(column)
+                if hasattr(vector, "tolist"):
+                    vector = vector.tolist()
+                    row[column] = vector
+                try:
+                    actual_dim = len(vector)
+                except TypeError as exc:
+                    raise ValueError(
+                        f"Invalid vector for {table_name}.{column} at row {row_index}"
+                    ) from exc
+                if actual_dim != expected_dim:
+                    raise ValueError(
+                        "Embedding dimension mismatch before LanceDB write: "
+                        f"table={table_name}, column={column}, expected={expected_dim}, "
+                        f"actual={actual_dim}. Check EMBEDDING_MODEL/EMBEDDING_DIM and rebuild "
+                        "the vector index when changing embedding models."
+                    )
 
     def _mark_table_nonempty(self, table_name: str) -> None:
         with self._meta_lock:
