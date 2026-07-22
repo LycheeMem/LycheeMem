@@ -10,6 +10,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from src.core.provider_resolver import ATLASCLOUD_API_BASE
+
 # 在 Settings 初始化前，显式加载 .env 文件
 # override=True 确保 .env 中的值优先于系统环境变量
 # （开发环境约定：.env 提高优先级）
@@ -28,6 +30,8 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 0  # 0 = 不限制，交给 provider 默认
     llm_top_p: float = 0.80
 
+    atlascloud_api_key: str = ""
+    atlascloud_api_base: str = ATLASCLOUD_API_BASE
 
     embedding_model: str = "openai/text-embedding-3-small"
     embedding_dim: int = 0  # 0 = 自动探测（启动时调用一次 API 获取实际维度）

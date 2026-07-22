@@ -44,12 +44,21 @@ def main():
 
 
 def _create_llm(settings):
+    from src.core.provider_resolver import resolve_litellm_model_provider
     from src.llm.litellm_llm import LiteLLMLLM
 
+    model, api_key, api_base = resolve_litellm_model_provider(
+        settings.llm_model,
+        api_key=settings.llm_api_key,
+        api_base=settings.llm_api_base,
+        atlascloud_api_key=getattr(settings, "atlascloud_api_key", ""),
+        atlascloud_api_base=getattr(settings, "atlascloud_api_base", ""),
+    )
+
     return LiteLLMLLM(
-        model=settings.llm_model,
-        api_key=settings.llm_api_key or None,
-        api_base=settings.llm_api_base or None,
+        model=model,
+        api_key=api_key,
+        api_base=api_base,
         default_temperature=settings.llm_temperature,
         default_max_tokens=(settings.llm_max_tokens if settings.llm_max_tokens > 0 else None),
         default_top_p=settings.llm_top_p,

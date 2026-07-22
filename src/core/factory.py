@@ -231,12 +231,29 @@ def create_pipeline(
                 vlm_model, 
                 getattr(global_settings, "vlm_api_base", "NOT SET"))
     if vlm_model:
+        from src.core.provider_resolver import resolve_litellm_model_provider
         from src.llm.litellm_llm import LiteLLMLLM
 
+        resolved_vlm_model, resolved_vlm_api_key, resolved_vlm_api_base = (
+            resolve_litellm_model_provider(
+                vlm_model,
+                api_key=(
+                    getattr(global_settings, "vlm_api_key", "")
+                    or getattr(global_settings, "llm_api_key", "")
+                ),
+                api_base=(
+                    getattr(global_settings, "vlm_api_base", "")
+                    or getattr(global_settings, "llm_api_base", "")
+                ),
+                atlascloud_api_key=getattr(global_settings, "atlascloud_api_key", ""),
+                atlascloud_api_base=getattr(global_settings, "atlascloud_api_base", ""),
+            )
+        )
+
         vlm_llm = LiteLLMLLM(
-            model=vlm_model,
-            api_key=getattr(global_settings, "vlm_api_key", global_settings.llm_api_key),
-            api_base=getattr(global_settings, "vlm_api_base", global_settings.llm_api_base),
+            model=resolved_vlm_model,
+            api_key=resolved_vlm_api_key,
+            api_base=resolved_vlm_api_base,
             default_temperature=getattr(global_settings, "vlm_temperature", 0.7),
             default_max_tokens=(
                 getattr(global_settings, "vlm_max_tokens", 0)
